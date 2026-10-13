@@ -444,13 +444,22 @@ const SEGMENTS: [(ViewMode, &str, Icon); 3] = [
 fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
     let p = s.active;
     match item {
-        Item::Sidebar => action(ui, "Show / Hide Sidebar", Action::ToggleSidebar, out),
+        Item::Sidebar => action(
+            ui,
+            crate::i18n::tr("toolbar.show_hide_sidebar"),
+            Action::ToggleSidebar,
+            out,
+        ),
         Item::Navigation => {
             let tab = &s.panes[p].tabs[s.panes[p].active];
             let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
             let forward = !tab.future.is_empty();
-            ui.add_enabled_ui(back, |ui| action(ui, "Back", Action::Back, out));
-            ui.add_enabled_ui(forward, |ui| action(ui, "Forward", Action::Forward, out));
+            ui.add_enabled_ui(back, |ui| {
+                action(ui, crate::i18n::tr("toolbar.back"), Action::Back, out)
+            });
+            ui.add_enabled_ui(forward, |ui| {
+                action(ui, crate::i18n::tr("toolbar.forward"), Action::Forward, out)
+            });
         }
         Item::Title => {
             let tab = s.panes[p].tab();
@@ -469,7 +478,12 @@ fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
                 }
                 ui.separator();
             }
-            action(ui, "Go to Folder…", Action::FocusPath, out);
+            action(
+                ui,
+                crate::i18n::tr("toolbar.go_to_folder"),
+                Action::FocusPath,
+                out,
+            );
         }
         Item::Views => {
             let view = s.panes[p].view;
@@ -487,13 +501,13 @@ fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
             }
         }
         Item::Group => {
-            ui.label(egui::RichText::new("Sort By").weak());
+            ui.label(egui::RichText::new(crate::i18n::tr("toolbar.sort_by")).weak());
             let tab = s.panes[p].tab_mut();
             for (key, label) in [
-                (SortKey::Name, "Name"),
-                (SortKey::Ext, "Kind"),
-                (SortKey::Modified, "Date Modified"),
-                (SortKey::Size, "Size"),
+                (SortKey::Name, crate::i18n::tr("toolbar.name")),
+                (SortKey::Ext, crate::i18n::tr("toolbar.kind")),
+                (SortKey::Modified, crate::i18n::tr("toolbar.date_modified")),
+                (SortKey::Size, crate::i18n::tr("toolbar.size")),
             ] {
                 if ui.selectable_label(tab.sort.0 == key, label).clicked() {
                     // Finder's defaults: names A to Z, the newest and the biggest first.
@@ -502,22 +516,28 @@ fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
                     ui.close_menu();
                 }
             }
-            if ui.selectable_label(!tab.sort.1, "Descending").clicked() {
+            if ui
+                .selectable_label(!tab.sort.1, crate::i18n::tr("toolbar.descending"))
+                .clicked()
+            {
                 tab.sort.1 = !tab.sort.1;
                 ui.close_menu();
             }
             if s.panes[p].view == ViewMode::Media {
                 ui.separator();
-                ui.label(egui::RichText::new("Group By").weak());
+                ui.label(egui::RichText::new(crate::i18n::tr("toolbar.group_by")).weak());
                 if ui
-                    .selectable_label(!s.settings.media_dates, "None")
+                    .selectable_label(!s.settings.media_dates, crate::i18n::tr("toolbar.none"))
                     .clicked()
                 {
                     s.settings.media_dates = false;
                     ui.close_menu();
                 }
                 if ui
-                    .selectable_label(s.settings.media_dates, "Date Taken")
+                    .selectable_label(
+                        s.settings.media_dates,
+                        crate::i18n::tr("toolbar.date_taken"),
+                    )
                     .clicked()
                 {
                     s.settings.media_dates = true;
@@ -534,16 +554,31 @@ fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
                 .map(|e| e.path.clone());
             ui.add_enabled_ui(some, |ui| {
                 let send = Action::Devices(crate::devices::DevCmd::SendSelection);
-                action(ui, "Send with Spacedrop…", send, out);
+                action(ui, crate::i18n::tr("toolbar.send_spacedrop"), send, out);
             });
             match link {
-                Some(path) => action(ui, "Copy Link", Action::CopyLink(path), out),
+                Some(path) => action(
+                    ui,
+                    crate::i18n::tr("toolbar.copy_link"),
+                    Action::CopyLink(path),
+                    out,
+                ),
                 None => {
-                    ui.add_enabled(false, egui::Button::new("Copy Link"))
-                        .on_disabled_hover_text("Select a cloud item that has share links");
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new(crate::i18n::tr("toolbar.copy_link")),
+                    )
+                    .on_disabled_hover_text(crate::i18n::tr("toolbar.copy_link_disabled"));
                 }
             }
-            ui.add_enabled_ui(some, |ui| action(ui, "Copy Path", Action::CopyPath, out));
+            ui.add_enabled_ui(some, |ui| {
+                action(
+                    ui,
+                    crate::i18n::tr("toolbar.copy_path"),
+                    Action::CopyPath,
+                    out,
+                )
+            });
         }
         Item::Tags => {
             let targets: Vec<_> = s.panes[p]
@@ -581,15 +616,25 @@ fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
                     ui.separator();
                 }
                 let picker = Action::Library(crate::library::LibCmd::TagPicker);
-                action(ui, "Tags…", picker, out);
+                action(ui, crate::i18n::tr("toolbar.tags_menu"), picker, out);
             });
         }
         Item::Actions => {
             crate::pane::context_menu(ui, s.panes[p].tab(), None, out);
             ui.separator();
-            action(ui, "Customize Toolbar…", Action::CustomizeToolbar, out);
+            action(
+                ui,
+                crate::i18n::tr("toolbar.customize"),
+                Action::CustomizeToolbar,
+                out,
+            );
         }
-        Item::Search => action(ui, "Search…", Action::Search, out),
+        Item::Search => action(
+            ui,
+            crate::i18n::tr("toolbar.search_menu"),
+            Action::Search,
+            out,
+        ),
         Item::Space => {}
     }
 }
@@ -604,9 +649,9 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
     match item {
         Item::Sidebar => {
             let name = if s.settings.show_sidebar {
-                "Hide Sidebar"
+                crate::i18n::tr("toolbar.hide_sidebar")
             } else {
-                "Show Sidebar"
+                crate::i18n::tr("toolbar.show_sidebar")
             };
             if button(ui, name, Icon::Sidebar, true, false).clicked() {
                 out.push(Action::ToggleSidebar);
@@ -617,10 +662,18 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
             let tab = &s.panes[p].tabs[s.panes[p].active];
             let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
             let forward = !tab.future.is_empty();
-            if button(ui, "Back", Icon::Back, back, false).clicked() {
+            if button(ui, crate::i18n::tr("toolbar.back"), Icon::Back, back, false).clicked() {
                 out.push(Action::Back);
             }
-            if button(ui, "Forward", Icon::Forward, forward, false).clicked() {
+            if button(
+                ui,
+                crate::i18n::tr("toolbar.forward"),
+                Icon::Forward,
+                forward,
+                false,
+            )
+            .clicked()
+            {
                 out.push(Action::Forward);
             }
         }
@@ -631,13 +684,19 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
             let text = egui::RichText::new(title).strong();
             let r = ui.menu_button(text, |ui| item_menu(ui, Item::Title, s, out));
             *open |= r.inner.is_some();
-            r.response.tip("Folder and the folders it is in");
+            r.response.tip(crate::i18n::tr("toolbar.folder_tip"));
         }
         Item::Views => {
             ui.spacing_mut().item_spacing.x = 0.0;
             let view = s.panes[p].view;
             for (mode, name, glyph) in SEGMENTS {
-                let r = button(ui, &format!("View {name}"), glyph, true, view == mode);
+                let r = button(
+                    ui,
+                    &crate::i18n::tr("toolbar.view_mode").replace("{name}", name),
+                    glyph,
+                    true,
+                    view == mode,
+                );
                 if r.clicked() {
                     out.push(Action::View(mode));
                 }
@@ -648,7 +707,7 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
                 ui.spacing_mut().button_padding.x = 4.0;
                 let r = ui.menu_button(" ", |ui| item_menu(ui, Item::Views, s, out));
                 *open |= r.inner.is_some();
-                let r = r.response.tip("More views (Media, Sizes)");
+                let r = r.response.tip(crate::i18n::tr("toolbar.more_views_tip"));
                 if more {
                     let fill = ui.visuals().text_color().gamma_multiply(0.14);
                     let radius = ui.visuals().widgets.inactive.corner_radius;
@@ -664,7 +723,15 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
             let opening = id.with("opening");
             let expanded = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
             if !expanded {
-                if button(ui, "Search", Icon::Search, true, false).clicked() {
+                if button(
+                    ui,
+                    crate::i18n::tr("toolbar.search"),
+                    Icon::Search,
+                    true,
+                    false,
+                )
+                .clicked()
+                {
                     ui.ctx().data_mut(|d| {
                         d.insert_temp(id, true);
                         d.insert_temp(opening, true);
@@ -686,7 +753,7 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
                 .add(
                     egui::TextEdit::singleline(&mut text)
                         .id(field)
-                        .hint_text("Search")
+                        .hint_text(crate::i18n::tr("toolbar.search_hint"))
                         .desired_width(ui.available_width()),
                 )
                 .named("Search");
@@ -892,7 +959,12 @@ fn background_menu(ui: &mut Ui, s: &mut AppState, out: &mut Vec<Action>) {
         ui.close_menu();
     }
     ui.separator();
-    action(ui, "Customize Toolbar…", Action::CustomizeToolbar, out);
+    action(
+        ui,
+        crate::i18n::tr("toolbar.customize"),
+        Action::CustomizeToolbar,
+        out,
+    );
 }
 
 /// macOS, opened in the Finder style and switched to Classic: a bar to drag the window by,
