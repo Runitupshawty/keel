@@ -2715,6 +2715,58 @@ fn library_folder_color_and_icon() {
     close_library(&mut h);
 }
 
+/// A source's sidebar menu: Freeze now, then Freezes → its date lists the freeze in a tab; a file deleted since is still in it.
+#[test]
+#[ignore]
+fn library_freeze_and_browse_it() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let (mut h, base, lib) = with_library("freeze", &docs, &root.join("Backup"));
+    // A folder of its own: the flow deletes a file.
+    let copy = base.join("Field notes");
+    std::fs::create_dir_all(&copy).unwrap();
+    for name in ["notes.md", "plan.txt"] {
+        std::fs::write(copy.join(name), name).unwrap();
+    }
+    add_source(&mut h, &copy);
+    let label = copy.file_name().unwrap().to_string_lossy().into_owned();
+    // The source's row: the last such label in the sidebar (Places come first).
+    let row = |h: &H| {
+        h.query_all_by_label(&label)
+            .map(|n| center_of(&n))
+            .rfind(|p| p.x < 150.0)
+            .unwrap_or_else(|| panic!("no source row: {}", dump(h, &label)))
+    };
+    let at = row(&h);
+    click_at(&mut h, at, NONE, PointerButton::Secondary);
+    click_last(&mut h, "Freeze now");
+    let id = s(&h).library.sources[0].id.clone();
+    let frozen = |s: &AppState| s.library.freezes.get(&id).is_some_and(|l| l.len() == 1);
+    assert!(wait(&mut h, 10, &frozen), "frozen");
+    std::fs::remove_file(copy.join("notes.md")).unwrap();
+    let job = lib.index(&id).unwrap();
+    lib.jobs().wait(job).unwrap();
+    let at = row(&h);
+    click_at(&mut h, at, NONE, PointerButton::Secondary);
+    click_last(&mut h, "Freezes");
+    let f = s(&h).library.freezes[&id][0].clone();
+    // The freeze's date button (file rows can show the same minute).
+    let date = crate::library::when(Some(f.at));
+    let at = h
+        .query_all_by_label(&date)
+        .filter(|n| n.role() == egui::accesskit::Role::Button)
+        .map(|n| center_of(&n))
+        .next()
+        .expect("the freeze's date");
+    click_at(&mut h, at, NONE, PointerButton::Primary);
+    let dir = keel_vfs::library::path(&keel_vfs::library::frozen(&id.0, f.id), "");
+    assert!(wait(&mut h, 10, &|s| s.tab(0).listed_dir.as_ref() == Some(&dir)));
+    assert!(s(&h).tab(0).entries().iter().any(|e| e.name == "notes.md"));
+    assert_eq!(s(&h).tab(0).title(), format!("{label} (freeze {})", f.id));
+    shot(&mut h, "library-freeze");
+    close_library(&mut h);
+}
+
 /// Task 58: Ctrl+Shift+A enters tag assign mode; 1 tags the two selected files with the
 /// first tag (the bar's count follows), 1 again untags them, Esc leaves; another folder
 /// leaves the mode too.

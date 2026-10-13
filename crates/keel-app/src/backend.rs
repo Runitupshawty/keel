@@ -18,7 +18,7 @@ use keel_api::config::HostConfig;
 use keel_api::types as api;
 use keel_api::ApiError;
 use keel_core::{
-    Indexer, JobEvent, JobId, JobStatus, Library, LibraryStats, OfflineReason, Op, Plan,
+    Freeze, Indexer, JobEvent, JobId, JobStatus, Library, LibraryStats, OfflineReason, Op, Plan,
     PlanChanged, ProtectionSummary, SourceDef, SourceId, SourceKind, SourceStatus, SourceSummary,
     Tag, TagId, View, Volume, VolumeKind, VolumeState, FAVORITES,
 };
@@ -562,7 +562,10 @@ impl LibraryBackend {
     pub fn children(&self, source: &str, rel: &str) -> Result<Vec<Entry>> {
         match self {
             LibraryBackend::InProcess(lib) => {
-                let hits = lib.list_children(&SourceId(source.into()), rel)?;
+                let hits = match keel_vfs::library::freeze_of(source) {
+                    (id, Some(f)) => lib.list_frozen(&SourceId(id.into()), f, rel)?,
+                    (id, None) => lib.list_children(&SourceId(id.into()), rel)?,
+                };
                 Ok(hits.into_iter().map(crate::library::entry_of).collect())
             }
             LibraryBackend::Daemon(r) => {
@@ -997,6 +1000,41 @@ impl LibraryBackend {
                     .context("sources.add: no id")?
                     .to_owned();
                 self.index(&SourceId(id), false)
+            }
+        }
+    }
+
+    /// A source's freezes, newest first.
+    pub fn freezes(&self, id: &SourceId) -> Result<Vec<Freeze>> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.freezes(id),
+            LibraryBackend::Daemon(r) => {
+                let all: Vec<api::FreezeInfo> = r.call("freezes.list", json!({"id": id.0}))?;
+                Ok(all.into_iter().map(freeze_of).collect())
+            }
+        }
+    }
+
+    /// Freezes a source's index as it is now.
+    pub fn freeze(&self, id: &SourceId) -> Result<Freeze> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.freeze(id),
+            LibraryBackend::Daemon(r) => {
+                let done = r.apply("freezes.add", json!({"id": id.0}))?;
+                let f: api::FreezeInfo =
+                    serde_json::from_value(done.result.context("freezes.add: no result")?)?;
+                Ok(freeze_of(f))
+            }
+        }
+    }
+
+    /// Deletes a freeze of a source.
+    pub fn delete_freeze(&self, id: &SourceId, freeze: i64) -> Result<()> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.delete_freeze(id, freeze),
+            LibraryBackend::Daemon(r) => {
+                r.apply("freezes.delete", json!({"id": id.0, "freeze": freeze}))?;
+                Ok(())
             }
         }
     }
@@ -1676,3 +1714,13 @@ fn view_params(v: &View) -> Value {
 #[cfg(test)]
 #[path = "backend_tests.rs"]
 mod tests;
+
+fn freeze_of(f: api::FreezeInfo) -> Freeze {
+    Freeze {
+        id: f.id,
+        at: f.at,
+        records: f.records,
+        files: f.files,
+        bytes: f.bytes,
+    }
+}

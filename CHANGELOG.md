@@ -7,6 +7,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - A search box in each pane (**Search here**, at the right end of the tab row): typing opens a search tab next to the folder that finds names only under it and its subfolders, with the same backend menu, query syntax, toggles, filters and library chips as Ctrl+F; its bar reads "in <folder>". It is on folder tabs of local folders and remote hosts (not the Recycle Bin, archives or library views). Esc, the **×** or an emptied box closes it and shows the folder again. Everything gets the folder as a path term, Keel's own indexes as `in:`, Spotlight as `-onlyin`, `locate` and the home-folder walk keep to it; the library keeps the hits under it from its first page of results. A typed `in:` searches its own folder instead. The search backends take the folder as `keel_search::Query::within`. See [The search tab](docs/files.md#the-search-tab).
+- Freezes of a library source: right-click a source in the sidebar and choose **Freeze now** to keep its index as it is (names, folders, sizes, dates). **Freezes** in the same menu lists them by date: a date opens that state read-only, as a `library://<source>@<freeze>/` tab browsed like an offline source; **Delete…** removes one. A freeze copies nothing when it is made: rows are shared with the live index, and only a row that changes or leaves the index later is copied, once for every freeze that holds it. See [Freezes](docs/library.md#freezes).
+- The API's `freezes.list`, `freezes.add` (previewed) and `freezes.delete` (previewed), and `list` of a `library://<source>@<freeze>/` path. See [api.md](docs/api.md).
+
+### Changed
+
+- Source stores are now at version 14 (freezes): a store this Keel opened is refused by an older Keel ("newer than this Keel").
 
 ## [0.23.0] - 2026-10-12
 
