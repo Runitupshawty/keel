@@ -123,6 +123,7 @@ fn section_title(s: Section) -> &'static str {
         Section::Favorites => "sidebar.favorites",
         Section::Locations => "sidebar.locations",
         Section::Library => "sidebar.library",
+        Section::Collections => "sidebar.collections",
         Section::Bookmarks => "sidebar.bookmarks",
         Section::Tags => "sidebar.tags",
     })
