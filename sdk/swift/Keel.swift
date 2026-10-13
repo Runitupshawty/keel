@@ -2,7 +2,7 @@
 
 import Foundation
 
-// API schema fingerprint: 66fd4c2146d940c55b30c1c89c278ba7b5f93e80424e74986794f53aeb026bd6
+// API schema fingerprint: 8615c50826d1dfb2aeb3ab61325598ad9b90f3a74f68ad945befc52b6d05a5ce
 
 /// Arbitrary JSON, including heterogeneous unions and exact 64-bit integers.
 public indirect enum JSONValue: Codable, Sendable, Equatable {
@@ -1247,6 +1247,406 @@ public struct FavoritesSetResult: Codable, Sendable {
     }
 }
 
+public struct CollectionsListResultItem: Codable, Sendable {
+    public var `id`: Int64
+    public var `items`: UInt64
+    public var `name`: String
+    public init(`id`: Int64, `items`: UInt64, `name`: String) {
+        self.`id` = `id`
+        self.`items` = `items`
+        self.`name` = `name`
+    }
+}
+
+public struct CollectionsItemsParams: Codable, Sendable {
+    public var `id`: Int64
+    public init(`id`: Int64) {
+        self.`id` = `id`
+    }
+}
+
+public struct CollectionsItemsResultItemSnippet: Codable, Sendable {
+    public var `marks`: [[UInt64]]?
+    public var `text`: String
+    public init(`marks`: [[UInt64]]? = nil, `text`: String) {
+        self.`marks` = `marks`
+        self.`text` = `text`
+    }
+}
+
+public struct CollectionsItemsResultItem: Codable, Sendable {
+    public var `is_dir`: Bool
+    public var `modified`: Int64?
+    public var `name`: String
+    public var `path`: String
+    public var `record`: Int64
+    public var `score`: Double
+    public var `size`: UInt64
+    public var `snippet`: CollectionsItemsResultItemSnippet?
+    public var `source`: String
+    public var `source_label`: String
+    public init(`is_dir`: Bool, `modified`: Int64? = nil, `name`: String, `path`: String, `record`: Int64, `score`: Double, `size`: UInt64, `snippet`: CollectionsItemsResultItemSnippet? = nil, `source`: String, `source_label`: String) {
+        self.`is_dir` = `is_dir`
+        self.`modified` = `modified`
+        self.`name` = `name`
+        self.`path` = `path`
+        self.`record` = `record`
+        self.`score` = `score`
+        self.`size` = `size`
+        self.`snippet` = `snippet`
+        self.`source` = `source`
+        self.`source_label` = `source_label`
+    }
+}
+
+public struct CollectionsCreateParams: Codable, Sendable {
+    public var `name`: String
+    public var `paths`: [String]?
+    public init(`name`: String, `paths`: [String]? = nil) {
+        self.`name` = `name`
+        self.`paths` = `paths`
+    }
+}
+
+public struct CollectionsCreateResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct CollectionsCreateResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct CollectionsCreateResult: Codable, Sendable {
+    public var `changes`: [CollectionsCreateResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [CollectionsCreateResultWarningsItem]
+    public init(`changes`: [CollectionsCreateResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [CollectionsCreateResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct CollectionsRenameParams: Codable, Sendable {
+    public var `id`: Int64
+    public var `name`: String
+    public init(`id`: Int64, `name`: String) {
+        self.`id` = `id`
+        self.`name` = `name`
+    }
+}
+
+public struct CollectionsRenameResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct CollectionsRenameResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct CollectionsRenameResult: Codable, Sendable {
+    public var `changes`: [CollectionsRenameResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [CollectionsRenameResultWarningsItem]
+    public init(`changes`: [CollectionsRenameResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [CollectionsRenameResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct CollectionsDeleteParams: Codable, Sendable {
+    public var `id`: Int64
+    public init(`id`: Int64) {
+        self.`id` = `id`
+    }
+}
+
+public struct CollectionsDeleteResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct CollectionsDeleteResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct CollectionsDeleteResult: Codable, Sendable {
+    public var `changes`: [CollectionsDeleteResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [CollectionsDeleteResultWarningsItem]
+    public init(`changes`: [CollectionsDeleteResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [CollectionsDeleteResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct CollectionsAddParams: Codable, Sendable {
+    public var `id`: Int64
+    public var `paths`: [String]
+    public init(`id`: Int64, `paths`: [String]) {
+        self.`id` = `id`
+        self.`paths` = `paths`
+    }
+}
+
+public struct CollectionsAddResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct CollectionsAddResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct CollectionsAddResult: Codable, Sendable {
+    public var `changes`: [CollectionsAddResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [CollectionsAddResultWarningsItem]
+    public init(`changes`: [CollectionsAddResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [CollectionsAddResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct CollectionsRemoveParams: Codable, Sendable {
+    public var `id`: Int64
+    public var `paths`: [String]
+    public init(`id`: Int64, `paths`: [String]) {
+        self.`id` = `id`
+        self.`paths` = `paths`
+    }
+}
+
+public struct CollectionsRemoveResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct CollectionsRemoveResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct CollectionsRemoveResult: Codable, Sendable {
+    public var `changes`: [CollectionsRemoveResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [CollectionsRemoveResultWarningsItem]
+    public init(`changes`: [CollectionsRemoveResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [CollectionsRemoveResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct CollectionsMoveParams: Codable, Sendable {
+    public var `before`: String?
+    public var `id`: Int64
+    public var `paths`: [String]
+    public init(`before`: String? = nil, `id`: Int64, `paths`: [String]) {
+        self.`before` = `before`
+        self.`id` = `id`
+        self.`paths` = `paths`
+    }
+}
+
+public struct CollectionsMoveResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct CollectionsMoveResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct CollectionsMoveResult: Codable, Sendable {
+    public var `changes`: [CollectionsMoveResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [CollectionsMoveResultWarningsItem]
+    public init(`changes`: [CollectionsMoveResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [CollectionsMoveResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
 public struct RecentsParams: Codable, Sendable {
     public var `limit`: UInt64?
     public init(`limit`: UInt64? = nil) {
@@ -1660,6 +2060,142 @@ public struct LibrarySetCommentResult: Codable, Sendable {
     public var `summary`: String
     public var `warnings`: [LibrarySetCommentResultWarningsItem]
     public init(`changes`: [LibrarySetCommentResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [LibrarySetCommentResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct FreezesListParams: Codable, Sendable {
+    public var `id`: String
+    public init(`id`: String) {
+        self.`id` = `id`
+    }
+}
+
+public struct FreezesListResultItem: Codable, Sendable {
+    public var `at`: Int64
+    public var `bytes`: UInt64
+    public var `files`: UInt64
+    public var `id`: Int64
+    public var `records`: UInt64
+    public init(`at`: Int64, `bytes`: UInt64, `files`: UInt64, `id`: Int64, `records`: UInt64) {
+        self.`at` = `at`
+        self.`bytes` = `bytes`
+        self.`files` = `files`
+        self.`id` = `id`
+        self.`records` = `records`
+    }
+}
+
+public struct FreezesAddParams: Codable, Sendable {
+    public var `id`: String
+    public init(`id`: String) {
+        self.`id` = `id`
+    }
+}
+
+public struct FreezesAddResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct FreezesAddResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct FreezesAddResult: Codable, Sendable {
+    public var `changes`: [FreezesAddResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [FreezesAddResultWarningsItem]
+    public init(`changes`: [FreezesAddResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [FreezesAddResultWarningsItem]) {
+        self.`changes` = `changes`
+        self.`expires_at` = `expires_at`
+        self.`input_hash` = `input_hash`
+        self.`operation` = `operation`
+        self.`plan_id` = `plan_id`
+        self.`summary` = `summary`
+        self.`warnings` = `warnings`
+    }
+}
+
+public struct FreezesDeleteParams: Codable, Sendable {
+    public var `freeze`: Int64
+    public var `id`: String
+    public init(`freeze`: Int64, `id`: String) {
+        self.`freeze` = `freeze`
+        self.`id` = `id`
+    }
+}
+
+public struct FreezesDeleteResultChangesItem: Codable, Sendable {
+    public var `action`: String
+    public var `bytes`: UInt64?
+    public var `detail`: String?
+    public var `files`: UInt64?
+    public var `path`: String?
+    public var `to`: String?
+    public init(`action`: String, `bytes`: UInt64? = nil, `detail`: String? = nil, `files`: UInt64? = nil, `path`: String? = nil, `to`: String? = nil) {
+        self.`action` = `action`
+        self.`bytes` = `bytes`
+        self.`detail` = `detail`
+        self.`files` = `files`
+        self.`path` = `path`
+        self.`to` = `to`
+    }
+}
+
+public struct FreezesDeleteResultWarningsItem: Codable, Sendable {
+    public var `files`: UInt64?
+    public var `kind`: String
+    public var `message`: String
+    public var `path`: String?
+    public init(`files`: UInt64? = nil, `kind`: String, `message`: String, `path`: String? = nil) {
+        self.`files` = `files`
+        self.`kind` = `kind`
+        self.`message` = `message`
+        self.`path` = `path`
+    }
+}
+
+public struct FreezesDeleteResult: Codable, Sendable {
+    public var `changes`: [FreezesDeleteResultChangesItem]
+    public var `expires_at`: Int64
+    public var `input_hash`: String
+    public var `operation`: String
+    public var `plan_id`: String
+    public var `summary`: String
+    public var `warnings`: [FreezesDeleteResultWarningsItem]
+    public init(`changes`: [FreezesDeleteResultChangesItem], `expires_at`: Int64, `input_hash`: String, `operation`: String, `plan_id`: String, `summary`: String, `warnings`: [FreezesDeleteResultWarningsItem]) {
         self.`changes` = `changes`
         self.`expires_at` = `expires_at`
         self.`input_hash` = `input_hash`
@@ -3905,7 +4441,7 @@ extension KeelClient {
     public func sources_index(_ params: SourcesIndexParams) async throws -> SourcesIndexResult {
         try await call("sources.index", params: params, result: SourcesIndexResult.self)
     }
-    /// Lists a folder: a library path (library://<source>/<rel>, from the index, works offline) or any path Keel can reach.
+    /// Lists a folder: a library path (library://<source>/<rel>, from the index, works offline; library://<source>@<freeze>/<rel> as a freeze holds it) or any path Keel can reach.
     public func list(_ params: ListParams) async throws -> ListResult {
         try await call("list", params: params, result: ListResult.self)
     }
@@ -3985,6 +4521,38 @@ extension KeelClient {
     public func favorites_set(_ params: FavoritesSetParams) async throws -> FavoritesSetResult {
         try await call("favorites.set", params: params, result: FavoritesSetResult.self)
     }
+    /// Collections (hand-ordered lists of files and folders): id, name and item count.
+    public func collections_list(_ params: [String: JSONValue]) async throws -> [CollectionsListResultItem] {
+        try await call("collections.list", params: params, result: [CollectionsListResultItem].self)
+    }
+    /// A collection's files and folders, in its order.
+    public func collections_items(_ params: CollectionsItemsParams) async throws -> [CollectionsItemsResultItem] {
+        try await call("collections.items", params: params, result: [CollectionsItemsResultItem].self)
+    }
+    /// Creates a collection, with indexed paths in it (in the order given) when given.
+    public func collections_create(_ params: CollectionsCreateParams) async throws -> CollectionsCreateResult {
+        try await call("collections.create", params: params, result: CollectionsCreateResult.self)
+    }
+    /// Renames a collection.
+    public func collections_rename(_ params: CollectionsRenameParams) async throws -> CollectionsRenameResult {
+        try await call("collections.rename", params: params, result: CollectionsRenameResult.self)
+    }
+    /// Deletes a collection (never its files).
+    public func collections_delete(_ params: CollectionsDeleteParams) async throws -> CollectionsDeleteResult {
+        try await call("collections.delete", params: params, result: CollectionsDeleteResult.self)
+    }
+    /// Adds indexed paths at the end of a collection (ones already in it stay where they are).
+    public func collections_add(_ params: CollectionsAddParams) async throws -> CollectionsAddResult {
+        try await call("collections.add", params: params, result: CollectionsAddResult.self)
+    }
+    /// Takes paths out of a collection (never touching the files).
+    public func collections_remove(_ params: CollectionsRemoveParams) async throws -> CollectionsRemoveResult {
+        try await call("collections.remove", params: params, result: CollectionsRemoveResult.self)
+    }
+    /// Reorders a collection: moves its items `paths` (in their collection order) before the item `before`, or to the end.
+    public func collections_move(_ params: CollectionsMoveParams) async throws -> CollectionsMoveResult {
+        try await call("collections.move", params: params, result: CollectionsMoveResult.self)
+    }
     /// Recently opened files, newest first.
     public func recents(_ params: RecentsParams) async throws -> [RecentsResultItem] {
         try await call("recents", params: params, result: [RecentsResultItem].self)
@@ -4032,6 +4600,18 @@ extension KeelClient {
     /// Sets the Get Info comment on an indexed file or folder ("" clears it). Changes only the library.
     public func library_set_comment(_ params: LibrarySetCommentParams) async throws -> LibrarySetCommentResult {
         try await call("library.set_comment", params: params, result: LibrarySetCommentResult.self)
+    }
+    /// A source's freezes (dated states of its index, browsed as library://<source>@<freeze>/), newest first.
+    public func freezes_list(_ params: FreezesListParams) async throws -> [FreezesListResultItem] {
+        try await call("freezes.list", params: params, result: [FreezesListResultItem].self)
+    }
+    /// Freezes a source's index as it is now (refused while it is being walked); only rows that change later are copied.
+    public func freezes_add(_ params: FreezesAddParams) async throws -> FreezesAddResult {
+        try await call("freezes.add", params: params, result: FreezesAddResult.self)
+    }
+    /// Deletes a freeze of a source (the files and the live index are not touched).
+    public func freezes_delete(_ params: FreezesDeleteParams) async throws -> FreezesDeleteResult {
+        try await call("freezes.delete", params: params, result: FreezesDeleteResult.self)
     }
     /// Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.
     public func library_stats(_ params: [String: JSONValue]) async throws -> LibraryStatsResult {
