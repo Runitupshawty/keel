@@ -1104,7 +1104,7 @@ impl AppState {
             Err(e) => {
                 let text = crate::search_tab::banner(&format!("{e:#}"));
                 // Only "not running" is global; a bad query stays on its tab.
-                if text == crate::search_tab::NOT_RUNNING && !remote {
+                if text == crate::i18n::tr("search_tab.not_running") && !remote {
                     self.search_reason = Some(text.clone());
                 }
                 tab.error = Some(text);

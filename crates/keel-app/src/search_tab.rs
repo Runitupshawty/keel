@@ -24,18 +24,19 @@ pub const PAGE: u32 = 1_000;
 /// The Most results setting's range.
 pub const MAX_RESULTS: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;
 
+#[cfg(test)]
 pub const NOT_RUNNING: &str =
     "Everything is not running. Start Everything.exe (voidtools) to search.";
 
 /// The query box's hint for the backend that answers it (the System backend's `name`):
 /// Everything takes its own syntax; Keel's index takes names, wildcards, quotes,
 /// `folder:`, `in:` and `regex:` (not `ext:` or `dm:`); the library its own terms.
-pub fn hint(backend: Option<&str>, library: bool) -> &'static str {
+pub fn hint(backend: Option<&str>, library: bool) -> String {
     match backend {
-        _ if library => "Names and text: ext:pdf kind:image tag:x size:>1mb dm:2026 content:",
-        Some("Everything") => "Everything syntax: ext:pdf dm:today \"exact phrase\" folder: regex:",
-        Some("Keel index") => "Names: report *.pdf \"exact phrase\" folder: in:<folder> regex:",
-        _ => "Search file names",
+        _ if library => crate::i18n::tr("search_tab.hint_library").to_owned(),
+        Some("Everything") => crate::i18n::tr("search_tab.hint_everything").to_owned(),
+        Some("Keel index") => crate::i18n::tr("search_tab.hint_keel_index").to_owned(),
+        _ => crate::i18n::tr("search_tab.hint_default").to_owned(),
     }
 }
 
@@ -94,13 +95,13 @@ impl Toggle {
         Toggle::Regex,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Toggle::Case => "Match case",
-            Toggle::WholeWord => "Match whole words",
-            Toggle::Path => "Match path",
-            Toggle::Diacritics => "Match diacritics",
-            Toggle::Regex => "Regular expression",
+            Toggle::Case => crate::i18n::tr("bookmarks.match_case").to_owned(),
+            Toggle::WholeWord => crate::i18n::tr("search_tab.match_whole_words").to_owned(),
+            Toggle::Path => crate::i18n::tr("search_tab.match_path").to_owned(),
+            Toggle::Diacritics => crate::i18n::tr("search_tab.match_diacritics").to_owned(),
+            Toggle::Regex => crate::i18n::tr("bookmarks.regex").to_owned(),
         }
     }
 
@@ -216,13 +217,10 @@ pub fn settings_id() -> egui::Id {
     egui::Id::new("keel-search-settings")
 }
 
-/// A file list tab's query box (`keel_search::filelist::FileListSearcher`).
-const LIST_HINT: &str = "Names in the list: words, *.ext, folder:, in:, regex:";
-
 /// What the user is told when a query fails.
 pub fn banner(err: &str) -> String {
     if err.contains("Everything is not running") {
-        NOT_RUNNING.into()
+        crate::i18n::tr("search_tab.not_running").to_owned()
     } else {
         err.into()
     }
@@ -297,19 +295,27 @@ fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Ac
     if more {
         item(
             ui,
-            egui::Button::new("Load more results"),
+            egui::Button::new(crate::i18n::tr("search_tab.load_more_results")),
             Action::SearchMore,
         );
     }
-    let open =
-        egui::Button::new("Open path").shortcut_text(crate::keys::shortcut_label("Ctrl+Enter"));
+    let open = egui::Button::new(crate::i18n::tr("search_tab.open_path"))
+        .shortcut_text(crate::keys::shortcut_label("Ctrl+Enter"));
     item(ui, open, Action::OpenLocation);
-    item(ui, egui::Button::new("Copy name"), Action::CopyName);
-    item(ui, egui::Button::new("Copy full path"), Action::CopyPath);
+    item(
+        ui,
+        egui::Button::new(crate::i18n::tr("menu.copy_name")),
+        Action::CopyName,
+    );
+    item(
+        ui,
+        egui::Button::new(crate::i18n::tr("search_tab.copy_full_path")),
+        Action::CopyPath,
+    );
     ui.separator();
     item(
         ui,
-        egui::Button::new("Search settings\u{2026}"),
+        egui::Button::new(crate::i18n::tr("search_tab.search_settings")),
         Action::Settings,
     );
 }
@@ -368,7 +374,7 @@ pub fn bar(
     let shared = crate::bookmarks::published(ui.ctx()); // Task 76
     ui.horizontal(|ui| {
         if let Some((label, _)) = &list {
-            ui.label(format!("File list: {label}"));
+            ui.label(crate::i18n::tr("search_tab.file_list").replace("{label}", label));
         }
         // Task 29: the backend (the platform's, or the library index).
         let name = platform;
@@ -379,7 +385,7 @@ pub fn bar(
             let combo = egui::ComboBox::from_id_salt("search-backend")
                 .width(110.0)
                 .selected_text(if tab.library_search {
-                    "Library"
+                    crate::i18n::tr("tab.library")
                 } else {
                     platform
                 })
@@ -387,14 +393,19 @@ pub fn bar(
                     ui.selectable_value(&mut tab.library_search, false, platform);
                     // The library keeps to local folders only (`LibSearch`).
                     ui.add_enabled_ui(library && !remote_scope, |ui| {
-                        ui.selectable_value(&mut tab.library_search, true, "Library")
-                            .on_disabled_hover_text(match remote_scope {
-                                true => "The library cannot keep to a folder on a remote host",
-                                false => "The library is off or still opening",
-                            });
+                        ui.selectable_value(
+                            &mut tab.library_search,
+                            true,
+                            crate::i18n::tr("tab.library"),
+                        )
+                        .on_disabled_hover_text(match remote_scope {
+                            true => crate::i18n::tr("search_tab.library_remote_tip"),
+                            false => crate::i18n::tr("search_tab.library_off_tip"),
+                        });
                     });
                 });
-            let _ = crate::a11y::Named::named(combo.response, "Search with");
+            let _ =
+                crate::a11y::Named::named(combo.response, crate::i18n::tr("bookmarks.search_with"));
         }
         if tab.library_search != before {
             // Run the query again on the other backend now.
@@ -459,17 +470,18 @@ pub fn bar(
             });
         }
         if let Some(name) = &scoped {
-            ui.weak(format!("in {name}"));
+            ui.weak(crate::i18n::tr("search_tab.in_scope").replace("{name}", name));
         }
+        let hint_text = if list.is_some() {
+            crate::i18n::tr("search_tab.list_hint").to_owned()
+        } else {
+            hint(name, tab.library_search)
+        };
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
                 .desired_width((ui.available_width() - 520.0).max(120.0))
-                .hint_text(if list.is_some() {
-                    LIST_HINT
-                } else {
-                    hint(name, tab.library_search)
-                }),
+                .hint_text(&hint_text),
         );
         // A query Everything's search language rejects shows its problem beside the box. Only for
         // the Everything backend: Keel's index, locate and the library read their own terms
@@ -487,7 +499,7 @@ pub fn bar(
             });
             if let Some(p) = problem {
                 ui.colored_label(ui.visuals().warn_fg_color, &p)
-                    .on_hover_text("Keel's search language did not accept this query");
+                    .on_hover_text(crate::i18n::tr("search_tab.query_rejected"));
             }
         }
         // A pane's search goes back to its folder on Esc, on ×, or when the box is emptied.
@@ -495,7 +507,7 @@ pub fn bar(
             && ((r.changed() && query.is_empty())
                 || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)))
                 || (ui.small_button("×"))
-                    .tip("Back to the folder (Esc)")
+                    .tip(crate::i18n::tr("search_tab.back_to_folder"))
                     .clicked())
         {
             out.push(Action::CloseSearch);
@@ -580,21 +592,23 @@ pub fn bar(
                 let keys =
                     crate::keymap::shortcut(ui.ctx(), &Action::SearchToggle(t), t.shortcut());
                 let tip = match keys.is_empty() {
-                    true => t.label().to_owned(),
+                    true => t.label(),
                     false => format!("{} ({keys})", t.label()),
                 };
                 let r = ui
                     .selectable_label(t.get(*toggles), text)
                     .on_hover_text(&tip)
-                    .on_disabled_hover_text("The library search has its own terms");
-                if crate::a11y::Named::named(r, t.label()).clicked() {
+                    .on_disabled_hover_text(crate::i18n::tr("search_tab.library_own_terms"));
+                if crate::a11y::Named::named(r, &t.label()).clicked() {
                     out.push(Action::SearchToggle(t));
                 }
             }
         });
         let capped = *limit > 0 && count as u32 >= *limit;
         let can_more = capped && *more && !tab.library_search;
-        ui.menu_button("Search", |ui| search_menu(ui, *toggles, can_more, out));
+        ui.menu_button(crate::i18n::tr("tab.search"), |ui| {
+            search_menu(ui, *toggles, can_more, out)
+        });
         // Task 76: the filter (Everything, Audio, …, the profile's own) and bookmarks.
         let before = tab.search_filter.clone();
         let names = match shared.filters.is_empty() {
@@ -613,11 +627,14 @@ pub fn bar(
                     ui.selectable_value(&mut tab.search_filter, value, name.as_str());
                 }
                 ui.separator();
-                if ui.button("Edit filters…").clicked() {
+                if ui
+                    .button(crate::i18n::tr("bookmarks.edit_filters"))
+                    .clicked()
+                {
                     out.push(Action::Find(FindCmd::EditFilters));
                 }
             });
-        let _ = crate::a11y::Named::named(combo.response, "Filter");
+        let _ = crate::a11y::Named::named(combo.response, crate::i18n::tr("pane.filter"));
         if tab.search_filter != before {
             *limit = 0;
             *due = Some(Instant::now());
@@ -628,19 +645,23 @@ pub fn bar(
             crate::anim::spinner(ui);
         }
         ui.weak(match (count, &list) {
-            (n, Some((_, total))) => format!("{n} of {total}"),
-            (1, None) => "1 result".to_owned(),
-            (n, None) if capped => format!("first {n} results"),
-            (n, None) => format!("{n} results"),
+            (n, Some((_, total))) => crate::i18n::tr("search_tab.of_total")
+                .replace("{n}", &n.to_string())
+                .replace("{total}", &total.to_string()),
+            (1, None) => crate::i18n::tr("search_tab.one_result").to_owned(),
+            (n, None) if capped => {
+                crate::i18n::tr("search_tab.first_n_results").replace("{n}", &n.to_string())
+            }
+            (n, None) => crate::i18n::tr("search_tab.n_results").replace("{n}", &n.to_string()),
         });
         if can_more
             && ui
-                .small_button("Load more")
-                .on_hover_text(format!(
-                    "Up to {} results (the Most results setting is {})",
-                    settings.more(*limit),
-                    settings.max()
-                ))
+                .small_button(crate::i18n::tr("search_tab.load_more"))
+                .on_hover_text(
+                    crate::i18n::tr("search_tab.load_more_tip")
+                        .replace("{n}", &settings.more(*limit).to_string())
+                        .replace("{max}", &settings.max().to_string()),
+                )
                 .clicked()
         {
             out.push(Action::SearchMore);
@@ -666,45 +687,48 @@ pub fn bar(
 /// filename wildcards, Most results, the toggles new searches start with, and quoted
 /// copied paths.
 pub fn settings_rows(ui: &mut egui::Ui, s: &mut SearchSettings, quote_paths: &mut bool) {
-    ui.label("Search");
+    ui.label(crate::i18n::tr("tab.search"));
     ui.horizontal(|ui| {
-        ui.checkbox(&mut s.as_you_type, "Search as you type");
+        ui.checkbox(
+            &mut s.as_you_type,
+            crate::i18n::tr("search_tab.search_as_you_type"),
+        );
         ui.add_enabled(
             s.as_you_type,
             egui::DragValue::new(&mut s.delay_ms)
                 .range(0..=2_000)
                 .suffix(" ms"),
         )
-        .on_hover_text("How long typing pauses before the search runs");
+        .on_hover_text(crate::i18n::tr("search_tab.delay_tip"));
     });
     ui.end_row();
     ui.label("");
     ui.checkbox(
         &mut s.whole_filename_wildcards,
-        "Match whole filename when using wildcards",
+        crate::i18n::tr("search_tab.whole_filename_wildcards"),
     )
-    .on_hover_text("*.pdf matches the whole name; off, a wildcard term matches anywhere in it");
+    .on_hover_text(crate::i18n::tr("search_tab.whole_filename_wildcards_tip"));
     ui.end_row();
-    let label = ui.label("Most results");
+    let label = ui.label(crate::i18n::tr("search_tab.most_results"));
     let r = ui
         .add(
             egui::DragValue::new(&mut s.max_results)
                 .range(MAX_RESULTS)
                 .speed(100.0),
         )
-        .on_hover_text("Load more stops here (a search shows the first 1,000 at once)");
+        .on_hover_text(crate::i18n::tr("search_tab.most_results_tip"));
     let _ = r.labelled_by(label.id);
     ui.end_row();
-    ui.label("New searches");
+    ui.label(crate::i18n::tr("search_tab.new_searches"));
     ui.horizontal_wrapped(|ui| {
         for t in Toggle::ALL {
             ui.checkbox(t.of(&mut s.toggles), t.label());
         }
     });
     ui.end_row();
-    ui.label("Copy path");
-    ui.checkbox(quote_paths, "In double quotes")
-        .on_hover_text("Copy path puts each path in \"double quotes\"");
+    ui.label(crate::i18n::tr("menu.copy_path"));
+    ui.checkbox(quote_paths, crate::i18n::tr("search_tab.in_double_quotes"))
+        .on_hover_text(crate::i18n::tr("search_tab.in_double_quotes_tip"));
     ui.end_row();
 }
 
