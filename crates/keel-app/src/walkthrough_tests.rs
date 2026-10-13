@@ -1255,6 +1255,52 @@ fn open_with_and_properties() {
     h.run_steps(2);
 }
 
+/// A folder's context menu adds it to the sidebar's Favorites, where a click opens it and
+/// a right-click removes it; adding it again changes nothing.
+#[test]
+fn add_folders_to_the_sidebar_from_their_menu() {
+    use crate::sidebar_prefs::{Favorite, SidebarCmd};
+    let root = demo();
+    let docs = root.join("Documents");
+    let mut h = app(&docs, &root.join("Pictures"));
+    let projects = VPath::local(docs.join("Projects"));
+    let pinned = |s: &AppState| {
+        (s.settings.sidebar.favorites.iter())
+            .filter(|f| matches!(f, Favorite::Folder { folder, .. } if *folder == projects))
+            .count()
+    };
+    assert_eq!(pinned(s(&h)), 0);
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Add to Sidebar");
+    assert_eq!(pinned(s(&h)), 1);
+    assert_eq!(
+        s(&h).settings.sidebar.favorites.last().map(Favorite::label),
+        Some("Projects".into()),
+        "added at the end"
+    );
+    h.run_steps(2);
+
+    // The sidebar's row (left of the panes) opens the folder.
+    let in_sidebar = |h: &H| {
+        h.query_all_by_label("Projects")
+            .map(|n| center_of(&n))
+            .find(|p| p.x < 150.0)
+            .expect("sidebar row")
+    };
+    let at = in_sidebar(&h);
+    click_at(&mut h, at, NONE, PointerButton::Primary);
+    assert!(wait(&mut h, 20, &|s| dir_is(s, 0, &docs.join("Projects"))));
+
+    // Adding it again changes nothing.
+    sm(&mut h).run(0, Action::Sidebar(SidebarCmd::PinFolder(projects.clone())));
+    assert_eq!(pinned(s(&h)), 1);
+
+    let at = in_sidebar(&h);
+    click_at(&mut h, at, NONE, PointerButton::Secondary);
+    click(&mut h, "Remove from Sidebar");
+    assert_eq!(pinned(s(&h)), 0);
+}
+
 // ---------------------------------------------------------------------------------------
 // Archives
 
