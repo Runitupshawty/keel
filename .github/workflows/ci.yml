@@ -237,8 +237,9 @@ jobs:
       - uses: actions/dependency-review-action@v4
 
   # The single required status check for branch protection.
+  # `docker` stays out until its first runs prove it; it reports on its own.
   check:
-    needs: [build, wasm, mount, deny, docker]
+    needs: [build, wasm, mount, deny]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
