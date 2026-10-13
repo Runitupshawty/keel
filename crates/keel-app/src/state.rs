@@ -2244,6 +2244,7 @@ impl AppState {
             }
             Action::DiskUsage(cmd) => self.disk_usage.command(cmd, &self.sidebar.drives),
             Action::SwitchProfile(name) => self.profiles.switch(&name),
+            Action::Session(cmd) => self.session_cmd(cmd),
             Action::RenameTo { from, to } => {
                 if let Some(why) = dialogs::invalid_name(&to) {
                     return self.toasts.error(why);

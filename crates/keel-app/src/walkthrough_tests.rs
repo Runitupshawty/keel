@@ -2044,6 +2044,55 @@ fn profile_switch() {
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
+/// The palette's named sessions: "Save session as…" names the open tabs, "Open session:"
+/// brings them back after the tabs changed, "Delete session:" asks first.
+#[test]
+fn named_sessions() {
+    let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+    let cfg = std::env::temp_dir().join(format!("keel-walk-{}-sessions", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cfg);
+    std::env::set_var("KEEL_CONFIG_DIR", &cfg);
+    crate::profiles::set_current("default");
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "save session");
+    key(&mut h, NONE, Key::Enter);
+    assert!(has(&h, "Save the open tabs and views as session"));
+    type_text(&mut h, "photos");
+    shot(&mut h, "session-save");
+    click(&mut h, "Save");
+    let file = cfg.join("sessions").join("photos.json");
+    assert!(wait(&mut h, 10, &|s| s.palette.sessions == ["photos"]));
+    assert!(file.is_file());
+
+    // Elsewhere, then back.
+    key(&mut h, CMD, Key::T);
+    assert_eq!(s(&h).panes[0].tabs.len(), 2);
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "open session");
+    assert!(has(&h, "Open session: photos"));
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 10, &|s| s.panes[0].tabs.len() == 1));
+    assert!(dir_is(s(&h), 0, &root.join("Documents")));
+    assert!(dir_is(s(&h), 1, &root.join("Pictures")));
+
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "delete session");
+    key(&mut h, NONE, Key::Enter);
+    assert!(has(
+        &h,
+        "Delete the session \"photos\"? Its file goes to the trash."
+    ));
+    // Cancel: the flows never use the system trash (profiles' tests delete one).
+    click(&mut h, "Cancel");
+    h.run_steps(3);
+    assert!(s(&h).dialog.is_none() && file.is_file());
+    drop(h);
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
 /// A small VS Code icon theme package: coloured circles for files, folders and .md.
 fn icon_package() -> Vec<u8> {
     use std::io::Write;

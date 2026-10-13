@@ -158,7 +158,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Cloud integration | yes | [AT] | **Has** |
 | Custom folder and file icons | "change folder and file icons" | [AT] | **Part**: a color and an emoji or icon-theme icon per folder in a library source; file icons come from the icon theme |
 | Filter by typing | yes | [AT] | **Has** |
-| Multiple profiles and sessions | yes | [AT] | **Part**: profiles, each with a restored session; no named sessions within a profile |
+| Multiple profiles and sessions | yes | [AT] | **Has** (unreleased): profiles, each with a restored session and named sessions ([files.md](files.md#profiles)) |
 | Rich color themes | yes | [AT] | **Has**: six built-in themes, your own TOML files and VS Code color themes from the Marketplace ([files.md](files.md#color-themes)) |
 | Smooth animations | yes | [AT] | **Has**, with Reduce motion |
 | Searchable context menus | yes | [AT] | **Has**: every context action is in the searchable command palette, and on Windows the native shell menu (0.19.0), whose commands the palette also searches as `Shell: …` ([files.md](files.md#windows-shell-menu)) |

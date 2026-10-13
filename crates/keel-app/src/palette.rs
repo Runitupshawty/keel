@@ -3,6 +3,7 @@
 
 use crate::keymap::{Bindings, Pal};
 use crate::keys::Action;
+use crate::profiles::SessionCmd;
 use egui::{Id, Key, Modal, Modifiers};
 use keel_search::Fuzzy;
 
@@ -23,6 +24,8 @@ pub struct Palette {
     pub cursor: usize,
     /// Other profiles: "Switch profile: <name>" entries (kept by `AppState::profiles_tick`).
     pub profiles: Vec<String>,
+    /// The profile's named sessions: "Open session: <name>", "Delete session: <name>".
+    pub sessions: Vec<String>,
     /// "Undo <what>" for the newest file operation, set before `show`.
     pub undo: Option<String>,
     /// The active tab is a search tab: its toggles and Load more are offered (set before
@@ -96,6 +99,26 @@ impl Palette {
             shortcut: String::new(),
             action: Action::SwitchProfile(name.clone()),
         }));
+        let tr = crate::i18n::tr;
+        items.push(Item {
+            label: tr("palette.save_session").to_owned(),
+            shortcut: String::new(),
+            action: Action::Session(SessionCmd::SaveAs),
+        });
+        for name in &self.sessions {
+            items.extend([
+                Item {
+                    label: tr("palette.open_session").replace("{name}", name),
+                    shortcut: String::new(),
+                    action: Action::Session(SessionCmd::Open(name.clone())),
+                },
+                Item {
+                    label: tr("palette.delete_session").replace("{name}", name),
+                    shortcut: String::new(),
+                    action: Action::Session(SessionCmd::Delete(name.clone())),
+                },
+            ]);
+        }
         self.items = items;
         self.text.clear();
         self.open = true;
@@ -292,6 +315,28 @@ mod tests {
             Action::SwitchProfile("work".into())
         );
         assert_eq!(p.items[p.shown[0]].label, "Switch profile: work");
+    }
+
+    #[test]
+    fn named_sessions_are_listed() {
+        let mut p = Palette {
+            sessions: vec!["photos".into()],
+            ..Palette::default()
+        };
+        p.show(false, &Bindings::default());
+        for (text, action) in [
+            ("save session", SessionCmd::SaveAs),
+            ("open session", SessionCmd::Open("photos".into())),
+            ("delete session", SessionCmd::Delete("photos".into())),
+        ] {
+            p.text = text.into();
+            p.filter();
+            assert_eq!(
+                p.items[p.shown[0]].action,
+                Action::Session(action),
+                "{text}"
+            );
+        }
     }
 
     #[test]

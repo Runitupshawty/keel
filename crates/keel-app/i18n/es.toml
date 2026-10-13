@@ -8,6 +8,9 @@ name = "Español"
 hint = "Escribe un comando"
 run_cleanup = "Ejecutar limpieza: {title}"
 switch_profile = "Cambiar al perfil: {name}"
+save_session = "Guardar la sesión como…"
+open_session = "Abrir la sesión: {name}"
+delete_session = "Eliminar la sesión: {name}"
 
 [menu]
 omit = "Omitir resultados"

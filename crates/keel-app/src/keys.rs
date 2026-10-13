@@ -219,6 +219,8 @@ pub enum Action {
     CompressStart(Box<crate::compress_ui::CompressStart>),
     /// Palette "Switch profile: <name>".
     SwitchProfile(String),
+    /// Palette: save, open or delete a named session of the profile.
+    Session(crate::profiles::SessionCmd),
     /// Archive targets: extract next to the archive.
     ExtractHere,
     /// Archive targets: extract into a new `<name>/` folder next to each archive.

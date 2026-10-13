@@ -10,6 +10,9 @@ name = "English"
 hint = "Type a command"
 run_cleanup = "Run cleanup: {title}"
 switch_profile = "Switch profile: {name}"
+save_session = "Save session as…"
+open_session = "Open session: {name}"
+delete_session = "Delete session: {name}"
 
 # The file list's context menu.
 [menu]
