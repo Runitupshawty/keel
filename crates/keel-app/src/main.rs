@@ -58,6 +58,7 @@ mod permanent_delete; // Task 85: Delete permanently
 mod platform;
 mod preview_panel;
 mod profiles;
+mod query_check;
 mod quicklook; // Phase 14 Task 67
 mod recover_cli; // Phase 17 Task 85: `keel recover`
 mod remotes;

@@ -471,6 +471,25 @@ pub fn bar(
                     hint(name, tab.library_search)
                 }),
         );
+        // A query Everything's search language rejects shows its problem beside the box. Only for
+        // the Everything backend: Keel's index, locate and the library read their own terms
+        // (`in:` is a source there) until keel-query is wired into them.
+        let everything_syntax = name == Some("Everything") && !tab.library_search && !toggles.regex;
+        if list.is_none() && everything_syntax && !query.is_empty() {
+            let cache_id = id.with("query_problem");
+            let problem = ui.ctx().data_mut(|d| {
+                let cache = d.get_temp_mut_or_default::<(String, Option<String>)>(cache_id);
+                if cache.0 != *query {
+                    cache.0 = query.clone();
+                    cache.1 = crate::query_check::problem(query);
+                }
+                cache.1.clone()
+            });
+            if let Some(p) = problem {
+                ui.colored_label(ui.visuals().warn_fg_color, &p)
+                    .on_hover_text("Keel's search language did not accept this query");
+            }
+        }
         // A pane's search goes back to its folder on Esc, on ×, or when the box is emptied.
         if scoped.is_some()
             && ((r.changed() && query.is_empty())
