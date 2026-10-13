@@ -718,6 +718,26 @@ pub fn context_menu(
         if search {
             item(ui, "Open location", "Ctrl+Enter", Action::OpenLocation);
         }
+        let collections: Option<Vec<keel_core::Collection>> =
+            ui.ctx().data(|d| d.get_temp(collections_id())).flatten();
+        if let Some(collections) = collections {
+            use crate::library::LibCmd;
+            ui.menu_button("Add to collection", |ui| {
+                for c in &collections {
+                    let add = Action::Library(LibCmd::AddToCollection(c.id));
+                    item(ui, &c.name, "", add);
+                }
+                if !collections.is_empty() {
+                    ui.separator();
+                }
+                let new = Action::Library(LibCmd::NewCollection { add: true });
+                item(ui, "New collection…", "", new);
+            });
+            if tab.collection().is_some() {
+                let remove = Action::Library(LibCmd::RemoveFromCollection);
+                item(ui, "Remove from collection", "", remove);
+            }
+        }
         if let Some(e) = entry.filter(|e| crate::jobs::is_archive_file(e)) {
             ui.separator();
             item(ui, "Extract here", "", Action::ExtractHere);
@@ -996,8 +1016,32 @@ impl DragPayload {
     }
 }
 
+/// Where the context menu finds the library's collections (None: the library is closed).
+pub fn collections_id() -> egui::Id {
+    egui::Id::new("keel-collections")
+}
+
+/// Dropping `drag` in pane `pane` showing a collection, before `before` (None: the end):
+/// the collection's own items reorder. None for any other drop.
+pub fn collection_drop(
+    drag: &DragPayload,
+    pane: usize,
+    tab: &Tab,
+    before: Option<&VPath>,
+) -> Option<Action> {
+    let id = tab.collection()?;
+    (drag.pane == pane && drag.dir == tab.dir).then(|| {
+        Action::Library(crate::library::LibCmd::MoveInCollection {
+            id,
+            paths: drag.paths.clone(),
+            before: before.cloned(),
+        })
+    })
+}
+
 /// Shared row/tile drag handling: a drag starts with the row's selection (selecting the
-/// row first if needed); folders accept drops.
+/// row first if needed); folders accept drops. In a collection's tab every row accepts
+/// its own items: they move before it.
 pub fn drag_and_drop(
     r: &egui::Response,
     pane: usize,
@@ -1015,6 +1059,24 @@ pub fn drag_and_drop(
             dir: tab.dir.clone(),
             paths,
         });
+    }
+    if tab.collection().is_some() {
+        if let Some(p) = r.dnd_hover_payload::<DragPayload>() {
+            if p.pane == pane && !p.paths.contains(&entry.path) {
+                // A line above the row: where the items go.
+                let stroke = r.ctx.style().visuals.selection.stroke;
+                let y = r.rect.top();
+                r.ctx
+                    .layer_painter(egui::LayerId::new(egui::Order::Foreground, r.id))
+                    .hline(r.rect.x_range(), y, stroke);
+            }
+        }
+        if let Some(p) = r.dnd_release_payload::<DragPayload>() {
+            if !p.paths.contains(&entry.path) {
+                out.extend(collection_drop(&p, pane, tab, Some(&entry.path)));
+            }
+        }
+        return;
     }
     let archive = crate::jobs::is_addable_archive(entry);
     if entry.kind != keel_vfs::Kind::Dir && !archive {

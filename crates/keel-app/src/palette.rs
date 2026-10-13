@@ -3,6 +3,7 @@
 
 use crate::keymap::{Bindings, Pal};
 use crate::keys::Action;
+use crate::library::LibCmd;
 use egui::{Id, Key, Modal, Modifiers};
 use keel_search::Fuzzy;
 
@@ -23,6 +24,9 @@ pub struct Palette {
     pub cursor: usize,
     /// Other profiles: "Switch profile: <name>" entries (kept by `AppState::profiles_tick`).
     pub profiles: Vec<String>,
+    /// The library's collections (open, add to, rename, delete), set before `show`; None
+    /// while the library is closed.
+    pub collections: Option<Vec<keel_core::Collection>>,
     /// "Undo <what>" for the newest file operation, set before `show`.
     pub undo: Option<String>,
     /// The active tab is a search tab: its toggles and Load more are offered (set before
@@ -73,10 +77,45 @@ fn entries(selection: bool, search: bool, keys: &Bindings) -> [Vec<Item>; 3] {
     [context, searching, global]
 }
 
+/// Collections: open, rename and delete each; with a selection, add it to each or to a
+/// new one.
+fn collection_items(collections: &[keel_core::Collection], selection: bool) -> Vec<Item> {
+    let item = |label: String, cmd: LibCmd| Item {
+        label,
+        shortcut: String::new(),
+        action: Action::Library(cmd),
+    };
+    let mut items = Vec::new();
+    if selection {
+        for c in collections {
+            let label = format!("Add to collection: {}", c.name);
+            items.push(item(label, LibCmd::AddToCollection(c.id)));
+        }
+        let new = LibCmd::NewCollection { add: true };
+        items.push(item("Add to a new collection…".into(), new));
+    }
+    for c in collections {
+        let open = LibCmd::Query(crate::library::collection_query(c));
+        items.push(item(format!("Collection: {}", c.name), open));
+        let rename = LibCmd::RenameCollection(c.id);
+        items.push(item(format!("Rename collection: {}…", c.name), rename));
+        let delete = LibCmd::DeleteCollection(c.id);
+        items.push(item(format!("Delete collection: {}…", c.name), delete));
+    }
+    items.push(item(
+        "New collection…".into(),
+        LibCmd::NewCollection { add: false },
+    ));
+    items
+}
+
 impl Palette {
     /// Opens with the global actions, plus the context ones when something is selected.
     pub fn show(&mut self, selection: bool, keys: &Bindings) {
         let [mut items, searching, global] = entries(selection, self.search, keys);
+        if let Some(collections) = &self.collections {
+            items.extend(collection_items(collections, selection));
+        }
         items.extend(self.undo.clone().map(|label| Item {
             label,
             shortcut: keys.label(&Action::Undo),

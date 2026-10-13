@@ -1193,3 +1193,49 @@ fn assign_bar_labels() {
     );
     assert_eq!(hint, "Release Shift for 1–9 · 0 or Esc leaves");
 }
+
+/// A collection's tab: its query names the collection (a name with a colon included), the
+/// tab knows it, and only a drag out of that same tab reorders it.
+#[test]
+fn collection_tabs_and_their_drops() {
+    let c = Collection {
+        id: 7,
+        name: "Rome: day 2".into(),
+        items: 0,
+    };
+    let q = collection_query(&c);
+    assert_eq!(collection_parts(&q), Some((7, "Rome: day 2")));
+    assert_eq!(collection_of("collection:x"), None);
+    assert_eq!(collection_of(FAVORITES_QUERY), None);
+
+    let dir = VPath::local(temp("collection-tab"));
+    let mut tab = crate::tab::Tab::search(dir.clone());
+    tab.library_search = true;
+    if let TabKind::Search { query, .. } = &mut tab.kind {
+        *query = q;
+    }
+    assert_eq!(tab.collection(), Some(7));
+    assert_eq!(tab.title(), "Rome: day 2");
+    let a = dir.join("a.txt");
+    let drag = crate::pane::DragPayload {
+        pane: 0,
+        dir: dir.clone(),
+        paths: vec![a.clone()],
+    };
+    let moved = Action::Library(LibCmd::MoveInCollection {
+        id: 7,
+        paths: vec![a],
+        before: None,
+    });
+    assert_eq!(
+        crate::pane::collection_drop(&drag, 0, &tab, None),
+        Some(moved)
+    );
+    assert_eq!(
+        crate::pane::collection_drop(&drag, 1, &tab, None),
+        None,
+        "other pane"
+    );
+    tab.library_search = false;
+    assert_eq!(crate::pane::collection_drop(&drag, 0, &tab, None), None);
+}

@@ -65,6 +65,14 @@ pub enum Dialog {
     Compress(Box<crate::compress_ui::CompressDialog>),
     /// Task 85: a user-defined cleanup's expanded commands, before they run.
     Cleanup(Box<crate::cleanups::Prepared>),
+    /// A new collection's name (`add`: with the selection in it), or a collection's new
+    /// name (`id`).
+    CollectionName {
+        id: Option<keel_core::CollectionId>,
+        add: bool,
+        text: String,
+        focus: bool,
+    },
     /// Task 53: Restore library…: what the backup holds and the new library's name.
     RestoreLibrary {
         file: PathBuf,
@@ -97,6 +105,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                         Action::EmptyTrashNow => "Empty",
                         Action::Mount(_) => "OK",
                         Action::UndoRun(_) => "Undo",
+                        Action::Library(crate::library::LibCmd::DeleteCollectionConfirmed(_)) => {
+                            "Delete"
+                        }
                         _ => "Move to trash",
                     });
                     let no = ui.button("Cancel");
@@ -209,6 +220,36 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             src: src.clone(),
                             format,
                         });
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
+            }
+            Dialog::CollectionName {
+                id,
+                add,
+                text,
+                focus,
+            } => {
+                ui.label(match id {
+                    Some(_) => "Rename collection",
+                    None => "New collection name",
+                });
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                let r = crate::a11y::Named::named(r, "Collection name");
+                if std::mem::take(focus) {
+                    r.request_focus();
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let verb = if id.is_some() { "Rename" } else { "Create" };
+                    if (ui.button(verb).clicked() || enter) && !text.trim().is_empty() {
+                        let name = text.trim().to_owned();
+                        use crate::library::LibCmd;
+                        out = Some(Action::Library(match *id {
+                            Some(id) => LibCmd::SetCollectionName { id, name },
+                            None => LibCmd::CreateCollection { name, add: *add },
+                        }));
                     }
                     cancel |= ui.button("Cancel").clicked();
                 });

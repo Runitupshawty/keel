@@ -1085,7 +1085,13 @@ impl AppState {
                 tab.snippets = (hits.iter())
                     .filter_map(|h| Some((h.path.clone(), h.snippet.clone()?)))
                     .collect();
-                tab.set_listing(crate::tab::hits_listing(hits));
+                let mut listing = crate::tab::hits_listing(hits);
+                if tab.collection().is_some() {
+                    // A collection's own order is its Name order (sorting by another
+                    // column still works; Name brings the hand order back).
+                    listing.order = (0..listing.entries.len()).collect();
+                }
+                tab.set_listing(listing);
                 tab.error = None;
                 if !remote {
                     self.search_reason = None;
@@ -2729,6 +2735,8 @@ impl AppState {
                 self.palette.cleanups = (self.settings.cleanups.iter())
                     .map(|c| c.title.clone())
                     .collect();
+                self.palette.collections =
+                    (self.library.is_open()).then(|| self.library.collections.clone());
                 // The "Shell: …" entries follow on the first "shell" typed (palette_shell).
                 self.palette.show(selection, &self.keys);
             }

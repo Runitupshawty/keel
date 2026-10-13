@@ -234,6 +234,41 @@ pub fn sidebar_tags(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
     });
 }
 
+/// The sidebar's Collections section: each collection by name (a click opens it in its own
+/// order); right-click renames or deletes it.
+pub fn sidebar_collections(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
+    use crate::sidebar::row;
+    use crate::sidebar_glyphs::Glyph;
+    use egui::{Id, Sense};
+    for c in &l.collections {
+        let id = Id::new(("sidebar-collection", c.id));
+        let r = row(
+            ui,
+            id,
+            Glyph::Collection,
+            &c.name,
+            false,
+            Sense::click(),
+            |_| (),
+        )
+        .on_hover_text(crate::jobs::items(c.items));
+        if r.clicked() {
+            out.push(lib(LibCmd::Query(crate::library::collection_query(c))));
+        }
+        r.context_menu(|ui| {
+            for (text, cmd) in [
+                ("Rename…", LibCmd::RenameCollection(c.id)),
+                ("Delete…", LibCmd::DeleteCollection(c.id)),
+            ] {
+                if ui.button(text).clicked() {
+                    out.push(lib(cmd));
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+}
+
 const CARD_W: f32 = 240.0;
 
 /// A dashboard card: a fixed-width framed column.

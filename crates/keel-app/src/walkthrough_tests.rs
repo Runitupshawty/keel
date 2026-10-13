@@ -2547,6 +2547,99 @@ fn library_favorites_and_tags() {
     close_library(&mut h);
 }
 
+/// Collections: right-click → Add to collection → New collection… makes one; the palette
+/// and the context menu add more; the sidebar opens it in its own order; dragging a row
+/// onto another moves it there; Remove from collection, rename and delete (files stay).
+#[test]
+#[ignore]
+fn library_collections() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let (mut h, _base, _lib) = with_library("collections", &docs, &root.join("Backup"));
+    add_source(&mut h, &docs);
+    let items = |s: &AppState, name: &str| {
+        (s.library.collections.iter())
+            .find(|c| c.name == name)
+            .map(|c| c.items)
+    };
+    // A new collection with the selection in it.
+    click_row(&mut h, "notes.md", 0, NONE);
+    right_click_row(&mut h, "notes.md");
+    click(&mut h, "Add to collection");
+    click_last(&mut h, "New collection…");
+    assert!(has(&h, "New collection name"));
+    type_text(&mut h, "Trip");
+    click_last(&mut h, "Create");
+    assert!(
+        wait(&mut h, 10, &|s| items(s, "Trip") == Some(1)),
+        "created"
+    );
+    // The palette adds to it; so does the context menu.
+    click_row(&mut h, "todo.txt", 0, NONE);
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "add to collection: trip");
+    key(&mut h, NONE, Key::Enter);
+    assert!(
+        wait(&mut h, 10, &|s| items(s, "Trip") == Some(2)),
+        "palette"
+    );
+    click_row(&mut h, "budget.csv", 0, NONE);
+    right_click_row(&mut h, "budget.csv");
+    click(&mut h, "Add to collection");
+    click_last(&mut h, "Trip");
+    assert!(wait(&mut h, 10, &|s| items(s, "Trip") == Some(3)), "menu");
+    // The sidebar opens it in the order the items were added, not by name.
+    click(&mut h, "Trip");
+    let order = |want: &'static [&'static str]| {
+        move |s: &AppState| !s.tab(0).loading && names(s, 0) == want
+    };
+    assert!(wait(
+        &mut h,
+        20,
+        &order(&["notes.md", "todo.txt", "budget.csv"])
+    ));
+    assert_eq!(s(&h).tab(0).title(), "Trip");
+    // Drag budget.csv onto notes.md: it goes before it.
+    let (from, to) = (row(&h, "budget.csv", 0), row(&h, "notes.md", 0));
+    drag(&mut h, from, to);
+    assert!(wait(
+        &mut h,
+        20,
+        &order(&["budget.csv", "notes.md", "todo.txt"])
+    ));
+    shot(&mut h, "library-collection");
+    // Remove from collection takes it out; the file stays.
+    click_row(&mut h, "todo.txt", 0, NONE);
+    right_click_row(&mut h, "todo.txt");
+    click(&mut h, "Remove from collection");
+    assert!(wait(&mut h, 20, &order(&["budget.csv", "notes.md"])));
+    assert!(docs.join("todo.txt").is_file());
+    // Rename from the palette: the tab follows.
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "rename collection: trip");
+    key(&mut h, NONE, Key::Enter);
+    assert!(has(&h, "Rename collection"));
+    key(&mut h, CMD, Key::A);
+    type_text(&mut h, "Rome");
+    click_last(&mut h, "Rename");
+    assert!(
+        wait(&mut h, 10, &|s| items(s, "Rome") == Some(2)),
+        "renamed"
+    );
+    assert_eq!(s(&h).tab(0).title(), "Rome");
+    // Delete asks first and never touches the files.
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "delete collection: rome");
+    key(&mut h, NONE, Key::Enter);
+    click_last(&mut h, "Delete");
+    assert!(
+        wait(&mut h, 10, &|s| s.library.collections.is_empty()),
+        "deleted"
+    );
+    assert!(docs.join("notes.md").is_file() && docs.join("budget.csv").is_file());
+    close_library(&mut h);
+}
+
 /// Task 59: Ctrl+I shows the inspector; a file's Copies row opens the copy (its folder,
 /// the copy selected); a folder shows its totals.
 #[test]

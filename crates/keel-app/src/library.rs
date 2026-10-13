@@ -7,13 +7,16 @@
 //! in-process library (which return at once) run on the UI thread. Drawing is in
 //! `library_ui`.
 
-use crate::backend::{Attach, Event, Executed, LibraryBackend, Planned, Remote, VolumeChange};
+use crate::backend::{
+    Attach, CollectionEdit, Event, Executed, LibraryBackend, Planned, Remote, VolumeChange,
+};
 use crate::keys::Action;
 use crate::state::{AppState, Msg};
 use crate::tab::TabKind;
 use crate::worker;
 use anyhow::Context as _;
 use crossbeam_channel::{Receiver, Sender};
+use keel_core::{Collection, CollectionId};
 use keel_core::{
     Indexer, JobEvent, JobId, JobStatus, Library, LibraryHit, LibraryStats, LibrarySummary,
     OfflineReason, OnConflict, Op, Plan, ProtectionSummary, RecordRef, SourceDef, SourceId,
@@ -31,6 +34,23 @@ use std::time::{Duration, Instant};
 /// The library search tab's saved queries for the sidebar's Favorites and Recents.
 pub const FAVORITES_QUERY: &str = "is:favorite";
 pub const RECENTS_QUERY: &str = "is:recent";
+/// A collection's search tab: `collection:<id>:<name>` (the name is the tab's title).
+const COLLECTION_QUERY: &str = "collection:";
+
+pub fn collection_query(c: &keel_core::Collection) -> String {
+    format!("{COLLECTION_QUERY}{}:{}", c.id, c.name)
+}
+
+/// The collection a library search tab's query shows, with its name.
+pub fn collection_parts(query: &str) -> Option<(CollectionId, &str)> {
+    let rest = query.trim().strip_prefix(COLLECTION_QUERY)?;
+    let (id, name) = rest.split_once(':').unwrap_or((rest, ""));
+    Some((id.parse().ok()?, name))
+}
+
+pub fn collection_of(query: &str) -> Option<CollectionId> {
+    collection_parts(query).map(|(id, _)| id)
+}
 /// `Library::close` on exit waits this long for jobs to checkpoint.
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Sources, stats and tags are refreshed this often (stats every `STATS_EVERY`).
@@ -240,6 +260,35 @@ pub enum LibCmd {
         file: std::path::PathBuf,
         name: String,
     },
+    // --- Collections ---
+    /// The name dialog for a new collection (`add`: with the selection in it).
+    NewCollection {
+        add: bool,
+    },
+    /// The name dialog's answer: create it (`add`: with the active pane's selection).
+    CreateCollection {
+        name: String,
+        add: bool,
+    },
+    /// The name dialog for renaming a collection.
+    RenameCollection(CollectionId),
+    SetCollectionName {
+        id: CollectionId,
+        name: String,
+    },
+    /// Asks first.
+    DeleteCollection(CollectionId),
+    DeleteCollectionConfirmed(CollectionId),
+    /// Adds the selection at the end of the collection.
+    AddToCollection(CollectionId),
+    /// Takes the selection out of the collection the tab shows.
+    RemoveFromCollection,
+    /// Drag and drop in a collection's tab: `paths` go before `before` (None: the end).
+    MoveInCollection {
+        id: CollectionId,
+        paths: Vec<VPath>,
+        before: Option<VPath>,
+    },
     // --- Task 60 ---
     /// A folder operation's dialog for the selection (else the folder shown).
     FolderOp(crate::folder_ops::Kind),
@@ -320,6 +369,8 @@ pub enum LibMsg {
     },
     /// The daemon's sources.
     Sources(Vec<SourceSummary>),
+    /// A collection changed: its tabs are read again.
+    CollectionChanged,
     /// From the daemon connection `id`'s subscription.
     Remote(u64, Event),
     Stats(LibraryStats),
@@ -328,6 +379,7 @@ pub enum LibMsg {
     Meta {
         tags: Vec<Tag>,
         views: Vec<View>,
+        collections: Vec<Collection>,
         tagged: HashMap<VPath, Vec<TagId>>,
         /// Task 56: folder styles by `folder_style::key` of the real path.
         styles: crate::folder_style::Styles,
@@ -907,6 +959,7 @@ pub struct LibraryUi {
     /// Type chips).
     pub top_ext: Vec<String>,
     pub views: Vec<View>,
+    pub collections: Vec<Collection>,
     /// Tags (Favorites included) by real path (shared with the context menu each frame).
     pub tagged: Arc<HashMap<VPath, Vec<TagId>>>,
     /// Task 67: native Finder tags of listed local files, by path (macOS).
@@ -996,6 +1049,7 @@ impl LibraryUi {
             tags: Vec::new(),
             top_ext: Vec::new(),
             views: Vec::new(),
+            collections: Vec::new(),
             tagged: Default::default(),
             native: Default::default(),
             styles: Default::default(),
@@ -1095,6 +1149,7 @@ impl LibraryUi {
         self.tags.clear();
         self.top_ext.clear();
         self.views.clear();
+        self.collections.clear();
         let handles = std::mem::take(&mut self.watchers)
             .into_values()
             .filter_map(|w| match w {
@@ -1186,6 +1241,11 @@ impl LibraryUi {
             Ok((tags, views, tagged)) => Some(LibMsg::Meta {
                 tags,
                 views,
+                // An older daemon has none to give.
+                collections: b.collections().unwrap_or_else(|e| {
+                    tracing::debug!("collections: {e:#}");
+                    Vec::new()
+                }),
                 tagged,
                 // An older daemon has none to give.
                 styles: Arc::new(b.folder_styles().unwrap_or_else(|e| {
@@ -1611,9 +1671,11 @@ impl LibSearch {
             LibraryBackend::InProcess(lib) => lib,
             daemon => return daemon.search(q),
         };
-        let hits = match q.text.trim() {
-            FAVORITES_QUERY => lib.favorites()?,
-            RECENTS_QUERY => lib.recents(q.max as usize)?,
+        let text = q.text.trim();
+        let hits = match (collection_of(text), text) {
+            (Some(id), _) => lib.collection_items(id)?,
+            (_, FAVORITES_QUERY) => lib.favorites()?,
+            (_, RECENTS_QUERY) => lib.recents(q.max as usize)?,
             _ => return keel_core::LibrarySearcher(lib.clone()).query(q),
         };
         Ok(hits
@@ -1729,6 +1791,7 @@ impl AppState {
                             l.refresh_meta_soon();
                             l.forget_badges();
                             self.relist_library_tabs();
+                            self.requery_collections();
                         }
                     },
                     Event::Net(v) => self.devices_event(v),
@@ -1736,6 +1799,10 @@ impl AppState {
                 }
             }
             LibMsg::Stats(stats) => l.stats = stats,
+            LibMsg::CollectionChanged => {
+                l.refresh_meta_soon();
+                self.requery_collections();
+            }
             LibMsg::RemoteHashing(r) => {
                 // Adopted on both sides: `apply_hashing` sees no change to send back.
                 l.remote_hash_settings = r;
@@ -1746,11 +1813,13 @@ impl AppState {
             LibMsg::Meta {
                 tags,
                 views,
+                collections,
                 tagged,
                 styles,
             } => {
                 l.tags = tags;
                 l.views = views;
+                l.collections = collections;
                 if *l.tagged != tagged {
                     self.preview.inspector.refresh();
                 }
@@ -2077,6 +2146,18 @@ impl AppState {
     pub fn library_synced(&mut self) {
         self.library.refresh_meta_soon();
         self.relist_library_tabs();
+    }
+
+    /// Runs the queries of the collection tabs again (their items or order changed).
+    pub fn requery_collections(&mut self) {
+        for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+            if tab.collection().is_some() {
+                if let TabKind::Search { due, .. } = &mut tab.kind {
+                    *due = Some(Instant::now());
+                }
+            }
+        }
+        self.ctx.request_repaint();
     }
 
     /// Relists every tab on a `library://` folder (its index changed).
@@ -2456,6 +2537,83 @@ impl AppState {
                     });
             }
             LibCmd::ToggleColor { .. } => unreachable!("handled above"),
+            LibCmd::NewCollection { add } => {
+                self.dialog = Some(crate::dialogs::Dialog::CollectionName {
+                    id: None,
+                    add,
+                    text: String::new(),
+                    focus: true,
+                });
+            }
+            LibCmd::RenameCollection(id) => {
+                let Some(c) = self.library.collections.iter().find(|c| c.id == id) else {
+                    return;
+                };
+                self.dialog = Some(crate::dialogs::Dialog::CollectionName {
+                    id: Some(id),
+                    add: false,
+                    text: c.name.clone(),
+                    focus: true,
+                });
+            }
+            LibCmd::CreateCollection { name, add } => {
+                let paths = match add {
+                    true => match self.library_targets(p) {
+                        Some(t) => t,
+                        None => return,
+                    },
+                    false => Vec::new(),
+                };
+                self.edit_collection(CollectionEdit::Create { name, paths });
+            }
+            LibCmd::SetCollectionName { id, name } => {
+                // Open tabs of it take the new name as their title.
+                for tab in self.panes.iter_mut().flat_map(|p| p.tabs.iter_mut()) {
+                    if let (Some(at), TabKind::Search { query, .. }) =
+                        (tab.collection(), &mut tab.kind)
+                    {
+                        if at == id {
+                            *query = collection_query(&Collection {
+                                id,
+                                name: name.clone(),
+                                items: 0,
+                            });
+                        }
+                    }
+                }
+                self.edit_collection(CollectionEdit::Rename { id, name });
+            }
+            LibCmd::DeleteCollection(id) => {
+                let Some(c) = self.library.collections.iter().find(|c| c.id == id) else {
+                    return;
+                };
+                self.dialog = Some(crate::dialogs::Dialog::Confirm {
+                    text: format!(
+                        "Delete the collection {}? Its files and folders are not touched.",
+                        c.name
+                    ),
+                    on_yes: Action::Library(LibCmd::DeleteCollectionConfirmed(id)),
+                });
+            }
+            LibCmd::DeleteCollectionConfirmed(id) => {
+                self.edit_collection(CollectionEdit::Delete(id))
+            }
+            LibCmd::AddToCollection(id) => {
+                if let Some(paths) = self.library_targets(p) {
+                    self.edit_collection(CollectionEdit::Add { id, paths });
+                }
+            }
+            LibCmd::RemoveFromCollection => {
+                let Some(id) = self.tab(p).collection() else {
+                    return;
+                };
+                if let Some(paths) = self.library_targets(p) {
+                    self.edit_collection(CollectionEdit::Remove { id, paths });
+                }
+            }
+            LibCmd::MoveInCollection { id, paths, before } => {
+                self.edit_collection(CollectionEdit::Move { id, paths, before })
+            }
             LibCmd::TagPicker => {
                 if let Some(targets) = self.library_targets(p) {
                     self.library.picker = Some(TagPicker {
@@ -2878,6 +3036,15 @@ impl AppState {
         }
     }
 
+    fn edit_collection(&mut self, edit: CollectionEdit) {
+        let sources = self.library.sources.clone();
+        self.library
+            .spawn_try("keel-library-collection", "Collection", move |b| {
+                b.edit_collection(&sources, edit)?;
+                Ok(Some(LibMsg::CollectionChanged))
+            });
+    }
+
     fn set_tag(&mut self, targets: Vec<VPath>, tag: TagId, on: bool) {
         self.undo
             .refuse("tags and favorites (set or clear them again instead)");
@@ -3056,15 +3223,23 @@ pub(crate) fn apply_tag(
     tag: TagId,
     on: bool,
 ) -> anyhow::Result<()> {
-    let records = targets
+    lib.set_tag(tag, &records_of(lib, sources, targets)?, on)
+}
+
+/// The records of `targets` (real or `library://` paths; worker only).
+pub(crate) fn records_of(
+    lib: &Library,
+    sources: &[SourceSummary],
+    targets: &[VPath],
+) -> anyhow::Result<Vec<RecordRef>> {
+    targets
         .iter()
         .map(|t| {
             let (source, rel) = locate(sources, t)
                 .with_context(|| format!("{} is not in a library source", t.display()))?;
             record_of(lib, &source, &rel)
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    lib.set_tag(tag, &records, on)
+        .collect()
 }
 
 /// A source label from its folder ("D:\Photos" -> "Photos").

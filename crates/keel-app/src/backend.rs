@@ -17,6 +17,7 @@ use keel_api::client::Client;
 use keel_api::config::HostConfig;
 use keel_api::types as api;
 use keel_api::ApiError;
+use keel_core::{Collection, CollectionId};
 use keel_core::{
     Indexer, JobEvent, JobId, JobStatus, Library, LibraryStats, OfflineReason, Op, Plan,
     PlanChanged, ProtectionSummary, SourceDef, SourceId, SourceKind, SourceStatus, SourceSummary,
@@ -723,6 +724,81 @@ impl LibraryBackend {
         }
     }
 
+    /// Every collection, by name.
+    pub fn collections(&self) -> Result<Vec<Collection>> {
+        match self {
+            LibraryBackend::InProcess(lib) => lib.collections(),
+            LibraryBackend::Daemon(r) => {
+                let list: Vec<api::CollectionInfo> = r.call("collections.list", json!({}))?;
+                Ok((list.into_iter())
+                    .map(|c| Collection {
+                        id: c.id,
+                        name: c.name,
+                        items: c.items,
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// Creates, renames, deletes, fills or reorders a collection.
+    pub fn edit_collection(&self, sources: &[SourceSummary], edit: CollectionEdit) -> Result<()> {
+        use CollectionEdit as E;
+        match self {
+            LibraryBackend::InProcess(lib) => {
+                let records = |paths: &[VPath]| crate::library::records_of(lib, sources, paths);
+                match edit {
+                    E::Create { name, paths } => {
+                        let records = records(&paths)?;
+                        let id = lib.create_collection(&name)?;
+                        lib.add_to_collection(id, &records)?;
+                    }
+                    E::Rename { id, name } => lib.rename_collection(id, &name)?,
+                    E::Delete(id) => lib.delete_collection(id)?,
+                    E::Add { id, paths } => {
+                        lib.add_to_collection(id, &records(&paths)?)?;
+                    }
+                    E::Remove { id, paths } => {
+                        lib.remove_from_collection(id, &records(&paths)?)?;
+                    }
+                    E::Move { id, paths, before } => {
+                        let before = records(before.as_slice())?;
+                        lib.move_in_collection(id, &records(&paths)?, before.first())?;
+                    }
+                }
+            }
+            LibraryBackend::Daemon(r) => {
+                let (method, params) = match edit {
+                    E::Create { name, paths } => (
+                        "collections.create",
+                        json!({"name": name, "paths": real_paths(sources, &paths)?}),
+                    ),
+                    E::Rename { id, name } => {
+                        ("collections.rename", json!({"id": id, "name": name}))
+                    }
+                    E::Delete(id) => ("collections.delete", json!({ "id": id })),
+                    E::Add { id, paths } => (
+                        "collections.add",
+                        json!({"id": id, "paths": real_paths(sources, &paths)?}),
+                    ),
+                    E::Remove { id, paths } => (
+                        "collections.remove",
+                        json!({"id": id, "paths": real_paths(sources, &paths)?}),
+                    ),
+                    E::Move { id, paths, before } => {
+                        let mut params = json!({"id": id, "paths": real_paths(sources, &paths)?});
+                        if let Some(b) = before {
+                            params["before"] = real_paths(sources, &[b])?.remove(0).into();
+                        }
+                        ("collections.move", params)
+                    }
+                };
+                r.apply(method, params)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Task 56: every styled folder, by `folder_style::key` of its real path.
     pub fn folder_styles(&self) -> Result<HashMap<String, keel_core::FolderStyle>> {
         let list: Vec<(VPath, keel_core::FolderStyle)> = match self {
@@ -1354,16 +1430,18 @@ impl LibraryBackend {
         })
     }
 
-    /// Library search hits: a query, Favorites or Recents.
+    /// Library search hits: a query, Favorites, Recents or a collection.
     pub fn search(&self, q: &keel_search::Query) -> Result<Vec<keel_search::Hit>> {
         use crate::library::{FAVORITES_QUERY, RECENTS_QUERY};
         let LibraryBackend::Daemon(r) = self else {
             bail!("in-process search goes through LibSearch");
         };
-        let hits: Vec<api::Hit> = match q.text.trim() {
-            FAVORITES_QUERY => r.call("favorites.list", json!({}))?,
-            RECENTS_QUERY => r.call("recents", json!({ "limit": q.max.max(1) }))?,
-            text => r.call("search", json!({"query": text, "max": q.max.max(1)}))?,
+        let text = q.text.trim();
+        let hits: Vec<api::Hit> = match (crate::library::collection_of(text), text) {
+            (Some(id), _) => r.call("collections.items", json!({ "id": id }))?,
+            (_, FAVORITES_QUERY) => r.call("favorites.list", json!({}))?,
+            (_, RECENTS_QUERY) => r.call("recents", json!({ "limit": q.max.max(1) }))?,
+            _ => r.call("search", json!({"query": text, "max": q.max.max(1)}))?,
         };
         Ok(hits
             .into_iter()
@@ -1379,6 +1457,35 @@ impl LibraryBackend {
             })
             .collect())
     }
+}
+
+/// A change to a collection (`LibraryBackend::edit_collection`); paths are real or
+/// `library://` paths.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CollectionEdit {
+    Create {
+        name: String,
+        paths: Vec<VPath>,
+    },
+    Rename {
+        id: CollectionId,
+        name: String,
+    },
+    Delete(CollectionId),
+    Add {
+        id: CollectionId,
+        paths: Vec<VPath>,
+    },
+    Remove {
+        id: CollectionId,
+        paths: Vec<VPath>,
+    },
+    /// `paths` go before `before` (None: to the end).
+    Move {
+        id: CollectionId,
+        paths: Vec<VPath>,
+        before: Option<VPath>,
+    },
 }
 
 /// A started job's id.
