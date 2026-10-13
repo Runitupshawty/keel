@@ -28,6 +28,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - On macOS, `~/Applications/Keel.app` made by `install.sh` did not open: double-clicking it or `open ~/Applications/Keel.app` failed with LaunchServices error -10669, because its executable was a shell script. Its executable is now a link to the installed `keel` itself; run the install script again to replace an existing Keel.app.
 - Folder colors and icons were missing from Ctrl+P results when the search index resolved a library source's local path differently (such as `/var` and `/private/var` on macOS). The style cache now keeps both spellings, and keeps the stored path's style when the folder is offline.
 - The macOS inspector walkthrough selects the folder from the keyboard rather than clicking a clipped text label, and checks the selection before waiting for totals.
+- MCP confirmations with a missing or invalid JSON-RPC version no longer authorize execution.
+- Windows name validation now rejects `CONIN$`, `CONOUT$` and COM/LPT device names ending in superscript ¹, ² or ³, including names with extensions.
+- Existing local folders named like `x.zip!` are no longer mistaken for archive paths.
+- File URIs with a mixed-case `localhost` host now open as local paths when pasted or dropped.
+- The inspector's protection count counts a file reached through multiple sources once, including hard links, as the library's full redundancy count does.
+- A backup that cannot create its staging file no longer deletes another backup's in-progress file at the same target.
 
 ## [0.23.0] - 2026-10-12
 
