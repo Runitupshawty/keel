@@ -141,9 +141,11 @@ fn set_read_and_clear() {
     let hits = lib.folder_styles().unwrap();
     assert_eq!(hits[1].0.path, VPath::local(f.files.path().join("Work")));
     assert!(hits[1].0.is_dir);
-    // Files and bad styles are refused; nothing changes.
+    // A file takes an icon but no color; bad styles are refused; nothing changes.
     let plan = rec(&f.src, "Work/plan.txt");
     assert!(lib.set_folder_style(&plan, &red).is_err());
+    assert!(lib.set_folder_style(&plan, &both).is_err());
+    assert_eq!(lib.folder_style(&plan).unwrap(), None);
     assert!(lib
         .set_folder_style(&work, &style(Some("#e5484"), None))
         .is_err());
@@ -164,6 +166,38 @@ fn set_read_and_clear() {
         id: work.id,
     };
     assert!(lib.folder_style(&elsewhere).is_err());
+}
+
+#[test]
+fn files_take_an_icon_that_follows_a_rename() {
+    let f = fixture();
+    let (lib, src, root) = (&f.lib, &f.src, f.files.path());
+    let plan = rec(src, "Work/plan.txt");
+    lib.set_folder_style(&plan, &style(None, Some("📌")))
+        .unwrap();
+    lib.set_folder_style(&rec(src, "top.txt"), &style(None, Some("theme:.rs")))
+        .unwrap();
+    let all = styled(lib);
+    assert_eq!(
+        all,
+        [
+            ("plan.txt".into(), style(None, Some("📌"))),
+            ("top.txt".into(), style(None, Some("theme:.rs"))),
+        ]
+    );
+    assert!(!lib.folder_styles().unwrap()[0].0.is_dir);
+    std::fs::rename(root.join("Work/plan.txt"), root.join("Work/todo.txt")).unwrap();
+    for p in ["Work/todo.txt", "Work/plan.txt"] {
+        Indexer::apply_change(src, ChangeEvent::Changed(VPath::local(root.join(p)))).unwrap();
+    }
+    assert_eq!(rec(src, "Work/todo.txt"), plan);
+    assert_eq!(
+        lib.folder_style(&plan).unwrap(),
+        Some(style(None, Some("📌")))
+    );
+    lib.set_folder_style(&plan, &FolderStyle::default())
+        .unwrap();
+    assert_eq!(styled(lib).len(), 1);
 }
 
 #[test]

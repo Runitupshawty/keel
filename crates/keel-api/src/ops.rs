@@ -120,9 +120,9 @@ pub static OPS: &[Operation] = &[
         PathParams => Copies, redundancy, json!({"path": example_file()})),
     now!("redundancy.folder", "The copies of every indexed file in a folder (the first 5000 files).",
         PathParams => Vec<FileCopies>, redundancy_folder, json!({"path": example_dir()})),
-    now!("library.folder_style", "A folder's color and icon, or (no path) every folder in the library that has one; read-only.",
+    now!("library.folder_style", "A folder's color and icon or a file's icon, or (no path) every folder and file in the library that has one; read-only.",
         FolderStyleParams => Vec<FolderStyleInfo>, folder_style, json!({"path": example_dir()})),
-    previewed!("library.set_folder_style", "Sets an indexed folder's color (#rrggbb) and icon (one emoji, or theme:<name> for the icon theme's folder icon); an omitted field stays, \"\" clears it. Changes only the library.",
+    previewed!("library.set_folder_style", "Sets an indexed folder's color (#rrggbb) and icon (one emoji, or theme:<name> for the icon theme's folder icon), or a file's icon (one emoji, or theme:<file name or .ext> for the icon theme's file icon); an omitted field stays, \"\" clears it. Changes only the library.",
         SetFolderStyleParams => FolderStyleInfo, set_folder_style_preview, set_folder_style, json!({"path": example_dir(), "color": "#3b82f6", "icon": "📷"})),
     now!("library.comment", "The Get Info comment on an indexed file or folder (absent: none); read-only.",
         PathParams => CommentInfo, library_comment, json!({"path": example_file()})),
@@ -775,7 +775,6 @@ fn tags_tagged(ctx: &Ctx, _: NoParams) -> Result<Vec<TaggedPath>> {
 
 // --- folder styles ---
 
-/// The indexed folder at `path` (a source's root included).
 /// The indexed file or folder at `path`, for comments.
 fn commented_at(ctx: &Ctx, path: &str) -> Result<RecordRef> {
     let p = vpath(path)?;
@@ -826,7 +825,9 @@ fn set_comment(ctx: &Ctx, p: SetCommentParams) -> Result<CommentInfo> {
     })
 }
 
-fn folder_at(ctx: &Ctx, path: &str) -> Result<RecordRef> {
+/// The indexed folder or file at `path` (a source's root included), and whether it is a
+/// folder.
+fn folder_at(ctx: &Ctx, path: &str) -> Result<(RecordRef, bool)> {
     let p = vpath(path)?;
     locate(ctx, &p).map_err(|_| {
         ApiError::not_found(format!(
@@ -836,12 +837,8 @@ fn folder_at(ctx: &Ctx, path: &str) -> Result<RecordRef> {
     let found = ctx.lib.record_at(&p)?;
     let record = found
         .ok_or_else(|| ApiError::not_found(format!("{path} is not in the library index yet")))?;
-    match ctx.lib.record(&record)? {
-        Some(h) if h.is_dir => Ok(record),
-        _ => Err(ApiError::invalid_params(format!(
-            "{path} is a file: only folders take a color or icon"
-        ))),
-    }
+    let is_dir = ctx.lib.record(&record)?.is_some_and(|h| h.is_dir);
+    Ok((record, is_dir))
 }
 
 fn style_info(path: String, s: keel_core::FolderStyle) -> FolderStyleInfo {
@@ -855,7 +852,7 @@ fn style_info(path: String, s: keel_core::FolderStyle) -> FolderStyleInfo {
 fn folder_style(ctx: &Ctx, p: FolderStyleParams) -> Result<Vec<FolderStyleInfo>> {
     match &p.path {
         Some(path) => {
-            let style = ctx.lib.folder_style(&folder_at(ctx, path)?)?;
+            let style = ctx.lib.folder_style(&folder_at(ctx, path)?.0)?;
             Ok(vec![style_info(
                 vpath(path)?.display(),
                 style.unwrap_or_default(),
@@ -875,7 +872,7 @@ fn wanted_style(
     ctx: &Ctx,
     p: &SetFolderStyleParams,
 ) -> Result<(RecordRef, keel_core::FolderStyle)> {
-    let record = folder_at(ctx, &p.path)?;
+    let (record, is_dir) = folder_at(ctx, &p.path)?;
     let mut style = ctx.lib.folder_style(&record)?.unwrap_or_default();
     let field = |v: &Option<String>, old: Option<String>| match v.as_deref() {
         None => old,
@@ -887,6 +884,12 @@ fn wanted_style(
     style
         .check()
         .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    if !is_dir && style.color.is_some() {
+        return Err(ApiError::invalid_params(format!(
+            "{} is a file: only folders take a color",
+            p.path
+        )));
+    }
     Ok((record, style))
 }
 

@@ -2,7 +2,7 @@
 
 import Foundation
 
-// API schema fingerprint: 66fd4c2146d940c55b30c1c89c278ba7b5f93e80424e74986794f53aeb026bd6
+// API schema fingerprint: 71bc9e1ef410baf1f5ac3ae6818764c841ba5e9db6e014f264ade31ed782ae05
 
 /// Arbitrary JSON, including heterogeneous unions and exact 64-bit integers.
 public indirect enum JSONValue: Codable, Sendable, Equatable {
@@ -4017,11 +4017,11 @@ extension KeelClient {
     public func redundancy_folder(_ params: RedundancyFolderParams) async throws -> [RedundancyFolderResultItem] {
         try await call("redundancy.folder", params: params, result: [RedundancyFolderResultItem].self)
     }
-    /// A folder's color and icon, or (no path) every folder in the library that has one; read-only.
+    /// A folder's color and icon or a file's icon, or (no path) every folder and file in the library that has one; read-only.
     public func library_folder_style(_ params: LibraryFolderStyleParams) async throws -> [LibraryFolderStyleResultItem] {
         try await call("library.folder_style", params: params, result: [LibraryFolderStyleResultItem].self)
     }
-    /// Sets an indexed folder's color (#rrggbb) and icon (one emoji, or theme:<name> for the icon theme's folder icon); an omitted field stays, "" clears it. Changes only the library.
+    /// Sets an indexed folder's color (#rrggbb) and icon (one emoji, or theme:<name> for the icon theme's folder icon), or a file's icon (one emoji, or theme:<file name or .ext> for the icon theme's file icon); an omitted field stays, "" clears it. Changes only the library.
     public func library_set_folder_style(_ params: LibrarySetFolderStyleParams) async throws -> LibrarySetFolderStyleResult {
         try await call("library.set_folder_style", params: params, result: LibrarySetFolderStyleResult.self)
     }

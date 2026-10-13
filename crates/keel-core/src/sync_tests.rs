@@ -461,7 +461,7 @@ fn malformed_entries_are_refused() {
     assert!(b.lib.sync_apply("bad id!", &page_of(Vec::new())).is_err());
 }
 
-/// Task 56: a folder's color and icon reach the other device's source of that folder,
+/// Task 56: a folder's color and icon (and a file's icon) reach the other device's source of that folder,
 /// wait there for a folder not indexed yet, and are cleared alike; never in a local folder.
 #[test]
 fn folder_styles_sync_like_path_tags() {
@@ -477,8 +477,16 @@ fn folder_styles_sync_like_path_tags() {
     a.lib
         .set_folder_style(&a.rec("Later"), &style("#30a46c", "theme:src"))
         .unwrap();
+    // A file's icon syncs alike.
+    let pin = crate::FolderStyle {
+        color: None,
+        icon: Some("📌".into()),
+    };
+    a.lib
+        .set_folder_style(&a.rec("Work/plan.txt"), &pin)
+        .unwrap();
     let done = b.pull(&a);
-    assert_eq!(done.applied, 2, "{done:?}");
+    assert_eq!(done.applied, 3, "{done:?}");
     let rec = |s: &Source, rel: &str| RecordRef {
         source: s.id.clone(),
         id: id_of(s, rel).unwrap(),
@@ -488,6 +496,10 @@ fn folder_styles_sync_like_path_tags() {
         Some(red)
     );
     assert_eq!(b.lib.folder_style(&b.rec("Work")).unwrap(), None, "local");
+    assert_eq!(
+        b.lib.folder_style(&rec(&theirs, "Work/plan.txt")).unwrap(),
+        Some(pin)
+    );
     // "Later" was not in b's index yet: styled once it is.
     let c = theirs.store.get().unwrap();
     let root: i64 = c

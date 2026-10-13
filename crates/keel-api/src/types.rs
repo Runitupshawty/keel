@@ -1280,16 +1280,16 @@ pub struct TaggedPath {
     pub tags: Vec<i64>,
 }
 
-/// `library.folder_style`: one folder, or every styled folder.
+/// `library.folder_style`: one folder or file, or every styled one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FolderStyleParams {
-    /// A folder in a library source; omitted: every folder that has a color or icon.
+    /// A folder or file in a library source; omitted: every one that has a color or icon.
     #[serde(default)]
     pub path: Option<String>,
 }
 
-/// A folder's color and icon (both absent: none).
+/// A folder's color and icon, or a file's icon (both absent: none).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FolderStyleInfo {
     pub path: String,
@@ -1297,7 +1297,7 @@ pub struct FolderStyleInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// One emoji, or `theme:<name>` (the icon theme's folder icon for folders of that
-    /// name).
+    /// name; for a file, its file icon for a file of that name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 }
@@ -1306,9 +1306,9 @@ pub struct FolderStyleInfo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetFolderStyleParams {
-    /// An indexed folder in a library source.
+    /// An indexed folder or file in a library source.
     pub path: String,
-    /// `#rrggbb`, or `""` to clear it.
+    /// `#rrggbb` (folders only), or `""` to clear it.
     #[serde(default)]
     pub color: Option<String>,
     /// One emoji or `theme:<name>`, or `""` to clear it.
