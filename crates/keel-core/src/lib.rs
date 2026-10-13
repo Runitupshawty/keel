@@ -18,6 +18,8 @@ mod arrange;
 pub mod backup;
 /// Filter chips for library search (shared with keel-web by path).
 pub mod chips;
+/// Hand-ordered collections of records.
+mod collections;
 /// Get Info comments by record.
 mod comments;
 mod db;
@@ -61,6 +63,7 @@ pub use arrange::{attributes_text, FolderOp, OrganizeBy};
 pub use backup::{
     BackupError, BackupFile, BackupSource, Manifest as BackupManifest, Restored, RestoredSource,
 };
+pub use collections::{Collection, CollectionId};
 pub use comments::MAX_COMMENT;
 pub use finder_tags::{FinderColor, FinderTag};
 pub use folder_dates::{ns_time, FolderDate};

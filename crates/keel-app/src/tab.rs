@@ -371,6 +371,16 @@ impl Tab {
         }
     }
 
+    /// The collection this library search tab shows, in its own order.
+    pub fn collection(&self) -> Option<keel_core::CollectionId> {
+        match &self.kind {
+            TabKind::Search { query, .. } if self.library_search => {
+                crate::library::collection_of(query)
+            }
+            _ => None,
+        }
+    }
+
     /// A tab showing the Recycle Bin / Trash (`trash://`): its rows are restored or
     /// deleted for good, never pasted into or edited.
     pub fn is_trash(&self) -> bool {
@@ -390,6 +400,12 @@ impl Tab {
     pub fn title(&self) -> String {
         match &self.kind {
             TabKind::Search { query, .. } if self.library_search => match query.as_str() {
+                q if crate::library::collection_of(q).is_some() => {
+                    match crate::library::collection_parts(q) {
+                        Some((_, name)) if !name.is_empty() => name.to_owned(),
+                        _ => "Collection".into(),
+                    }
+                }
                 crate::library::FAVORITES_QUERY => "Favorites".into(),
                 crate::library::RECENTS_QUERY => "Recents".into(),
                 "" => "Library search".into(),

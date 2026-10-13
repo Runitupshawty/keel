@@ -14,10 +14,13 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A multi-stage Docker build for keel-daemon with the embedded web client, a non-root runtime and persistent data/config storage ([Docker](docs/daemon.md#docker)).
 - A generated TypeScript JSON-RPC client with parameter/result types and methods from the Rust API registry, an API drift test, and strict TypeScript/runtime checks ([API client](docs/api.md#generated-typescript-client)).
 - A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
+- **Collections**: named, hand-ordered lists of files and folders from any sources. Right-click → **Add to collection** (a collection, or **New collection…**), or the command palette's **Add to collection: <name>**; the sidebar's **Collections** section (between Library and Bookmarks, hidden like the others from its header) opens one in a tab in its own order, where dragging a row onto another moves it before it (below the last row: to the end). **Remove from collection**, **Rename…** and **Delete…** never touch the files. See [Library](docs/library.md#library).
+- The API's `collections.list` and `collections.items`, and previewed `collections.create`, `collections.rename`, `collections.delete`, `collections.add`, `collections.remove` and `collections.move`. See [api.md](docs/api.md).
 
 ### Changed
 
 - Source stores are now at version 14 (freezes): a store this Keel opened is refused by an older Keel ("newer than this Keel").
+- The library database is now at version 10 (collections): a library this Keel opened is refused by an older Keel ("newer than this Keel").
 
 ### Fixed
 

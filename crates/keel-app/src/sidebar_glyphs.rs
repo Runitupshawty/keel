@@ -22,6 +22,8 @@ pub enum Glyph {
     Overview,
     Star,
     View,
+    /// A collection: two stacked cards.
+    Collection,
     Plus,
     Eject,
     /// A filled dot in this color (status dots, tag colors).
@@ -153,6 +155,10 @@ pub fn paint(p: &Painter, rect: Rect, glyph: Glyph, color: Color32) {
         Glyph::View => {
             ring(7.0, 7.0, 4.5);
             line(&[(10.3, 10.3), (14.0, 14.0)]);
+        }
+        Glyph::Collection => {
+            frame(box_(4.5, 1.5, 14.5, 10.5), 1.5);
+            frame(box_(1.5, 5.5, 11.5, 14.5), 1.5);
         }
         Glyph::Plus => {
             line(&[(8.0, 3.0), (8.0, 13.0)]);

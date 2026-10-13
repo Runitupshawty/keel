@@ -695,4 +695,49 @@ mod tests {
         );
         assert_eq!(views[0].backend, crate::ViewBackend::Library);
     }
+
+    /// A version-9 library (today's bookmarks) gains empty collections at version 10 and keeps
+    /// its rows; collection names are unique regardless of case.
+    #[test]
+    fn version_9_library_gains_collections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (v, sql) in migrations(Store::Library)
+                .into_iter()
+                .filter(|(v, _)| *v <= 9)
+            {
+                conn.execute_batch(&sql).unwrap();
+                conn.pragma_update(None, "user_version", v).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO view(id, name, query, layout) VALUES (3, 'PDFs', 'ext:pdf', 'grid');",
+            )
+            .unwrap();
+        }
+        let pool = Pool::open(&path, Store::Library).unwrap();
+        let c = pool.get().unwrap();
+        let version: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 10);
+        let view: String = c
+            .query_row("SELECT name FROM view WHERE id = 3", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(view, "PDFs");
+        let n: i64 = c
+            .query_row(
+                "SELECT (SELECT count(*) FROM collection) + (SELECT count(*) FROM collection_item)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+        c.execute("INSERT INTO collection(name) VALUES ('Trip')", [])
+            .unwrap();
+        assert!(c
+            .execute("INSERT INTO collection(name) VALUES ('TRIP')", [])
+            .is_err());
+    }
 }

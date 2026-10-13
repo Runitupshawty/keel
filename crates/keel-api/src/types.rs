@@ -1484,6 +1484,57 @@ pub struct ViewIdParams {
     pub id: i64,
 }
 
+/// A collection: a hand-ordered list of indexed files and folders.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CollectionInfo {
+    pub id: i64,
+    pub name: String,
+    /// How many files and folders it holds.
+    pub items: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionParams {
+    /// A collection id (`collections.list`).
+    pub id: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionCreateParams {
+    pub name: String,
+    /// Indexed paths to put in it, in this order.
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionRenameParams {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionPathsParams {
+    pub id: i64,
+    /// Indexed paths.
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionMoveParams {
+    pub id: i64,
+    /// Items of the collection, moved together in their collection order.
+    pub paths: Vec<String>,
+    /// The item they go before (absent: to the end).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+}
+
 /// The copies of one file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FileCopies {

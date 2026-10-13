@@ -1,9 +1,9 @@
 //! Left sidebar (Phase 14, Finder style): **Favorites** (user-arranged: drag folders in,
 //! drag rows to reorder, right-click to remove), **Locations** (drives with an eject button
 //! for removable ones, the trash, WSL (Task 51), open archives, remote hosts (Phase 3),
-//! cloud accounts (Phase 4), paired devices), **Library** and **Tags** (Task 29). Each
-//! section's header hides it (Hide / Show on hover); the layout is kept per profile in
-//! `[sidebar]` (`sidebar_prefs`).
+//! cloud accounts (Phase 4), paired devices), **Library**, **Collections**, **Bookmarks**
+//! and **Tags** (Task 29). Each section's header hides it (Hide / Show on hover); the
+//! layout is kept per profile in `[sidebar]` (`sidebar_prefs`).
 
 use crate::keys::Action;
 use crate::library::{LibCmd, RECENTS_QUERY};
@@ -169,6 +169,19 @@ impl Sidebar {
             ui.add_space(SECTION_GAP);
             if header(ui, Section::Library, prefs, theme, out, |_, _| ()) {
                 crate::library_ui::sidebar(ui, library, current, out);
+            }
+            // Hand-ordered collections (nothing while there are none).
+            if library.is_open() && !library.collections.is_empty() {
+                ui.add_space(SECTION_GAP);
+                let new = |ui: &mut egui::Ui, out: &mut Vec<Action>| {
+                    if ui.button("New collection…").clicked() {
+                        out.push(Action::Library(LibCmd::NewCollection { add: false }));
+                        ui.close_menu();
+                    }
+                };
+                if header(ui, Section::Collections, prefs, theme, out, new) {
+                    crate::library_ui::sidebar_collections(ui, library, out);
+                }
             }
             // Task 76: bookmarks of searches (nothing while there are none).
             if !crate::bookmarks::published(ui.ctx()).bookmarks.is_empty() {

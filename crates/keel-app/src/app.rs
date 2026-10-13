@@ -608,7 +608,10 @@ impl App {
                     // An in-app drag released over the pane but not on a folder row.
                     if released.is_some_and(|pos| rect.contains(pos)) {
                         if let Some(drag) = egui::DragAndDrop::take_payload::<DragPayload>(ctx) {
-                            out.push((p, drag.action(s.tab(p).dir.clone())));
+                            // Below a collection's rows: its items move to the end.
+                            let act = pane::collection_drop(&drag, p, s.tab(p), None)
+                                .unwrap_or_else(|| drag.action(s.tab(p).dir.clone()));
+                            out.push((p, act));
                         }
                     }
                 }
@@ -657,6 +660,9 @@ impl App {
         // Task 85: the user-defined cleanups, for the context menu's Cleanups.
         let cleanups = s.settings.cleanups.clone();
         ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::cleanups::MENU_ID), cleanups));
+        // The library's collections for the context menu's Add to collection.
+        let collections = (s.library.is_open()).then(|| s.library.collections.clone());
+        ctx.data_mut(|d| d.insert_temp(pane::collections_id(), collections));
         // Task 56: the library's folder styles for context menus and Ctrl+P.
         crate::folder_style::publish(ctx, &s.library);
         // Task 67: tags for the context menu's color dots.

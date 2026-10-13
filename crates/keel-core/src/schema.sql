@@ -457,3 +457,16 @@ CREATE TRIGGER record_freeze_ad AFTER DELETE ON record
     INSERT INTO frozen SELECT old.since + 1, max(id), old.id, old.parent, old.name, old.path,
         old.kind, old.size, old.mtime, old.flags FROM freeze;
 END;
+
+-- @library 10
+-- Collections: hand-ordered lists of files and folders from any source. An item points at a
+-- record like `opened` does (record ids are never reused); `pos` orders the items, and an
+-- item whose record is gone (its source removed) is dropped when the collection is read.
+CREATE TABLE collection(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+CREATE UNIQUE INDEX collection_name ON collection(name COLLATE NOCASE);
+CREATE TABLE collection_item(
+    collection INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    record INTEGER NOT NULL,
+    pos INTEGER NOT NULL,
+    PRIMARY KEY(collection, source, record)) WITHOUT ROWID;

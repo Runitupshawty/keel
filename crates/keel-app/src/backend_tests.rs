@@ -283,6 +283,41 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     b.note_open(&sources, &lib_path).unwrap();
     assert_eq!(b.search(&query(RECENTS_QUERY)).unwrap()[0].path, invoice);
 
+    // Collections through the daemon, in their own order.
+    use crate::backend::CollectionEdit as E;
+    let notes = VPath::local(s.files.path().join("docs").join("notes.txt"));
+    let (name, paths) = ("Trip".to_owned(), vec![lib_path.clone(), notes.clone()]);
+    b.edit_collection(&sources, E::Create { name, paths })
+        .unwrap();
+    let trip = b.collections().unwrap()[0].clone();
+    assert_eq!((trip.name.as_str(), trip.items), ("Trip", 2));
+    let shown = |b: &LibraryBackend| -> Vec<VPath> {
+        let q = query(&crate::library::collection_query(&trip));
+        b.search(&q).unwrap().into_iter().map(|h| h.path).collect()
+    };
+    assert_eq!(shown(&b), [invoice.clone(), notes.clone()]);
+    let (paths, before) = (vec![notes.clone()], Some(invoice.clone()));
+    b.edit_collection(
+        &sources,
+        E::Move {
+            id: trip.id,
+            paths,
+            before,
+        },
+    )
+    .unwrap();
+    assert_eq!(shown(&b), [notes.clone(), invoice.clone()]);
+    let paths = vec![notes.clone()];
+    b.edit_collection(&sources, E::Remove { id: trip.id, paths })
+        .unwrap();
+    assert_eq!(shown(&b), std::slice::from_ref(&invoice));
+    let name = "Rome".to_owned();
+    b.edit_collection(&sources, E::Rename { id: trip.id, name })
+        .unwrap();
+    assert_eq!(b.collections().unwrap()[0].name, "Rome");
+    b.edit_collection(&sources, E::Delete(trip.id)).unwrap();
+    assert!(b.collections().unwrap().is_empty());
+
     // Task 56: folder styles through the daemon (by library path, one field at a time).
     let docs = VPath::local(s.files.path().join("docs"));
     let lib_docs = keel_vfs::library::path(&id.0, "docs");
