@@ -690,7 +690,14 @@ fn term_of(text: &str, query: &Query) -> Term {
 
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
     let mut folders_only = query.folders_only;
-    let mut within = None;
+    // A pane's folder, resolved like a typed `in:` (below) and ending in a separator (whole
+    // folder names only); a typed `in:` takes its place.
+    let mut within = query.within.as_ref().map(|dir| {
+        #[cfg(not(windows))]
+        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
+        let dir = dir.display().to_string().replace('\\', "/").to_lowercase();
+        format!("{}/", dir.trim_end_matches('/'))
+    });
     let mut terms = Vec::new();
     if query.regex {
         if !query.text.is_empty() {

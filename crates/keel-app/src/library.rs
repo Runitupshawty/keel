@@ -1577,7 +1577,36 @@ pub(crate) fn entry_of(h: LibraryHit) -> Entry {
 pub struct LibSearch(pub LibraryBackend);
 
 impl Searcher for LibSearch {
+    /// A pane's folder (`within`) keeps the hits under it.
+    // ponytail: filtered after the library's own cap (the search's page), so a folder deep in
+    // a big library can show fewer hits than it has; filtering in the query needs the folder
+    // in LibraryQuery per source (relative paths) and in the daemon's `search` call.
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        let mut hits = self.search(q)?;
+        if let Some(dir) = &q.within {
+            hits.retain(|h| h.path.to_local_path().is_some_and(|p| p.starts_with(dir)));
+        }
+        Ok(hits)
+    }
+
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn status(&self) -> Option<String> {
+        match &self.0 {
+            LibraryBackend::InProcess(lib) => keel_core::LibrarySearcher(lib.clone()).status(),
+            LibraryBackend::Daemon(_) => None,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "Library"
+    }
+}
+
+impl LibSearch {
+    fn search(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         let lib = match &self.0 {
             LibraryBackend::InProcess(lib) => lib,
             daemon => return daemon.search(q),
@@ -1597,21 +1626,6 @@ impl Searcher for LibSearch {
                 snippet: None,
             })
             .collect())
-    }
-
-    fn available(&self) -> bool {
-        true
-    }
-
-    fn status(&self) -> Option<String> {
-        match &self.0 {
-            LibraryBackend::InProcess(lib) => keel_core::LibrarySearcher(lib.clone()).status(),
-            LibraryBackend::Daemon(_) => None,
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "Library"
     }
 }
 

@@ -99,6 +99,9 @@ pub struct Query {
     /// with `false` it skips that and the caller fills them later with
     /// [`fill_meta`] (on a worker). Everything has them either way.
     pub meta: bool,
+    /// Only hits under this folder (a pane's search box). A typed `in:` in `text` takes
+    /// its place where the backend reads one.
+    pub within: Option<PathBuf>,
 }
 
 impl Default for Query {
@@ -114,6 +117,7 @@ impl Default for Query {
             match_diacritics: false,
             whole_filename_wildcards: true,
             meta: true,
+            within: None,
         }
     }
 }
@@ -359,12 +363,22 @@ pub fn take_within(text: &str) -> (Option<String>, String) {
     )
 }
 
-/// Last resort: walk the home folder on every query.
+/// The folder `query` keeps to and its text without it: a typed `in:<folder>` (outside
+/// regex mode, see [`take_within`]), else [`Query::within`].
+pub(crate) fn scope(query: &Query) -> (Option<PathBuf>, String) {
+    let (typed, text) = match query.regex {
+        false => take_within(&query.text),
+        true => (None, query.text.clone()),
+    };
+    (typed.map(PathBuf::from).or(query.within.clone()), text)
+}
+
+/// Last resort: walk the home folder (with [`Query::within`], that folder) on every query.
 struct HomeWalk(std::path::PathBuf);
 
 impl Searcher for HomeWalk {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
-        Ok(walk(&self.0, query))
+        Ok(walk(query.within.as_deref().unwrap_or(&self.0), query))
     }
 
     fn available(&self) -> bool {
@@ -652,6 +666,45 @@ mod tests {
             (Some("/a b".into()), String::new())
         );
         assert_eq!(take_within("ünï in:/ü"), (Some("/ü".into()), "ünï".into()));
+    }
+
+    /// `Query::within` (a pane's folder) for the backends that read `scope` (Everything,
+    /// Spotlight, locate) and the home walk; a typed `in:` takes its place.
+    #[test]
+    fn a_pane_folder_scopes_the_query() {
+        use super::{scope, HomeWalk};
+        use std::path::PathBuf;
+        let q = |text: &str, regex, within: Option<&str>| Query {
+            text: text.into(),
+            regex,
+            within: within.map(PathBuf::from),
+            ..Query::default()
+        };
+        let pane = Some(PathBuf::from("/pane"));
+        assert_eq!(
+            scope(&q("x", false, Some("/pane"))),
+            (pane.clone(), "x".into())
+        );
+        let typed = (Some(PathBuf::from("/typed")), "x".into());
+        assert_eq!(scope(&q("x in:/typed", false, Some("/pane"))), typed);
+        // A regex is the whole text; the pane's folder still applies.
+        let regex = (pane, "in:/x ^a".into());
+        assert_eq!(scope(&q("in:/x ^a", true, Some("/pane"))), regex);
+        assert_eq!(scope(&q("x", false, None)), (None, "x".into()));
+
+        let root = std::env::temp_dir().join(format!("keel-walk-within-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["a", "b"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("needle.txt"), b"x").unwrap();
+        }
+        let home = HomeWalk(root.clone());
+        assert_eq!(home.query(&q("needle", false, None)).unwrap().len(), 2);
+        let a = root.join("a").display().to_string();
+        let hits = home.query(&q("needle", false, Some(&a))).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].path.display().starts_with(&a));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

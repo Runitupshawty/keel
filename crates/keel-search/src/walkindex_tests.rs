@@ -159,6 +159,20 @@ fn substring_glob_regex_and_filters() {
         d.root.join("docs").join("oldies").display()
     );
     assert_eq!(names(&s, &q(&within)), ["report.pdf"]);
+    // A pane's folder scopes the same way, by whole folder names, in regex mode too.
+    let scoped = |dir: PathBuf, text: &str, regex| Query {
+        within: Some(dir),
+        regex,
+        ..q(text)
+    };
+    let oldies = d.root.join("docs").join("oldies");
+    assert_eq!(
+        names(&s, &scoped(oldies.clone(), "report", false)),
+        ["report.pdf"]
+    );
+    assert_eq!(names(&s, &scoped(oldies, "^rep", true)), ["report.pdf"]);
+    let partial = d.root.join("docs").join("old");
+    assert!(names(&s, &scoped(partial, "report", false)).is_empty());
     let capped = Query {
         max: 2,
         ..q("report")

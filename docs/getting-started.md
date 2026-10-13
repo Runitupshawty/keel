@@ -195,7 +195,9 @@ F2 renames the selected item in place, with the name before its extension select
 
 ### Search
 
-Ctrl+F opens a search tab. On Windows Keel uses Everything when it runs, and otherwise its own index of your drives (Settings → General → **Index all drives (administrator)** builds the full index once; until then it covers your home folder). macOS uses Spotlight, Linux `plocate` or `locate` when installed, otherwise Keel's own index of your home folder. Ctrl+Enter opens the folder of the selected result with the file selected.
+Each pane has its own search box (**Search here**, at the right end of the tab row): typing there opens a search tab next to the folder that searches only under it, in its subfolders too, with the same backends, syntax and chips as Ctrl+F. Esc, the **×** next to the box, or emptying it goes back to the folder.
+
+Ctrl+F opens a search tab over everything. On Windows Keel uses Everything when it runs, and otherwise its own index of your drives (Settings → General → **Index all drives (administrator)** builds the full index once; until then it covers your home folder). macOS uses Spotlight, Linux `plocate` or `locate` when installed, otherwise Keel's own index of your home folder. Ctrl+Enter opens the folder of the selected result with the file selected.
 
 Queries are parts of names, `*.pdf` globs or `regex:`, with `folder:` for folders only and `in:<path>` to search under a folder; with Everything its own syntax works, such as `ext:pdf`, `dm:today` and `"exact phrase"`.
 

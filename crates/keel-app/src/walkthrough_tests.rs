@@ -1853,6 +1853,7 @@ fn profile_switch() {
     click_last(&mut h, "Profiles");
     let boxes: Vec<Pos2> = h
         .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::TextInput))
+        .filter(|n| n.label().as_deref() != Some("Search in this folder"))
         .map(|n| center_of(&n))
         .collect();
     fill(&mut h, boxes[0], "work");
@@ -2370,6 +2371,56 @@ fn media_view_with_dates() {
 // ---------------------------------------------------------------------------------------
 // The library
 
+/// Each pane has a search box: typing opens a search tab under that pane's folder, next to
+/// it (budget.csv is in Documents and in Backup; only Documents' answers); Esc goes back.
+#[test]
+fn pane_search_box_searches_under_the_folder() {
+    let root = demo();
+    let base = std::env::temp_dir().join(format!("keel-walk-{}-panesearch", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let walk = keel_search::WalkIndexSearcher::open(base, vec![root.to_owned()]).unwrap();
+    let boot = Boot {
+        searcher: Some(std::sync::Arc::new(walk)),
+        ..boot(
+            &root.join("Documents"),
+            &root.join("Backup"),
+            Default::default(),
+        )
+    };
+    let mut h = app_with(boot, SIZE);
+    let ready = |s: &AppState| s.searcher.as_ref().is_some_and(|x| x.available());
+    assert!(wait(&mut h, 60, &ready), "index built");
+    assert_eq!(h.query_all_by_label("Search in this folder").count(), 2);
+
+    click_nth(&mut h, "Search in this folder", 0);
+    type_text(&mut h, "budget");
+    let tab = s(&h).tab(0);
+    assert!(tab.is_search());
+    assert_eq!(
+        tab.search_within(),
+        Some(&VPath::local(root.join("Documents")))
+    );
+    assert_eq!(s(&h).panes[0].tabs.len(), 2);
+    let found = |s: &AppState| !s.tab(0).loading && !s.tab(0).entries().is_empty();
+    assert!(wait(&mut h, 30, &found), "results");
+    let paths: Vec<String> = s(&h)
+        .tab(0)
+        .entries()
+        .iter()
+        .map(|e| e.path.display())
+        .collect();
+    assert_eq!(paths.len(), 1, "{paths:?}");
+    assert!(paths[0].ends_with(&format!("Documents{}budget.csv", std::path::MAIN_SEPARATOR)));
+    assert!(has(&h, "in Documents"));
+    shot(&mut h, "pane-search");
+
+    key(&mut h, NONE, Key::Escape);
+    assert!(!s(&h).tab(0).is_search(), "Esc goes back to the folder");
+    assert_eq!(s(&h).panes[0].tabs.len(), 1);
+    let docs = root.join("Documents");
+    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &docs)));
+}
+
 /// A window with the library open on a fresh data folder, and the fixture-only search
 /// index (`screenshots::harness` does the same).
 fn with_library(
@@ -2835,6 +2886,7 @@ fn search_tab_with_library_filters() {
 /// below it).
 fn search_box(h: &H) -> Pos2 {
     h.query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::TextInput))
+        .filter(|n| n.label().as_deref() != Some("Search in this folder"))
         .map(|n| center_of(&n))
         .filter(|p| p.x > 150.0)
         .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))

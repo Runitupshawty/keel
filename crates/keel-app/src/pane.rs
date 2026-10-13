@@ -212,7 +212,23 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
         );
     }
     ui.add_space(3.0);
-    tab_strip(ui, idx, pane, out);
+    // The tab row, with the pane's search box at its right end: folder tabs a search can
+    // keep to (local folders and remote hosts; not the trash, archives or library views).
+    let tab = pane.tab();
+    let searchable = tab.kind == crate::tab::TabKind::Dir
+        && !tab.is_trash()
+        && tab.dir.split_archive().is_none()
+        && (tab.dir.to_local_path().is_some() || crate::remotes::is_network(&tab.dir));
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if searchable {
+                search_box(ui, out);
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                tab_strip(ui, idx, pane, out)
+            });
+        });
+    });
     if pane.tabs[pane.active].kind == crate::tab::TabKind::Overview {
         crate::library_ui::overview(ui, cx, out);
         return;
@@ -415,6 +431,21 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             });
         });
     });
+}
+
+/// The pane's search box: its first character opens a search tab under this folder
+/// (`Action::SearchIn`), which takes the typing over; the box itself stays empty.
+fn search_box(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    let mut text = String::new();
+    ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .desired_width(160.0)
+            .hint_text("Search here"),
+    )
+    .named("Search in this folder");
+    if !text.is_empty() {
+        out.push(Action::SearchIn(text));
+    }
 }
 
 fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {

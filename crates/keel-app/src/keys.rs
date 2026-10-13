@@ -180,6 +180,11 @@ pub enum Action {
     /// A new search tab in the pane running this query (the Disk Usage window's
     /// "Search for .ext").
     SearchFor(String),
+    /// The pane's search box: a search tab for this text under the shown folder, next to
+    /// its folder tab.
+    SearchIn(String),
+    /// Closes the pane's search tab and shows its folder tab again (Esc, ×, an empty box).
+    CloseSearch,
     JumpFolder,
     /// A Ctrl+P result: a folder opens; a file opens its folder with it selected and the
     /// preview shown. In a new tab, or in the other pane (a new tab when single-pane).

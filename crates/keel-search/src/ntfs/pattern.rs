@@ -44,7 +44,14 @@ fn strip_ci<'a>(term: &'a str, prefix: &str) -> Option<&'a str> {
 
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
     let mut folders_only = query.folders_only;
-    let mut within = None;
+    // A pane's folder, as a typed `in:` with a trailing separator (no partial name); a
+    // typed `in:` takes its place.
+    let mut within = (query.within.as_ref()).map(|dir| {
+        format!(
+            "{}\\",
+            dir.display().to_string().trim_end_matches(['\\', '/'])
+        )
+    });
     let mut terms = Vec::new();
     if query.regex {
         if !query.text.is_empty() {
@@ -289,6 +296,29 @@ mod tests {
         assert!(find(r"report in:D:\").is_empty());
         assert!(find(r"report in:C:\Nope\x").is_empty());
         assert_eq!(find(r#"in:"C:\Users\ann\my report.docx""#).len(), 1);
+    }
+
+    #[test]
+    fn a_pane_folder_keeps_to_whole_folder_names() {
+        let within = |text: &str, dir: &str, regex| {
+            find_q(Query {
+                text: text.into(),
+                regex,
+                within: Some(dir.into()),
+                ..Query::default()
+            })
+        };
+        let windows = [r"C:\Windows\report.pdf"];
+        assert_eq!(within("report.pdf", r"C:\Windows", false), windows);
+        assert_eq!(within("report.pdf", r"c:\windows\", false), windows);
+        assert_eq!(within(r"^report\.pdf$", r"C:\Windows", true), windows);
+        assert!(within("report.pdf", r"C:\Win", false).is_empty());
+        assert_eq!(within("report.pdf", r"C:\", false).len(), 2);
+        // A typed in: takes its place.
+        assert_eq!(
+            within(r"report.pdf in:C:\Windows", r"C:\Users", false),
+            windows
+        );
     }
 
     /// Match Whole Words, Match Path, Match Diacritics and whole-filename wildcards.
