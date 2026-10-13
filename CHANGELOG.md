@@ -2,7 +2,7 @@
 
 All notable changes to Keel are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.23.0] - 2026-10-12
 
 ### Added
 
@@ -150,6 +150,14 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Delete permanently refuses OneDrive and other cloud placeholders (folders that are reparse points but no links, offline and on-access files) instead of counting them as one empty file and then deleting their contents, walks without recursion, and deletes exactly the items it counted, one at a time.
 - Cleanups that run `cmd /c` now run as `cmd /d /v:off /s /c "<script>"`, so a script that starts with a value or a quoted program keeps its quotes: a file name holding `&`, `|`, `(` or `)` can no longer run commands. AutoRun and delayed expansion are off (with `/v:on` typed, a name with `!` is refused).
 - Cleanups find shells behind `sudo`, `doas`, `env`, `nice`, `time`, `xargs`, `wsl -e` and similar, and read `-c` in option clusters (`bash -lc`, `sh -ec`), so the script still gets quoted values. Windows PowerShell's default `-Command` (`powershell Remove-Item %p`), `/` switches and `-cwa` are read too. Values are refused where Keel cannot quote them: encoded commands, PowerShell switch values, `python -c`, `perl -e`, `node -e`, awk programs, fish and csh scripts, `ssh`, `watch`, `su`, `wsl` without `-e`, and placeholders inside a script's own quotes.
+
+### Known limitations
+
+- The Everything query language (the `keel-query` crate) is not yet wired into the window's search and the library search: they keep their own, simpler parsers.
+- The Disk Usage window's drive picker does not list phones and cameras yet (the scanner reads them on Windows; see [Phones and cameras](docs/files.md#phones-and-cameras)).
+- Localization has not started: the interface is in English only.
+- The Explorer menu, the Keel index service, the system cleanups and the Mica backdrop have not been tried on real hardware, only in CI and by their tests.
+- The ETP and HTTP servers have not been tried against a real Everything client.
 
 ## [0.22.1] - 2026-10-12
 

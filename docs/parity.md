@@ -195,7 +195,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 
 ## voidtools Everything and WinDirStat
 
-Added 2026-10-12 at the owner's request: every feature of voidtools Everything (1.4.1 and the 1.5 alpha) and WinDirStat (up to 2.9.3) is planned. The full checklist, verified against each project's own pages, and Keel's state for every item with file and line, are in [the audit](superpowers/plans/2026-10-12-everything-windirstat-audit.md). In short, at 0.22.0:
+Added 2026-10-12 at the owner's request: every feature of voidtools Everything (1.4.1 and the 1.5 alpha) and WinDirStat (up to 2.9.3) is planned. The full checklist, verified against each project's own pages, and Keel's state for every item with file and line, are in [the audit](superpowers/plans/2026-10-12-everything-windirstat-audit.md). In short, at 0.22.0 (rows 29 to 32 of the table above were completed in 0.23.0; the areas below are not updated):
 
 | Area | Keel today | Plan |
 | --- | --- | --- |
@@ -249,10 +249,10 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | **Done** (unreleased, [files.md](files.md#folder-operations)) | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |
-| 29 | Finder-style interface (unified toolbar, sidebar sections, list with disclosure triangles, Gallery, Quick Look, Get Info, tag colors) | owner request | D, F | L (Phase 14) |
-| 30 | Everything parity: full-metadata index and the whole search language | voidtools Everything | D: the owner's daily search tool | L (Phase 15) |
-| 31 | Everything parity: search window, file lists, servers, `es`, SDK | voidtools Everything | D | L (Phase 16) |
-| 32 | WinDirStat parity: scans, treemap, analysis tabs, cleanups, recovery | WinDirStat | D: "what fills this disk" | L (Phase 17) |
+| 29 | Finder-style interface (unified toolbar, sidebar sections, list with disclosure triangles, Gallery, Quick Look, Get Info, tag colors) | owner request | D, F | L (Phase 14). **Done** (0.23.0); the Windows title bar buttons and Mica backdrop are untested on real hardware |
+| 30 | Everything parity: full-metadata index and the whole search language | voidtools Everything | D: the owner's daily search tool | L (Phase 15). **Done** (0.23.0): the index with metadata, the journal and the index service, and the `keel-query` and `keel-props` readers; the query language is not yet wired into the window's or the library's search |
+| 31 | Everything parity: search window, file lists, servers, `es`, SDK | voidtools Everything | D | L (Phase 16). **Done** (0.23.0): toggles, filters, bookmarks, history, omissions, configurable keys, Quick Search window, file lists, HTTP and ETP servers, `keel es`, `keel-sdk`; not yet tried against a real Everything client; no localization |
+| 32 | WinDirStat parity: scans, treemap, analysis tabs, cleanups, recovery | WinDirStat | D: "what fills this disk" | L (Phase 17). **Done** (0.23.0): scans, treemap, sunburst, flame graph, analysis tabs, cleanups, compression, recovery, exports; the window's picker lacks phones; cleanups and the Explorer menu are untested on real hardware |
 
 Ruled out by the spec: OneDrive, hosted accounts and any cloud service of Keel's own.
 

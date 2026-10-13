@@ -151,10 +151,12 @@ cargo build --release
 
 ## Roadmap
 
-Phases 1 to 9 are released: the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients (the web client and phone app, mounts, Share → Keel). 0.10.0 and 0.11.0 shipped the Phase 9 follow-ups (the desktop app attaching to a running keel-daemon, Mount… in the sidebar, a Playwright run of the web client in CI) and video playback with sound in the media viewer.
+Phases 1 to 9 are released: the usable core, archives and terminal, SFTP remotes, cloud storage, polish, the library, media and protection, devices with the daemon, CLI and MCP, and clients (the web client and phone app, mounts, Share → Keel). 0.10.0 and 0.11.0 shipped the Phase 9 follow-ups (the desktop app attaching to a running keel-daemon, Mount… in the sidebar, a Playwright run of the web client in CI) and video playback with sound in the media viewer. Phases 14 to 17 shipped in 0.23.0: the Finder-style interface (unified toolbar, sidebar sections, disclosure triangles, Gallery, Quick Look, Get Info, tag colors, configurable keys), Everything parity (a full-metadata index and the search language reader, the search window's toggles, filters, bookmarks and history, file lists, the HTTP and ETP servers, `keel es` and the SDK) and WinDirStat parity (`keel du` scans, the Disk Usage window with treemap, sunburst and flame graph, analysis tabs, cleanups, compression and recovery).
 
 What is next, from the known limitations still open:
 
+- Wiring the Everything query language (`keel-query`) into the window's and the library's search, phones and cameras in the Disk Usage window's picker, and the interface translations.
+- Trying the Explorer menu, the index service, the system cleanups, the Mica backdrop and the ETP and HTTP servers (against a real Everything client) on real hardware.
 - Signed and notarized builds, and Windows and macOS release builds with a mount backend (Windows: blocked by winfsp-rs being GPL-3.0; macOS: macFUSE cannot be installed on the build machines).
 - Runs on real macOS and Linux hardware of what so far only runs in CI (terminal, SFTP, single instance, the global hotkey, Spotlight and `locate` search), and on a machine with WSL of WSL shells, the sidebar's WSL section and `keel` inside WSL ([Checking](docs/wsl.md#checking)).
 - SFTP: copies between two hosts without passing through this PC (`ProxyCommand` stays unsupported on purpose).
