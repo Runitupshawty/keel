@@ -235,6 +235,7 @@ hide_unlistable_tip = "Los resultados de búsqueda dejan fuera los archivos de c
 "file.open" = "Abrir"
 "file.open_with" = "Abrir con…"
 "file.open_location" = "Abrir ubicación"
+"file.convert_image" = "Convertir imagen…"
 "edit.copy" = "Copiar"
 "edit.cut" = "Cortar"
 "file.rename" = "Cambiar nombre"
