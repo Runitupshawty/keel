@@ -463,9 +463,7 @@ impl AppState {
         let video_tex = v.player.as_mut().and_then(|p| p.frame(area_px));
         if let Some(e) = v.player.as_ref().and_then(|p| p.error.clone()) {
             v.stop_video();
-            v.note = Some(format!(
-                "Cannot play this video here ({e}). Enter opens the system player."
-            ));
+            v.note = Some(crate::i18n::tr("media_viewer.cannot_play").replace("{error}", &e));
         }
         let dur = v.duration();
         let pos = v.player.as_mut().map(VideoPlayer::position);
@@ -491,25 +489,33 @@ impl AppState {
                 bar_ui.label(egui::RichText::new(&entry.name).strong());
                 bar_ui.label(egui::RichText::new(format!("{} / {n}", index + 1)).color(dim));
                 bar_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("×").on_hover_text("Close (Esc)").clicked() {
+                    if ui
+                        .button("×")
+                        .on_hover_text(crate::i18n::tr("media_viewer.close_tip"))
+                        .clicked()
+                    {
                         close = true;
                     }
                     if video {
                         ui.menu_button("⋯", |ui| {
                             let why = if strip_tex == Tex::Failed {
-                                "Run ffmpeg for this video's strip again (it failed or timed out before; a timeout is otherwise retried after a week)"
+                                crate::i18n::tr("media_viewer.retry_strip_failed_tip")
                             } else {
-                                "Run ffmpeg for this video's strip again"
+                                crate::i18n::tr("media_viewer.retry_strip_tip")
                             };
-                            if ui.button("Retry strip").on_hover_text(why).clicked() {
+                            if ui
+                                .button(crate::i18n::tr("media_viewer.retry_strip"))
+                                .on_hover_text(why)
+                                .clicked()
+                            {
                                 retry = true;
                                 ui.close_menu();
                             }
                         });
                     }
                     if ui
-                        .selectable_label(v.info, "Info")
-                        .on_hover_text("Metadata (I)")
+                        .selectable_label(v.info, crate::i18n::tr("media_viewer.info"))
+                        .on_hover_text(crate::i18n::tr("media_viewer.info_tip"))
                         .clicked()
                     {
                         v.info = !v.info;
@@ -517,31 +523,47 @@ impl AppState {
                     if library_on
                         && ui
                             .selectable_label(fav_on, if fav_on { "★" } else { "☆" })
-                            .on_hover_text("Favorite (F)")
+                            .on_hover_text(crate::i18n::tr("media_viewer.favorite_tip"))
                             .clicked()
                     {
                         fav = true;
                     }
                     if video
                         && ui
-                            .button("Open")
-                            .on_hover_text("Play in the system player (Enter)")
+                            .button(crate::i18n::tr("media_viewer.open"))
+                            .on_hover_text(crate::i18n::tr("media_viewer.open_tip"))
                             .clicked()
                     {
                         play = true;
                     }
-                    if ui.button("1:1").on_hover_text("100 % (1)").clicked() {
+                    if ui
+                        .button("1:1")
+                        .on_hover_text(crate::i18n::tr("media_viewer.percent_tip"))
+                        .clicked()
+                    {
                         v.zoom = Some(1.0);
                         v.pan = Vec2::ZERO;
                     }
-                    if ui.button("Fit").on_hover_text("Fit (0)").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("media_viewer.fit"))
+                        .on_hover_text(crate::i18n::tr("media_viewer.fit_tip"))
+                        .clicked()
+                    {
                         v.zoom = None;
                         v.pan = Vec2::ZERO;
                     }
-                    if ui.button("⏵").on_hover_text("Next (Right)").clicked() {
+                    if ui
+                        .button("⏵")
+                        .on_hover_text(crate::i18n::tr("media_viewer.next_tip"))
+                        .clicked()
+                    {
                         v.go(tab, 1);
                     }
-                    if ui.button("⏴").on_hover_text("Previous (Left)").clicked() {
+                    if ui
+                        .button("⏴")
+                        .on_hover_text(crate::i18n::tr("media_viewer.prev_tip"))
+                        .clicked()
+                    {
                         v.go(tab, -1);
                     }
                 });
@@ -605,9 +627,9 @@ impl AppState {
                             }
                         }
                         r.on_hover_text(if v.ffmpeg {
-                            "Click a frame to go there"
+                            crate::i18n::tr("media_viewer.strip_tip_play")
                         } else {
-                            "Click a frame to show it"
+                            crate::i18n::tr("media_viewer.strip_tip_still")
                         });
                     }
                 }
@@ -673,10 +695,12 @@ impl AppState {
                 } else {
                     let note = match thumb_tex {
                         Tex::Failed if video || v.full_err.is_some() => match &v.full_err {
-                            Some(e) => format!("Cannot show this file: {e}"),
-                            None => "No preview frame (is ffmpeg installed?)".into(),
+                            Some(e) => {
+                                crate::i18n::tr("media_viewer.cannot_show").replace("{error}", e)
+                            }
+                            None => crate::i18n::tr("media_viewer.no_preview").to_owned(),
                         },
-                        _ => "Loading…".into(),
+                        _ => crate::i18n::tr("sidebar.loading").to_owned(),
                     };
                     ui.painter().text(
                         body.center(),
@@ -701,7 +725,7 @@ impl AppState {
                         ui.painter().text(
                             body.left_bottom() + vec2(10.0, -8.0),
                             egui::Align2::LEFT_BOTTOM,
-                            format!("Full resolution unavailable: {e}"),
+                            crate::i18n::tr("media_viewer.full_unavailable").replace("{error}", e),
                             egui::FontId::proportional(12.0),
                             dim,
                         );
@@ -769,7 +793,7 @@ impl AppState {
         };
         if !v.ffmpeg {
             if c == Cmd::Toggle {
-                v.note = Some("ffmpeg is not installed: playing in the system player.".into());
+                v.note = Some(crate::i18n::tr("media_viewer.no_ffmpeg").to_owned());
                 self.launch(path.clone(), crate::platform::open);
             }
             return;
@@ -797,31 +821,38 @@ fn controls(ui: &mut egui::Ui, rect: Rect, v: &Viewer, pos: Option<f64>, dur: f6
     );
     row.visuals_mut().override_text_color = Some(Color32::from_gray(230));
     let (label, tip) = match (t.playing, v.ffmpeg) {
-        (true, _) => ("Pause", "Pause (Space)"),
-        (false, true) => ("▶ Play", "Play (Space)"),
+        (true, _) => (
+            crate::i18n::tr("media_viewer.pause"),
+            crate::i18n::tr("media_viewer.pause_tip"),
+        ),
+        (false, true) => (
+            crate::i18n::tr("media_viewer.play"),
+            crate::i18n::tr("media_viewer.play_tip"),
+        ),
         (false, false) => (
-            "▶ Play",
-            "Play in the system player (Space): ffmpeg is not installed",
+            crate::i18n::tr("media_viewer.play"),
+            crate::i18n::tr("media_viewer.play_system_tip"),
         ),
     };
     if row.button(label).on_hover_text(tip).clicked() {
         cmd = Some(Cmd::Toggle);
     }
     if row
-        .selectable_label(t.looping, "Loop")
-        .on_hover_text("Loop (L)")
+        .selectable_label(t.looping, crate::i18n::tr("media_viewer.loop"))
+        .on_hover_text(crate::i18n::tr("media_viewer.loop_tip"))
         .clicked()
     {
         cmd = Some(Cmd::Loop);
     }
     let vol = if t.muted {
-        "Muted".to_owned()
+        crate::i18n::tr("media_viewer.muted").to_owned()
     } else {
-        format!("Volume {:.0} %", t.volume * 100.0)
+        crate::i18n::tr("media_viewer.volume")
+            .replace("{volume}", &format!("{:.0}", t.volume * 100.0))
     };
     if row
         .button(vol)
-        .on_hover_text("Up / Down change the volume; click or M mutes")
+        .on_hover_text(crate::i18n::tr("media_viewer.volume_tip"))
         .clicked()
     {
         cmd = Some(Cmd::Mute);
@@ -866,17 +897,20 @@ fn info_panel(
     );
     let ui = &mut child;
     ui.visuals_mut().override_text_color = Some(Color32::from_gray(220));
-    ui.heading("Info");
+    ui.heading(crate::i18n::tr("media_viewer.info"));
     let mut rows: Vec<(&str, String)> = vec![
-        ("Name", entry.name.clone()),
-        ("Path", req.real.display()),
+        (crate::i18n::tr("toolbar.name"), entry.name.clone()),
+        (crate::i18n::tr("inspector.path"), req.real.display()),
         (
-            "Size",
+            crate::i18n::tr("toolbar.size"),
             humansize::format_size(entry.size, humansize::DECIMAL),
         ),
     ];
     match &v.meta {
-        None => rows.push(("Metadata", "reading…".into())),
+        None => rows.push((
+            crate::i18n::tr("media_viewer.metadata"),
+            crate::i18n::tr("media_viewer.reading").to_owned(),
+        )),
         Some(m) => rows.extend(meta_rows(m)),
     }
     if library.is_open() {
@@ -889,9 +923,9 @@ fn info_panel(
             .map(|t| t.name.clone())
             .collect();
         rows.push((
-            "Tags",
+            crate::i18n::tr("sidebar.tags"),
             if names.is_empty() {
-                "none".into()
+                crate::i18n::tr("media_viewer.none").to_owned()
             } else {
                 names.join(", ")
             },
@@ -915,41 +949,50 @@ fn info_panel(
 pub fn meta_rows(m: &MediaMeta) -> Vec<(&'static str, String)> {
     let mut rows = Vec::new();
     if m.width > 0 {
-        rows.push(("Dimensions", format!("{} x {}", m.width, m.height)));
+        rows.push((
+            crate::i18n::tr("media_viewer.dimensions"),
+            format!("{} x {}", m.width, m.height),
+        ));
     }
     if let Some(t) = m.taken_at {
         let when = chrono::DateTime::from_timestamp(t, 0)
             .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| t.to_string());
-        rows.push(("Taken", when));
+        rows.push((crate::i18n::tr("media_viewer.taken"), when));
     }
     if let Some(c) = &m.camera {
-        rows.push(("Camera", c.clone()));
+        rows.push((crate::i18n::tr("media_viewer.camera"), c.clone()));
     }
     if let Some(l) = &m.lens {
-        rows.push(("Lens", l.clone()));
+        rows.push((crate::i18n::tr("media_viewer.lens"), l.clone()));
     }
     if let Some((lat, lon)) = m.gps {
-        rows.push(("GPS", format!("{lat:.6}, {lon:.6}")));
+        rows.push((
+            crate::i18n::tr("media_viewer.gps"),
+            format!("{lat:.6}, {lon:.6}"),
+        ));
     }
     if let Some(d) = m.duration_ms {
         let s = d / 1000;
         rows.push((
-            "Duration",
+            crate::i18n::tr("media_viewer.duration"),
             format!("{}:{:02}.{}", s / 60, s % 60, (d % 1000) / 100),
         ));
     }
     if let Some(c) = &m.codec {
-        rows.push(("Codec", c.clone()));
+        rows.push((crate::i18n::tr("media_viewer.codec"), c.clone()));
     }
     if let Some(r) = m.rating {
-        rows.push(("Rating", format!("{r} / 5")));
+        rows.push((crate::i18n::tr("media_viewer.rating"), format!("{r} / 5")));
     }
     if !m.keywords.is_empty() {
-        rows.push(("Keywords", m.keywords.join(", ")));
+        rows.push((
+            crate::i18n::tr("media_viewer.keywords"),
+            m.keywords.join(", "),
+        ));
     }
     if let Some(e) = &m.error {
-        rows.push(("Error", e.clone()));
+        rows.push((crate::i18n::tr("media_viewer.error"), e.clone()));
     }
     rows
 }
