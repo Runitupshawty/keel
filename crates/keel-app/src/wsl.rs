@@ -368,7 +368,7 @@ mod tests {
         state.run(0, Action::SelectAll);
         state.run(0, Action::Delete);
         match &state.dialog {
-            Some(crate::dialogs::Dialog::Confirm { text, on_yes }) => {
+            Some(crate::dialogs::Dialog::Confirm { text, on_yes, .. }) => {
                 assert_eq!(
                     text,
                     "Delete 2 items in NoSuchDistro (WSL) permanently? WSL folders have no Recycle Bin; this cannot be undone."

@@ -1010,6 +1010,24 @@ fn move_and_delete_confirmation() {
     assert!(a.join("notes.md").exists(), "still there");
 }
 
+/// Each confirmation's yes button says what it does: Remove source is not "Move to trash".
+#[test]
+fn confirm_buttons_name_their_action() {
+    let root = demo();
+    let (mut h, base, _lib) = with_library("confirm", &root.join("Documents"), root);
+    let id = keel_core::SourceId("walk-src".into());
+    sm(&mut h).run(0, Action::Library(crate::library::LibCmd::RemoveSource(id)));
+    h.run_steps(2);
+    assert!(has_contains(&h, "from the library?"));
+    assert!(has(&h, "Remove"));
+    assert!(!has(&h, "Move to trash"));
+    click(&mut h, "Cancel");
+    assert!(s(&h).dialog.is_none());
+    close_library(&mut h);
+    drop(h);
+    let _ = std::fs::remove_dir_all(base);
+}
+
 // ---------------------------------------------------------------------------------------
 // Rename, bulk rename, new items
 

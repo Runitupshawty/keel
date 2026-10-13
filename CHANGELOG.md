@@ -10,6 +10,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - **Add to Sidebar** in a folder's context menu (also on search results) adds that folder to the sidebar's Favorites, at the end; a folder already there is not added twice. Before, folders were added by dragging or from the command palette. See [Sidebar](docs/files.md#sidebar).
 - Hover previews: resting the pointer on a file in the Details, Grid, Columns, Gallery or Media view for 500 ms shows a large floating preview next to it, at most 40 % of the window each way and kept inside it: images, PDF pages, video frames, audio covers and font samples, or the first 30 lines of a text or Markdown file. It comes from the preview panel's worker and cache (the panel need not be open; other kinds show nothing). Moving off the file, scrolling, a key or a click hides it until the pointer rests on another file; it never shows over Quick Look or the media viewer. Settings → General → **Hover preview** turns it off and sets the delay (200 to 2000 ms); `hover_preview` and `hover_preview_ms` in `config.toml`.
 
+### Fixed
+
+- Confirmations whose action has no button of its own no longer offer **Move to trash**: removing a library source asks **Remove**, deleting a bookmark **Delete**, and a mount change **Mount** or **Unmount** (it said OK). Each confirmation now names its button where it is asked.
+
 ## [0.23.0] - 2026-10-12
 
 ### Added

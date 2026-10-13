@@ -1559,7 +1559,7 @@ mod tests {
         state.run(0, Action::SelectAll);
         state.run(0, Action::Delete);
         match &state.dialog {
-            Some(crate::dialogs::Dialog::Confirm { text, on_yes }) => {
+            Some(crate::dialogs::Dialog::Confirm { text, on_yes, .. }) => {
                 assert_eq!(text, "Delete 2 items on Box nas? This cannot be undone.");
                 assert!(matches!(on_yes, Action::DeleteRemote(p) if p.len() == 2));
             }

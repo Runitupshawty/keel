@@ -885,6 +885,7 @@ impl AppState {
                     Ok(()) => {
                         self.dialog = Some(Dialog::Confirm {
                             text: preview,
+                            yes: "Undo",
                             on_yes: Action::UndoRun(id),
                         })
                     }
@@ -2348,6 +2349,7 @@ impl AppState {
                 {
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::trash_ui::delete_text(paths.len()),
+                        yes: "Delete permanently",
                         on_yes: Action::PurgeTrash(paths),
                     });
                     return;
@@ -2360,6 +2362,7 @@ impl AppState {
                             jobs::items(paths.len()),
                             archive.name()
                         ),
+                        yes: "Delete",
                         on_yes: Action::DeleteRemote(paths),
                     });
                     return;
@@ -2376,8 +2379,10 @@ impl AppState {
                         return self.toasts.error(why);
                     };
                     // Each service deletes differently: say what this one does.
+                    let kind = account.kind.remove_kind();
                     self.dialog = Some(Dialog::Confirm {
-                        text: crate::clouds::delete_text(paths.len(), account.kind.remove_kind()),
+                        text: crate::clouds::delete_text(paths.len(), kind),
+                        yes: crate::clouds::delete_button(kind),
                         on_yes: Action::DeleteRemote(paths),
                     });
                 } else if let Some(host) = remote.map(|p| p.authority.clone()) {
@@ -2385,17 +2390,20 @@ impl AppState {
                     let label = self.remotes.label(&host).to_owned();
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::remotes::delete_text(paths.len(), &label),
+                        yes: "Delete",
                         on_yes: Action::DeleteRemote(paths),
                     });
                 } else if let Some(distro) = crate::wsl::one_distro(&paths) {
                     // Task 51: WSL folders have no Recycle Bin; say the delete is for good.
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::wsl::delete_text(paths.len(), &distro),
+                        yes: "Delete",
                         on_yes: Action::DeleteRemote(paths),
                     });
                 } else if !paths.is_empty() {
                     self.dialog = Some(Dialog::Confirm {
                         text: format!("Move {} to the trash?", jobs::items(paths.len())),
+                        yes: "Move to trash",
                         on_yes: Action::Trash(paths),
                     });
                 }
@@ -2439,6 +2447,7 @@ impl AppState {
                 } else {
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::trash_ui::empty_text(n),
+                        yes: "Empty",
                         on_yes: Action::EmptyTrashNow,
                     });
                 }
@@ -2867,6 +2876,7 @@ impl AppState {
         }
         self.dialog = Some(Dialog::Confirm {
             text: format!("Add {} to \"{}\"?", jobs::items(src.len()), archive.name()),
+            yes: "Add",
             on_yes: Action::ZipTo { zip, src },
         });
     }
@@ -3466,9 +3476,11 @@ mod tests {
         match state.dialog.take() {
             Some(Dialog::Confirm {
                 text,
+                yes,
                 on_yes: Action::DeleteRemote(paths),
             }) => {
                 assert!(text.contains("from demo.zip for good"), "{text}");
+                assert_eq!(yes, "Delete");
                 assert_eq!(paths, [state.tab(0).dir.join("b.txt")]);
             }
             _ => panic!("delete confirmation"),

@@ -399,6 +399,7 @@ impl AppState {
                             "Delete the bookmark \"{}\"? The files it finds are not touched.",
                             v.name
                         ),
+                        yes: "Delete",
                         on_yes: Action::Find(FindCmd::Delete(store, id)),
                     });
                 }
