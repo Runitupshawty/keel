@@ -38,6 +38,7 @@ mod hover; // hover previews
 mod i18n; // interface languages (i18n/*.toml)
 mod icon_theme;
 mod icons;
+mod image_convert;
 mod inspector;
 mod jobs;
 mod journal_ui; // Phase 15: the index journal tab

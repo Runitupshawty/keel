@@ -123,6 +123,16 @@ impl JobCtx {
             "UPDATE job SET state = ?2, cursor = NULL, progress = ?3, updated = ?4 WHERE id = ?1",
             params![self.id, state.to_string(), progress, crate::now()],
         )?;
+        #[cfg(test)]
+        if progress > 0.0
+            && self
+                .lib
+                .jobs
+                .stop_at_checkpoint
+                .swap(false, Ordering::SeqCst)
+        {
+            self.simulate_close();
+        }
         self.written(progress)
     }
 
@@ -273,6 +283,9 @@ pub(crate) struct JobState {
     kinds: Mutex<HashMap<String, Restore>>,
     running: Mutex<HashMap<JobId, Running>>,
     pub(crate) closing: AtomicBool,
+    /// Stop at the first checkpoint with completed work, without racing a polling test.
+    #[cfg(test)]
+    pub(crate) stop_at_checkpoint: AtomicBool,
 }
 
 /// The library's job runner: one thread per running job.

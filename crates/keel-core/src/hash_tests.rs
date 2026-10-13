@@ -1,5 +1,5 @@
 use super::*;
-use crate::index::tests::{eventually, id_of, walk, write};
+use crate::index::tests::{id_of, walk, write};
 use crate::library::tests::folder;
 use crate::{validate_preview_execute, JobStatus, Op, Warning};
 use keel_vfs::VPath;
@@ -234,16 +234,19 @@ fn a_shared_unconfirmed_sampled_hash_is_never_a_duplicate() {
 
 #[test]
 fn hashing_resumes_from_its_checkpoint() {
-    // Many files past the first checkpoint: the job must still be running when the test
-    // reads the checkpoint (a fast runner hashes hundreds of tiny files in milliseconds).
-    const FILES: usize = super::CHECKPOINT_EVERY * 30;
+    const FILES: usize = super::CHECKPOINT_EVERY * 2;
     let files = tempfile::tempdir().unwrap();
     for i in 0..FILES {
         std::fs::write(files.path().join(format!("{i}.txt")), i.to_string()).unwrap();
     }
     let data = tempfile::tempdir().unwrap();
     let (lib, s) = library(data.path(), &[files.path()]);
+    lib.shared
+        .jobs
+        .stop_at_checkpoint
+        .store(true, Ordering::SeqCst);
     let id = lib.hash().unwrap();
+    assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Running);
     let state = |lib: &Library| -> serde_json::Value {
         let state: String = lib
             .shared
@@ -254,13 +257,10 @@ fn hashing_resumes_from_its_checkpoint() {
             .unwrap();
         serde_json::from_str(&state).unwrap()
     };
-    eventually("a checkpoint", || {
-        state(&lib)["done"].as_u64() >= Some(super::CHECKPOINT_EVERY as u64)
-    });
-    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
+    assert_eq!(state(&lib)["done"], super::CHECKPOINT_EVERY);
     let src_dir = s[0].store_dir().to_owned();
     drop(s);
-    drop(lib); // the "kill": the paused job stops at once and stays running
+    drop(lib); // the stopped job stays running in the database
     let at_kill = state_of(&data, id);
     assert!(
         at_kill["done"].as_u64().unwrap() < FILES as u64,
@@ -816,7 +816,7 @@ fn over_cap_and_failing_remote_files_do_not_reschedule_every_walk() {
 
 #[test]
 fn remote_hashing_resumes_from_its_checkpoint() {
-    const FILES: usize = super::CHECKPOINT_EVERY * 5;
+    const FILES: usize = super::CHECKPOINT_EVERY * 2;
     let data = tempfile::tempdir().unwrap();
     let (lib, _) = library(data.path(), &[]);
     let mem = Arc::new(keel_vfs::memory::MemoryProvider::new());
@@ -824,19 +824,18 @@ fn remote_hashing_resumes_from_its_checkpoint() {
         mem.put(&format!("/srv/{i}.txt"), i.to_string());
     }
     let r = remote_source(&lib, &mem, "server", "sftp://box/srv");
-    // Slow reads: the job is still running when the test reads the first checkpoint.
-    mem.read_delay_ms.store(10, Ordering::SeqCst);
+    lib.shared
+        .jobs
+        .stop_at_checkpoint
+        .store(true, Ordering::SeqCst);
     let id = lib.hash().unwrap();
-    eventually("a checkpoint", || {
-        state_of(&data, id)["done"].as_u64() >= Some(super::CHECKPOINT_EVERY as u64)
-    });
-    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
+    assert_eq!(lib.jobs().wait(id).unwrap().status, JobStatus::Running);
+    assert_eq!(state_of(&data, id)["done"], super::CHECKPOINT_EVERY);
     drop(r);
     drop(lib);
     let at_kill = state_of(&data, id)["done"].as_u64().unwrap();
     assert!(at_kill < FILES as u64, "{at_kill}");
 
-    mem.read_delay_ms.store(0, Ordering::SeqCst);
     let lib = Library::open(data.path(), "h").unwrap();
     lib.set_pause_on_battery(false);
     lib.router()

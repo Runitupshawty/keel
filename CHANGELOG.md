@@ -19,6 +19,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
 - **Collections**: named, hand-ordered lists of files and folders from any sources. Right-click → **Add to collection** (a collection, or **New collection…**), or the command palette's **Add to collection: <name>**; the sidebar's **Collections** section (between Library and Bookmarks, hidden like the others from its header) opens one in a tab in its own order, where dragging a row onto another moves it before it (below the last row: to the end). **Remove from collection**, **Rename…** and **Delete…** never touch the files. See [Library](docs/library.md#library).
 - The API's `collections.list` and `collections.items`, and previewed `collections.create`, `collections.rename`, `collections.delete`, `collections.add`, `collections.remove` and `collections.move`. See [api.md](docs/api.md).
+- **Convert image…** in the file context menu and command palette: convert local images to PNG, JPEG or lossless WebP, with an optional maximum dimension that keeps proportions and never enlarges. Runs as a cancellable job with progress, writes beside the originals and never replaces an existing file. Animation and metadata are not retained; JPEG removes transparency.
+- Azure Blob cloud accounts through OpenDAL: Settings → Cloud → Add account → Azure Blob, with an HTTPS endpoint, account name, container, optional key prefix and an account key kept in the OS keychain. Browsing, copying, renaming and permanent deletion use the existing cloud provider. Uploads are buffered and limited to 1 GiB per file; quota, Copy link and incremental change feeds are unavailable. Only the entered key is used, never environment, CLI or instance credentials. Tested against a local fake of the Blob service only, not yet against a real Azure account.
+- Google Cloud Storage (HMAC) preset in the cloud account wizard, using the existing S3-compatible backend with Google’s XML API (folders are deleted object by object, since that API has no batch delete). Not yet tried against a real bucket.
+- Documented Backblaze B2 setup through the existing S3-compatible account form (application key id and application key, bucket endpoint and region), not yet checked against a live B2 bucket.
 
 ### Changed
 
@@ -28,6 +32,16 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Confirmations whose action has no button of its own no longer offer **Move to trash**: removing a library source asks **Remove**, deleting a bookmark **Delete**, and a mount change **Mount** or **Unmount** (it said OK). Each confirmation now names its button where it is asked.
+- On macOS, `~/Applications/Keel.app` made by `install.sh` did not open: double-clicking it or `open ~/Applications/Keel.app` failed with LaunchServices error -10669, because its executable was a shell script. Its executable is now a link to the installed `keel` itself; run the install script again to replace an existing Keel.app.
+- Folder colors and icons were missing from Ctrl+P results when the search index resolved a library source's local path differently (such as `/var` and `/private/var` on macOS). The style cache now keeps both spellings, and keeps the stored path's style when the folder is offline.
+- The macOS inspector walkthrough selects the folder from the keyboard rather than clicking a clipped text label, and checks the selection before waiting for totals.
+- MCP confirmations with a missing or invalid JSON-RPC version no longer authorize execution.
+- Windows name validation now rejects `CONIN$`, `CONOUT$` and COM/LPT device names ending in superscript ¹, ² or ³, including names with extensions.
+- Existing local folders named like `x.zip!` are no longer mistaken for archive paths.
+- File URIs with a mixed-case `localhost` host now open as local paths when pasted or dropped.
+- The inspector's protection count counts a file reached through multiple sources once, including hard links, as the library's full redundancy count does.
+- A backup that cannot create its staging file no longer deletes another backup's in-progress file at the same target.
+- Checkpoint-resume unit tests stop at a durable checkpoint and join the worker before reopening the library, instead of racing a polling thread. Unit-test workers keep normal OS priority so CPU load does not starve their text readers and cause false extraction timeouts; application workers still use background priority.
 
 ## [0.23.0] - 2026-10-12
 

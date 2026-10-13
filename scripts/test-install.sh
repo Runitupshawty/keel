@@ -196,5 +196,23 @@ if [ ! -s "$t/out" ] && [ ! -s "$CALLS" ]; then ok "update: nothing started or s
 else fail "update: idle start ran: $(cat "$CALLS"), said $(cat "$t/out")"; fi
 PATH="$real_path"
 
+# --- macOS Keel.app: its executable links to the program (a script fails with -10669) ---
+mkdir -p "$t/app/share" "$t/app/Keel.app/Contents/MacOS"
+: > "$t/app/share/keel"
+printf '#!/bin/sh\nexec keel\n' > "$t/app/Keel.app/Contents/MacOS/Keel" # what 0.23.0 and older made
+: > "$t/app/Keel.app/Contents/stale"
+mac_app "$t/app/share" "$t/app/Keel.app" 1.2.3
+exe="$t/app/Keel.app/Contents/MacOS/Keel"
+plist="$t/app/Keel.app/Contents/Info.plist"
+if [ -L "$exe" ] && [ "$(readlink "$exe")" = "$t/app/share/keel" ]; then ok "app: the executable links to keel"
+else fail "app: the executable is not a link to keel: $(ls -l "$exe")"; fi
+if [ ! -e "$t/app/Keel.app/Contents/stale" ]; then ok "app: an older bundle is replaced"
+else fail "app: an older bundle's files are left"; fi
+for kv in CFBundleExecutable:Keel CFBundlePackageType:APPL CFBundleInfoDictionaryVersion:6.0 CFBundleVersion:1.2.3; do
+  if grep -q "<key>${kv%%:*}</key><string>${kv#*:}</string>" "$plist"; then ok "app: Info.plist $kv"
+  else fail "app: Info.plist lacks $kv"; fi
+done
+if command -v plutil >/dev/null; then check "app: Info.plist is a valid property list" 0 plutil -lint "$plist"; fi
+
 [ "$failed" = 0 ] || { echo "$failed check(s) failed"; exit 1; }
 echo "install.sh checks: all passed"

@@ -366,6 +366,14 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                     Action::OpenWith,
                 );
             }
+            if e.kind != Kind::Dir && crate::image_convert::supported(&e.path) {
+                action(
+                    ui,
+                    "Convert image…",
+                    "Convert to PNG, JPEG or WebP, or resize",
+                    Action::ConvertImage,
+                );
+            }
             if crate::jobs::is_archive_file(e) {
                 action(
                     ui,

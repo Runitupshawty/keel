@@ -2914,14 +2914,24 @@ fn inspector_copies_and_folder_totals() {
     // A folder: its totals.
     sm(&mut h).run(0, Action::Navigate(VPath::local(&dir)));
     assert!(wait(&mut h, 10, &listed));
-    click_row(&mut h, "a", 0, NONE);
+    // With the inspector open, the short label can lie outside the pane's clip rect;
+    // AccessKit's raw label bounds are not a reliable click target. Select the first
+    // folder from the keyboard instead.
+    key(&mut h, NONE, Key::Home);
+    assert_eq!(s(&h).tab(0).cursor.as_deref(), Some("a"));
     let totals = |s: &AppState| match &s.preview.inspector.answer {
         Some(Ok(i)) => {
             i.entry.name == "a" && i.library.as_ref().is_some_and(|l| l.folder.is_some())
         }
         _ => false,
     };
-    assert!(wait(&mut h, 30, &totals), "folder inspected");
+    assert!(
+        wait(&mut h, 30, &totals),
+        "folder inspected: dir {:?}, cursor {:?}, answer {:?}",
+        s(&h).tab(0).dir,
+        s(&h).tab(0).cursor,
+        s(&h).preview.inspector.answer
+    );
     let lib_part = s(&h)
         .preview
         .inspector
@@ -4106,4 +4116,84 @@ fn header_right_click_chooses_columns() {
     );
     assert!(has(&h, "Modified"), "the others stay");
     let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// Convert from the context menu, then open the same dialog from the palette.
+#[test]
+fn convert_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("photo.png");
+    image::RgbaImage::new(12, 6).save(&src).unwrap();
+    let original = std::fs::read(&src).unwrap();
+    let mut h = app(dir.path(), dir.path());
+    right_click_row(&mut h, "photo.png");
+    click(&mut h, "Convert image…");
+    assert!(has(&h, "Maximum dimension (pixels, blank keeps size)"));
+    click(&mut h, "WebP");
+    click(&mut h, "Maximum dimension");
+    type_text(&mut h, "8");
+    click(&mut h, "Convert");
+    assert!(wait(&mut h, 20, &job_done));
+    let output = image::open(dir.path().join("photo.webp")).unwrap();
+    assert_eq!((output.width(), output.height()), (8, 4));
+    assert_eq!(std::fs::read(src).unwrap(), original);
+    sm(&mut h).tab_mut(0).click("photo.png", false, false);
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "Convert image");
+    click(&mut h, "Convert image…");
+    assert!(matches!(
+        s(&h).dialog,
+        Some(crate::dialogs::Dialog::ConvertImage(_))
+    ));
+    click(&mut h, "Cancel");
+    assert!(s(&h).dialog.is_none());
+}
+
+/// The Azure account form is reachable through the cloud wizard and names each field.
+#[test]
+fn cloud_wizard_offers_azure_blob_and_its_key_fields() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    sm(&mut h).clouds.wizard = Some(crate::clouds::Wizard::default());
+    h.run();
+    click(&mut h, "Azure Blob");
+    assert_eq!(
+        s(&h).clouds.wizard.as_ref().unwrap().kind,
+        keel_vfs::CloudKind::AzureBlob
+    );
+    for label in [
+        "Endpoint",
+        "Account name",
+        "Container",
+        "Key prefix",
+        "Account key",
+        "Save",
+    ] {
+        assert!(has(&h, label), "{label}");
+    }
+    assert!(!has(&h, "Client id"));
+    click(&mut h, "Save");
+    assert!(
+        s(&h).clouds.wizard.as_ref().unwrap().error.is_some(),
+        "incomplete fields are refused"
+    );
+    click(&mut h, "Cancel");
+    assert!(s(&h).clouds.wizard.is_none());
+}
+
+#[test]
+fn cloud_wizard_gcs_preset_prefills_the_s3_form() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    sm(&mut h).clouds.wizard = Some(crate::clouds::Wizard::default());
+    h.run();
+    click(&mut h, "Google Cloud Storage (HMAC)");
+    let wizard = s(&h).clouds.wizard.as_ref().unwrap();
+    assert_eq!(wizard.kind, keel_vfs::CloudKind::S3);
+    assert_eq!(wizard.endpoint, "https://storage.googleapis.com");
+    assert_eq!(wizard.region, "auto");
+    assert!(has(&h, "Access key id") && has(&h, "Secret key"));
+    assert!(!has(&h, "Client id"));
+    click(&mut h, "Cancel");
+    assert!(s(&h).clouds.wizard.is_none());
 }

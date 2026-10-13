@@ -70,7 +70,7 @@ impl Endpoints {
                 scope: "files.content.read files.content.write files.metadata.read",
                 extra: &[("token_access_type", "offline")],
             },
-            CloudKind::S3 | CloudKind::WebDav => {
+            CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => {
                 anyhow::bail!("this account kind uses stored keys, not OAuth")
             }
         })
@@ -254,7 +254,7 @@ pub(crate) fn revoke_url(kind: CloudKind) -> Option<&'static str> {
     match kind {
         CloudKind::GoogleDrive => Some("https://oauth2.googleapis.com/revoke"),
         CloudKind::Dropbox => Some("https://api.dropboxapi.com/2/auth/token/revoke"),
-        CloudKind::S3 | CloudKind::WebDav => None,
+        CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => None,
     }
 }
 
@@ -265,7 +265,7 @@ pub(crate) fn revoke(kind: CloudKind, url: &str, token: &str) -> Result<()> {
     let request = match kind {
         CloudKind::GoogleDrive => http.post(url).form(&[("token", token)]),
         CloudKind::Dropbox => http.post(url).bearer_auth(token),
-        CloudKind::S3 | CloudKind::WebDav => {
+        CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => {
             anyhow::bail!("stored keys are revoked on the service")
         }
     };

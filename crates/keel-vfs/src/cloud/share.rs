@@ -18,7 +18,7 @@ pub(super) fn api_base(kind: CloudKind) -> &'static str {
     match kind {
         CloudKind::GoogleDrive => "https://www.googleapis.com",
         CloudKind::Dropbox => "https://api.dropboxapi.com",
-        CloudKind::S3 | CloudKind::WebDav => "",
+        CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => "",
     }
 }
 /// Where uploads go: Dropbox takes file content on a host of its own.
@@ -126,7 +126,9 @@ impl Core {
                     total: own.or(a["allocated"].as_u64()).filter(|n| *n > 0),
                 })
             }
-            CloudKind::S3 | CloudKind::WebDav => anyhow::bail!("the service reports no quota"),
+            CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => {
+                anyhow::bail!("the service reports no quota")
+            }
         }
     }
 
@@ -229,6 +231,7 @@ impl Core {
                 ))
             }
             CloudKind::WebDav => anyhow::bail!("WebDAV accounts have no share links"),
+            CloudKind::AzureBlob => anyhow::bail!("Azure Blob accounts have no share links"),
         }
     }
 }

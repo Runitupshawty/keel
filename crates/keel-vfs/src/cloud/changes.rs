@@ -85,7 +85,7 @@ impl Core {
             CloudKind::GoogleDrive => self.drive_changes(cursor, cancel),
             CloudKind::Dropbox => self.dropbox_changes(cursor, cancel),
             CloudKind::S3 => self.s3_changes(cursor, cancel),
-            CloudKind::WebDav => Err(FeedError::Unsupported.into()),
+            CloudKind::WebDav | CloudKind::AzureBlob => Err(FeedError::Unsupported.into()),
         }
     }
 

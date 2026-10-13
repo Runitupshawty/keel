@@ -214,6 +214,43 @@ fn def(root: &std::path::Path) -> SourceDef {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn folder_styles_keep_the_library_and_resolved_paths() {
+    let files = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let real = std::fs::canonicalize(files.path()).unwrap().join("real");
+    std::fs::create_dir_all(real.join("docs")).unwrap();
+    let alias = files.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let lib = Arc::new(keel_core::Library::open(data.path(), "main").unwrap());
+    let b = LibraryBackend::InProcess(lib);
+    let job = b.add_source(def(&alias)).unwrap();
+    wait_job(&b, job);
+    let sources = b.sources().unwrap();
+    let docs = VPath::local(alias.join("docs"));
+    let resolved = VPath::local(real.join("docs"));
+    b.set_folder_style(
+        &sources,
+        &docs,
+        Some(Some("#e5484d".into())),
+        Some(Some("📷".into())),
+    )
+    .unwrap();
+    let styles = b.folder_styles().unwrap();
+    let style = &styles[&crate::folder_style::key(&docs)];
+    assert_eq!(style.color.as_deref(), Some("#e5484d"));
+    assert_eq!(style.emoji(), Some("📷"));
+    assert_eq!(styles[&crate::folder_style::key(&resolved)], *style);
+    // Unreachable roots keep their stored spelling without needing the filesystem.
+    std::fs::remove_file(&alias).unwrap();
+    let offline = b.folder_styles().unwrap();
+    assert_eq!(offline[&crate::folder_style::key(&docs)], *style);
+    b.set_folder_style(&sources, &docs, Some(None), Some(None))
+        .unwrap();
+    assert!(b.folder_styles().unwrap().is_empty());
+}
+
 #[test]
 fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     let s = served();
@@ -330,6 +367,8 @@ fn the_daemon_backend_lists_searches_tags_plans_and_follows_jobs() {
     let style = &styles[&crate::folder_style::key(&docs)];
     assert_eq!(style.color.as_deref(), Some("#e5484d"));
     assert_eq!(style.emoji(), Some("📷"));
+    let resolved = VPath::local(std::fs::canonicalize(s.files.path().join("docs")).unwrap());
+    assert_eq!(styles[&crate::folder_style::key(&resolved)], *style);
     assert!(
         b.set_folder_style(&sources, &invoice, red(), None).is_err(),
         "a file"

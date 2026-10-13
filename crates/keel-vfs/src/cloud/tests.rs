@@ -17,6 +17,7 @@ fn account(id: &str, kind: CloudKind) -> CloudAccount {
         client_id_override: None,
         s3: None,
         webdav: None,
+        azure: None,
     }
 }
 /// A cloud account of `kind` backed by opendal's in-memory service (no native rename or
@@ -1278,6 +1279,10 @@ fn local_copy_checks_the_service_not_the_listing_cache() {
 #[test]
 fn single_request_uploads_are_capped_with_a_clear_message() {
     assert_eq!(CloudKind::WebDav.upload_limit(), Some(1024 * 1024 * 1024));
+    assert_eq!(
+        CloudKind::AzureBlob.upload_limit(),
+        Some(1024 * 1024 * 1024)
+    );
     // Chunked: no cap.
     for kind in [CloudKind::GoogleDrive, CloudKind::Dropbox, CloudKind::S3] {
         assert_eq!(kind.upload_limit(), None);
@@ -3191,4 +3196,168 @@ fn get_small_allows_plain_http_only_to_the_loopback_host() {
             "{url}: {err}"
         );
     }
+}
+
+#[test]
+fn azure_config_roundtrips_and_connects_only_with_a_stored_key() {
+    let keys = reqsign_azure_storage::StaticCredentialProvider::new_shared_key(
+        "keeltest",
+        "ZmFrZS1hY2NvdW50LWtleQ==",
+    );
+    let debug = format!("{keys:?}");
+    assert!(!debug.contains("keeltest") && !debug.contains("ZmFrZS1hY2NvdW50LWtleQ=="));
+    let mut a = account("azure", CloudKind::AzureBlob);
+    a.azure = Some(AzureBlobConfig {
+        endpoint: "https://keeltest.blob.core.windows.net".into(),
+        account_name: "keeltest".into(),
+        container: "photos".into(),
+    });
+    let text = toml::to_string(&a).unwrap();
+    assert_eq!(toml::from_str::<CloudAccount>(&text).unwrap(), a);
+    assert!(!text.contains("account_key"));
+    let cfg = a.azure.as_ref().unwrap();
+    cfg.validate().unwrap();
+    for endpoint in [
+        "http://host",
+        "https://u:p@host",
+        "https://host/path",
+        "https://host?key=x",
+        "https://host/#x",
+    ] {
+        assert!(AzureBlobConfig {
+            endpoint: endpoint.into(),
+            ..cfg.clone()
+        }
+        .validate()
+        .is_err());
+    }
+    for container in ["", "ab", "Photos", "a--b", "-abc", "abc-", "a/b"] {
+        assert!(AzureBlobConfig {
+            container: container.into(),
+            ..cfg.clone()
+        }
+        .validate()
+        .is_err());
+    }
+    let store = Arc::new(MemoryStore::default());
+    let events = crossbeam_channel::unbounded().0;
+    let err = CloudProvider::connect(&a, store.clone(), events.clone())
+        .err()
+        .expect("missing key");
+    assert!(format!("{err:#}").contains("key missing"));
+    store
+        .set("azure/account_key", "ZmFrZS1hY2NvdW50LWtleQ==")
+        .unwrap();
+    let p = CloudProvider::connect(&a, store.clone(), events).unwrap();
+    assert!(p.core.oauth.is_none());
+    assert!(!p.core.chunked());
+    assert_eq!(p.core.upload_limit, Some(1024 * 1024 * 1024));
+    forget_account(&*store, "azure");
+    assert!(store.keys().is_empty());
+    // Older accounts need no Azure metadata.
+    assert!(
+        toml::from_str::<CloudAccount>("id = 'old'\nlabel = 'Old'\nkind = 'S3'")
+            .unwrap()
+            .azure
+            .is_none()
+    );
+}
+
+#[test]
+fn azure_account_lists_uploads_moves_and_deletes_permanently() {
+    let p = memory_cloud_of("azure", CloudKind::AzureBlob);
+    assert_eq!(p.remove_kind(), RemoveKind::Permanent);
+    p.mkdir(&vp("cloud://azure/docs")).unwrap();
+    put(&p, "cloud://azure/docs/a.txt", b"hello");
+    assert_eq!(
+        names(&p.list_complete(&vp("cloud://azure/")).unwrap()),
+        ["docs"]
+    );
+    p.rename(&vp("cloud://azure/docs"), &vp("cloud://azure/papers"))
+        .unwrap();
+    assert_eq!(get(&p, "cloud://azure/papers/a.txt"), b"hello");
+    assert!(p.quota().is_none());
+    let err = p.changes(None, &NO).unwrap_err();
+    assert_eq!(feed_error(&err), Some(crate::FeedError::Unsupported));
+    assert!(p
+        .share_link(&vp("cloud://azure/papers/a.txt"), false)
+        .is_err());
+    p.remove(&vp("cloud://azure/papers")).unwrap();
+    assert!(is_not_found(
+        &p.stat(&vp("cloud://azure/papers/a.txt")).unwrap_err()
+    ));
+}
+
+/// The real Azure operator signs and roots requests, redirected to a loopback fake.
+#[test]
+fn azure_operator_signs_rooted_upload_and_download_requests() {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let saved = bytes.clone();
+    let base = serve(move |req| {
+        assert_eq!(req.path, "/photos/Albums/a.txt");
+        let auth = &req.headers["authorization"];
+        assert!(auth.starts_with("SharedKey keeltest:"), "{auth}");
+        assert!(!auth.contains("ZmFrZS1hY2NvdW50LWtleQ=="));
+        match req.method.as_str() {
+            "PUT" => {
+                assert_eq!(req.headers["x-ms-blob-type"], "BlockBlob");
+                *saved.lock() = req.body;
+                (201, vec![], vec![])
+            }
+            "HEAD" => {
+                if saved.lock().is_empty() {
+                    return (404, vec![], vec![]);
+                }
+                (
+                    200,
+                    vec![("Content-Length", saved.lock().len().to_string())],
+                    vec![],
+                )
+            }
+            "GET" => (200, vec![], saved.lock().clone()),
+            _ => (501, vec![], vec![]),
+        }
+    });
+    let mut a = account("azure", CloudKind::AzureBlob);
+    a.root = Some("/Albums".into());
+    a.azure = Some(AzureBlobConfig {
+        endpoint: "https://keeltest.blob.core.windows.net".into(),
+        account_name: "keeltest".into(),
+        container: "photos".into(),
+    });
+    init().unwrap();
+    let op = azure_op(&a, "ZmFrZS1hY2NvdW50LWtleQ==")
+        .unwrap()
+        .layer(ToFake(base));
+    let p = CloudProvider::with_operator(a, op, crossbeam_channel::unbounded().0).unwrap();
+    put(&p, "cloud://azure/a.txt", b"hello Azure");
+    assert_eq!(*bytes.lock(), b"hello Azure");
+    assert_eq!(get(&p, "cloud://azure/a.txt"), b"hello Azure");
+}
+
+#[test]
+fn gcs_xml_folder_delete_uses_individual_requests() {
+    let (base, fake) = s3_fake();
+    fake.lock().objects.extend([
+        ("docs/a.txt".into(), b"a".to_vec()),
+        ("docs/b.txt".into(), b"b".to_vec()),
+        ("keep.txt".into(), b"keep".to_vec()),
+    ]);
+    let mut a = account("gcs", CloudKind::S3);
+    a.s3 = Some(S3Config {
+        endpoint: "https://storage.googleapis.com".into(),
+        region: "auto".into(),
+        bucket: "b".into(),
+    });
+    init().unwrap();
+    let op = s3_op(&a, "fake-hmac-id", "fake-hmac-secret")
+        .unwrap()
+        .layer(ToFake(base));
+    let p = CloudProvider::with_operator(a, op, crossbeam_channel::unbounded().0).unwrap();
+    p.remove(&vp("cloud://gcs/docs")).unwrap();
+    assert_eq!(
+        fake.lock().objects.keys().cloned().collect::<Vec<_>>(),
+        ["keep.txt"]
+    );
+    assert!(fake.lock().log.iter().all(|r| !r.starts_with("POST ")));
 }

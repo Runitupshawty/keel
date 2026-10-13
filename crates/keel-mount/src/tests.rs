@@ -335,6 +335,7 @@ fn memory_cloud() -> Arc<keel_vfs::CloudProvider> {
         client_id_override: None,
         s3: None,
         webdav: None,
+        azure: None,
     };
     Arc::new(
         keel_vfs::CloudProvider::with_operator(account, op, crossbeam_channel::unbounded().0)

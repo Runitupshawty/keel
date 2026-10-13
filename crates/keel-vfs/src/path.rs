@@ -8,11 +8,21 @@ pub struct VPath {
 impl VPath {
     /// `file:///D:/x.zip!/dir/a.txt` => (`file:///D:/x.zip`, `"dir/a.txt"`). Nested chains split
     /// at the innermost boundary. Only a `!/` right after an archive file name counts, so a
-    /// folder named `Yahoo!` stays an ordinary path.
+    /// folder named `Yahoo!` stays an ordinary path. Existing local directories take
+    /// precedence, including a folder named `x.zip!`.
     pub fn split_archive(&self) -> Option<(VPath, String)> {
         let mut end = self.path.len();
         while let Some(i) = self.path[..end].rfind("!/") {
             let outer = &self.path[..i];
+            // A real local folder takes precedence over the archive path notation.
+            if Self::is_archive_name(outer.rsplit('/').next().unwrap_or(""))
+                && self.scheme == "file"
+                && self.authority.is_empty()
+                && std::path::Path::new(&self.path[..i + 1]).is_dir()
+            {
+                end = i;
+                continue;
+            }
             if Self::is_archive_name(outer.rsplit('/').next().unwrap_or("")) {
                 return Some((
                     Self {
@@ -210,6 +220,25 @@ mod tests {
     fn last_component_is_name() {
         assert_eq!(VPath::local(r"C:\Users\example").name(), "example");
     }
+    #[test]
+    fn archive_named_real_folder_is_local() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("x.zip!");
+        std::fs::create_dir(&folder).unwrap();
+        let child = folder.join("child.txt");
+        std::fs::write(&child, b"local").unwrap();
+        let path = VPath::local(&child);
+        assert_eq!(path.split_archive(), None);
+        assert_eq!(path.to_local_path(), Some(child));
+        assert_eq!(path.parent(), Some(VPath::local(&folder)));
+        assert_eq!(VPath::local(&folder).join("").split_archive(), None);
+        let archive = VPath::local(tmp.path().join("real.zip"));
+        assert_eq!(
+            VPath::join_archive(&archive, "child.txt").split_archive(),
+            Some((archive, "child.txt".into()))
+        );
+    }
+
     #[test]
     fn remote_authority() {
         let p = VPath::parse("sftp://box/a/b").unwrap();

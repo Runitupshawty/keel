@@ -148,6 +148,29 @@ $2
 EOF
 }
 
+# mac_app SHARE APP VERSION: (re)makes the APP bundle that launches SHARE/keel. Its executable
+# is a link to the program itself: LaunchServices refuses a script there (error -10669 on
+# macOS 15) and resolves the link, so keel still finds pdfium and keel-daemon beside it.
+mac_app() {
+  rm -rf "$2"
+  mkdir -p "$2/Contents/MacOS"
+  ln -s "$1/keel" "$2/Contents/MacOS/Keel"
+  cat > "$2/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleName</key><string>Keel</string>
+<key>CFBundleIdentifier</key><string>io.github.runitupshawty.keel</string>
+<key>CFBundleExecutable</key><string>Keel</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>$3</string>
+<key>CFBundleShortVersionString</key><string>$3</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+}
+
 # scripts/test-install.sh sources this file for the functions above, with this set.
 if [ "${KEEL_INSTALL_FUNCTIONS_ONLY:-}" = 1 ]; then return 0; fi
 
@@ -256,22 +279,7 @@ case "$plat" in
     ;;
   macos-*)
     [ "$signed" = 0 ] || xattr -dr com.apple.quarantine "$share" 2>/dev/null || true
-    mkdir -p "$app/Contents/MacOS"
-    printf '#!/bin/sh\nexec "%s/keel" "$@"\n' "$share" > "$app/Contents/MacOS/Keel"
-    chmod +x "$app/Contents/MacOS/Keel"
-    cat > "$app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>Keel</string>
-<key>CFBundleIdentifier</key><string>io.github.runitupshawty.keel</string>
-<key>CFBundleExecutable</key><string>Keel</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>${tag#v}</string>
-<key>CFBundleShortVersionString</key><string>${tag#v}</string>
-<key>NSHighResolutionCapable</key><true/>
-</dict></plist>
-PLIST
+    mac_app "$share" "$app" "${tag#v}"
     ;;
 esac
 

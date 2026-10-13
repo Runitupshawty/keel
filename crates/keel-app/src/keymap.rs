@@ -390,6 +390,7 @@ pub fn commands() -> Vec<Command> {
         .ctx(),
         cmd("archive.add_zip", "Add to zip", AddToZip, &[]).ctx(),
         cmd("archive.compress", "Compress to zip…", CompressToZip, &[]).ctx(),
+        cmd("file.convert_image", "Convert image…", ConvertImage, &[]).ctx(),
         cmd(
             "library.tag",
             "Tag…",

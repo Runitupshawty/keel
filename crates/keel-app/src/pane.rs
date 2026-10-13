@@ -755,6 +755,11 @@ pub fn context_menu(
             item(ui, tr("menu.extract_to"), "", Action::ExtractTo);
             item(ui, tr("menu.extract_to_other"), "", Action::ExtractToOther);
         }
+        if entry.is_some_and(|e| {
+            e.kind != keel_vfs::Kind::Dir && crate::image_convert::supported(&e.path)
+        }) {
+            item(ui, "Convert image…", "", Action::ConvertImage);
+        }
         ui.separator();
         item(ui, tr("menu.copy"), "Ctrl+C", Action::Copy);
         item(ui, tr("menu.cut"), "Ctrl+X", Action::Cut);

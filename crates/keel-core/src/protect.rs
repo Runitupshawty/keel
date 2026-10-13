@@ -809,11 +809,9 @@ impl Library {
         self.redundancy_with(&vols, record)
     }
 
-    /// `redundancy` for the inspector, bounded: the counts from one aggregate per source,
+    /// `redundancy` for the inspector: distinct file keys across sources give the counts,
     /// and at most `max` of the OTHER copies (device claims last), with whether there are
-    /// more. Nothing per copy is read beyond those.
-    /// ponytail: a file seen through two sources (an alias) counts once per source here
-    /// where `redundancy` counts it once; carry the file keys across if that ever shows.
+    /// more. Paths and other per-copy details are read only for those locations.
     pub(crate) fn redundancy_bounded(
         &self,
         record: &RecordRef,
@@ -834,7 +832,8 @@ impl Library {
             .optional()?
             .with_context(|| format!("no record {}", record.id))?;
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
-        let (mut held, mut files, mut offline, mut backup) = (0, 0, 0, false);
+        let (mut held, mut backup) = (false, false);
+        let (mut files, mut offline) = (HashSet::new(), HashSet::new());
         let mut domains = HashSet::new();
         let mut locations = Vec::new();
         if let Some(cas) = &cas {
@@ -849,19 +848,26 @@ impl Library {
                 };
                 let c = s.store.get()?;
                 if !claimed {
-                    let n: u64 = c.query_row(
-                        &format!(
-                            "SELECT count(DISTINCT CASE WHEN substr(fs_id, 1, 2) <> 'h:' \
-                             THEN fs_id ELSE ':' || id END) FROM record WHERE {filter}"
-                        ),
-                        [cas],
-                        |r| r.get(0),
+                    let mut stmt = c.prepare(
+                        "SELECT DISTINCT CASE WHEN substr(fs_id, 1, 2) <> 'h:' THEN fs_id
+                         ELSE ?2 || ':' || id END FROM record
+                         WHERE cas_id = ?1 AND kind = 0 AND drift IS NULL",
                     )?;
+                    let keys = stmt.query_map(params![cas, s.id.0], |r| r.get::<_, String>(0))?;
                     let v = vols.of(s);
-                    held += n;
-                    if n > 0 && v.state.counts() {
-                        files += n;
-                        offline += if v.state.offline() { n } else { 0 };
+                    let mut any = false;
+                    for key in keys {
+                        let key = key?;
+                        held = true;
+                        any = true;
+                        if v.state.counts() {
+                            if v.state.offline() {
+                                offline.insert(key.clone());
+                            }
+                            files.insert(key);
+                        }
+                    }
+                    if any && v.state.counts() {
                         backup |= v.backup;
                         domains.insert(v.failure_domain.clone());
                     }
@@ -898,7 +904,7 @@ impl Library {
         }
         let more = locations.len() > max;
         locations.truncate(max);
-        let r = if held == 0 {
+        let r = if !held {
             // No content id yet (or only drifted copies or claims): the record itself.
             Redundancy {
                 copies: 1,
@@ -910,10 +916,10 @@ impl Library {
         } else {
             let d = domains.len() as u64;
             Redundancy {
-                copies: files,
+                copies: files.len() as u64,
                 failure_domains: d,
                 backed_up: backup && d >= 2,
-                offline_copies: offline,
+                offline_copies: offline.len() as u64,
                 locations,
             }
         };

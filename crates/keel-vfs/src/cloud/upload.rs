@@ -204,7 +204,7 @@ impl Core {
         match self.account.kind {
             CloudKind::GoogleDrive | CloudKind::Dropbox => self.oauth.is_some(),
             CloudKind::S3 => self.s3.is_some(),
-            CloudKind::WebDav => false,
+            CloudKind::WebDav | CloudKind::AzureBlob => false,
         }
     }
 
@@ -737,7 +737,9 @@ impl<'c> CloudUpload<'c> {
                     self.sent += data.len() as u64;
                     return Ok(());
                 }
-                CloudKind::WebDav => anyhow::bail!("WebDAV has no upload sessions"),
+                CloudKind::WebDav | CloudKind::AzureBlob => {
+                    anyhow::bail!("this account has no upload sessions")
+                }
             });
         }
         match self.session.as_mut().context("no upload session")? {

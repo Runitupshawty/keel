@@ -821,9 +821,20 @@ impl LibraryBackend {
                     .collect()
             }
         };
-        Ok((list.into_iter())
-            .map(|(p, s)| (crate::folder_style::key(&p), s))
-            .collect())
+        let mut styles = HashMap::new();
+        for (p, s) in list {
+            // The search index resolves local roots (macOS: /var -> /private/var).
+            // Keep both spellings; resolve here on the metadata worker, never while
+            // drawing a row. An offline folder still keeps its library path's style.
+            if let Some(real) = p
+                .to_local_path()
+                .and_then(|p| std::fs::canonicalize(p).ok())
+            {
+                styles.insert(crate::folder_style::key(&VPath::local(real)), s.clone());
+            }
+            styles.insert(crate::folder_style::key(&p), s);
+        }
+        Ok(styles)
     }
 
     /// Task 56: sets a folder's color and icon (`None`: unchanged, `Some(None)`: cleared).
