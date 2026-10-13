@@ -643,6 +643,12 @@ On Windows, Settings → General → **Explorer menu** adds two commands to Expl
 
 A profile is a separate settings file and session (tabs, views, drop zone). Settings → Profiles creates one (a copy of the current settings), renames, deletes (to the OS trash) and switches; the command palette has "Switch profile: <name>". `keel --profile <name>` starts in a profile. Files: `<config>/profiles/<name>/config.toml`; the session is in the cache folder (`profiles/<name>/session.json`, or `session.json` for `default`).
 
+## Interface language
+
+Settings → General → **Language** picks English or Español (Spanish). The choice applies at once and is saved per profile (`language = "es"` in `config.toml`). Translated so far: each pane's tab strip, **Search here** box, navigation and view buttons, path box and filter; the sidebar's section headings, places (Home, Desktop, …) and menus; the status bar; the preview panel's Preview and Inspector tabs; the file list's context menu (except Folder color, Folder icon and the tag colors); the command palette; and Settings → General with the names of the Settings pages. Everything else (the Finder-style toolbar, the path bar, the other Settings pages and a few rows of General, dialogs, toasts, job messages and the command line) is still English, as is any text the translation lacks.
+
+The text lives in `crates/keel-app/i18n/<code>.toml`, one `key = "text"` table per language, built into Keel; `en.toml` is the list of keys and the fallback. The command palette's English names are those of the command table (`keymap.rs`, the names Settings → Keyboard shows); another language translates them by command id in its `[command]` table (`"view.refresh" = "Actualizar"`). To add a language, copy `en.toml` to `<code>.toml`, translate every value (keep placeholders such as `{name}` as they are), add a `[command]` table like Spanish's, and add the file to `FILES` in `crates/keel-app/src/i18n.rs`. To translate more of the window, add a key to `en.toml` and every other language and write `tr("table.key")` where the English text was (`.replace("{name}", …)` for a placeholder). The tests check that every language has every key with the same placeholders and every palette command, and that every key the code uses exists.
+
 ## Appearance
 
 Settings → **Appearance** sets how the window is drawn; the color theme (below) sets its colors on top.

@@ -35,6 +35,7 @@ mod fuzz_tests;
 mod goto; // Phase 14 Task 67
 mod hardlink_dedup; // Task 85: replace duplicates with hard links
 mod hover; // hover previews
+mod i18n; // interface languages (i18n/*.toml)
 mod icon_theme;
 mod icons;
 mod inspector;

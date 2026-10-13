@@ -2,6 +2,7 @@
 //! and the active tab's details or grid view.
 
 use crate::a11y::Named;
+use crate::i18n::tr;
 use crate::keys::Action;
 use crate::tab::{Nav, Tab};
 use crate::theme::Theme;
@@ -260,7 +261,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     if let Some(err) = tab.error.clone() {
         ui.horizontal(|ui| {
-            if ui.small_button("×").tip("Dismiss the error").clicked() {
+            if ui.small_button("×").tip(tr("pane.dismiss_error")).clicked() {
                 tab.error = None;
             }
             ui.colored_label(ui.visuals().error_fg_color, err);
@@ -310,8 +311,8 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                     if pane.tabs.len() > 1
                         && ui
                             .add(egui::Button::new("×").frame(false).small())
-                            .named(&format!("Close tab {}", tab.title()))
-                            .on_hover_text("Close tab (Ctrl+W)")
+                            .named(&tr("pane.close_tab_named").replace("{name}", &tab.title()))
+                            .on_hover_text(tr("pane.close_tab_tip"))
                             .clicked()
                     {
                         close = Some(i);
@@ -319,7 +320,7 @@ fn tab_strip(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, out: &mut Vec<Actio
                 }
                 if ui
                     .add(egui::Button::new("+").frame(false))
-                    .tip("New tab (Ctrl+T)")
+                    .tip(tr("pane.new_tab_tip"))
                     .clicked()
                 {
                     out.push(Action::NewTab);
@@ -379,45 +380,33 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             !toolbar(crate::toolbar::Item::Views),
         );
         let back = !tab.history.is_empty() || !tab.columns.cols.is_empty();
-        if arrows && nav(ui, back, "⏴", "Back (Alt+Left)") {
+        if arrows && nav(ui, back, "⏴", tr("pane.back_tip")) {
             out.push(Action::Back);
         }
-        if arrows && nav(ui, !tab.future.is_empty(), "⏵", "Forward (Alt+Right)") {
+        if arrows && nav(ui, !tab.future.is_empty(), "⏵", tr("pane.forward_tip")) {
             out.push(Action::Forward);
         }
-        if nav(ui, tab.dir.parent().is_some(), "⏶", "Up (Alt+Up)") {
+        if nav(ui, tab.dir.parent().is_some(), "⏶", tr("pane.up_tip")) {
             out.push(Action::Up);
         }
-        if nav(ui, true, "⟳", "Refresh (F5)") {
+        if nav(ui, true, "⟳", tr("pane.refresh_tip")) {
             out.push(Action::Refresh);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             for (mode, text, tip) in [
-                (
-                    ViewMode::Sizes,
-                    "Sizes",
-                    "Folders and files by size: what fills this folder (Enter goes down, Backspace up)",
-                ),
-                (
-                    ViewMode::Media,
-                    "Media",
-                    "Photo and video tiles (Space opens the viewer)",
-                ),
-                (
-                    ViewMode::Gallery,
-                    "Gallery",
-                    "Gallery view: a big preview over a strip of thumbnails",
-                ),
-                (ViewMode::Columns, "Columns", "Columns view"),
-                (ViewMode::Grid, "Grid", "Grid view with thumbnails"),
-                (ViewMode::Details, "Details", "Details view"),
+                (ViewMode::Sizes, "pane.sizes", "pane.sizes_tip"),
+                (ViewMode::Media, "pane.media", "pane.media_tip"),
+                (ViewMode::Gallery, "pane.gallery", "pane.gallery_tip"),
+                (ViewMode::Columns, "pane.columns", "pane.columns_tip"),
+                (ViewMode::Grid, "pane.grid", "pane.grid_tip"),
+                (ViewMode::Details, "pane.details", "pane.details_tip"),
             ]
             .into_iter()
             .filter(|_| views)
             {
                 if ui
-                    .selectable_label(pane.view == mode, text)
-                    .on_hover_text(tip)
+                    .selectable_label(pane.view == mode, tr(text))
+                    .on_hover_text(tr(tip))
                     .clicked()
                 {
                     pane.view = mode;
@@ -443,9 +432,9 @@ fn search_box(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         .add(
             egui::TextEdit::singleline(&mut text)
                 .desired_width(160.0)
-                .hint_text("Search here"),
+                .hint_text(tr("pane.search_hint")),
         )
-        .named("Search in this folder");
+        .named(tr("pane.search_name"));
     ui.input(|i| {
         for e in &i.events {
             if let egui::Event::Ime(ime) = e {
@@ -467,7 +456,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         let r = ui.add(
             egui::TextEdit::singleline(text)
                 .desired_width(f32::INFINITY)
-                .hint_text("Path"),
+                .hint_text(tr("pane.path_hint")),
         );
         if std::mem::take(&mut pane.focus_path) {
             r.request_focus();
@@ -556,7 +545,7 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                     });
                 })
                 .response
-                .tip("The rest of the path");
+                .tip(tr("pane.rest_of_path"));
                 if first < parts.len() {
                     ui.weak("›");
                 }
@@ -582,8 +571,8 @@ fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             let size = egui::vec2(ui.available_width().max(0.0), h);
             let empty = ui.allocate_response(size, Sense::click());
             if empty
-                .named("Type a path (Ctrl+L)")
-                .on_hover_text("Click to type a path (Ctrl+L)")
+                .named(tr("pane.type_path"))
+                .on_hover_text(tr("pane.click_to_type_path"))
                 .clicked()
             {
                 pane.edit_path();
@@ -602,7 +591,7 @@ pub(crate) fn crumb_label(dir: &VPath, i: usize) -> String {
         name if i > 0 && !name.is_empty() => name.to_owned(),
         // Task 29: a library source root reads as its label.
         _ if dir.scheme == keel_vfs::library::SCHEME => crate::library::label_of(&dir.authority)
-            .map(|l| format!("Library › {l}"))
+            .map(|l| tr("pane.library_crumb").replace("{name}", &l))
             .unwrap_or_else(|| dir.display()),
         // The Recycle Bin / Trash by its name, as in its tab, not `trash:///`.
         _ if dir.scheme == keel_vfs::trashbin::SCHEME => keel_vfs::trashbin::label().to_owned(),
@@ -617,7 +606,7 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
     let focus = std::mem::take(&mut pane.focus_filter);
     let tab = pane.tab_mut();
     ui.horizontal(|ui| {
-        ui.label("Filter");
+        ui.label(tr("pane.filter"));
         let id = ui.id().with("filter");
         // List keys keep working while typing a filter.
         if ui.memory(|m| m.has_focus(id)) {
@@ -638,7 +627,7 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
             egui::TextEdit::singleline(&mut tab.filter)
                 .id(id)
                 .desired_width(220.0)
-                .hint_text("type to filter"),
+                .hint_text(tr("pane.filter_hint")),
         );
         if focus {
             r.request_focus();
@@ -651,7 +640,7 @@ fn filter_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
                 state.store(ui.ctx(), id);
             }
         }
-        let close = ui.small_button("×").tip("Clear filter (Esc)").clicked();
+        let close = ui.small_button("×").tip(tr("pane.clear_filter")).clicked();
         if close || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
             tab.filter.clear();
             tab.filter_open = false;
@@ -698,69 +687,77 @@ pub fn context_menu(
     };
     if search {
         if on_item {
-            item(ui, "Omit results", "", Action::OmitResults(false));
+            item(ui, tr("menu.omit"), "", Action::OmitResults(false));
             item(
                 ui,
-                "Omit results temporarily",
+                tr("menu.omit_temporarily"),
                 "",
                 Action::OmitResults(true),
             );
         }
-        item(ui, "Manage omissions", "", Action::ManageOmissions);
-        item(ui, "Show omitted results (toggle)", "", Action::ShowOmitted);
+        item(ui, tr("menu.manage_omissions"), "", Action::ManageOmissions);
+        item(ui, tr("menu.show_omitted"), "", Action::ShowOmitted);
         ui.separator();
     }
     if on_item {
-        item(ui, "Open", "Enter", Action::Enter);
+        item(ui, tr("menu.open"), "Enter", Action::Enter);
         let recent: crate::settings::OpenWith = ui
             .ctx()
             .data(|d| d.get_temp(egui::Id::new("keel-open-with")))
             .unwrap_or_default();
         let apps = entry.map_or(&[][..], |e| recent.recent(&e.ext));
         if apps.is_empty() {
-            item(ui, "Open with…", "Ctrl+Shift+O", Action::OpenWith);
+            item(ui, tr("menu.open_with"), "Ctrl+Shift+O", Action::OpenWith);
         } else {
-            ui.menu_button("Open with", |ui| {
+            ui.menu_button(tr("menu.open_with_menu"), |ui| {
                 for app in apps.iter().take(5) {
                     let label = crate::platform::app_label(app);
                     item(ui, &label, "", Action::OpenWithRecent(app.clone()));
                 }
                 ui.separator();
-                item(ui, "Choose app…", "Ctrl+Shift+O", Action::OpenWith);
+                item(ui, tr("menu.choose_app"), "Ctrl+Shift+O", Action::OpenWith);
             });
         }
         if search {
-            item(ui, "Open location", "Ctrl+Enter", Action::OpenLocation);
+            item(
+                ui,
+                tr("menu.open_location"),
+                "Ctrl+Enter",
+                Action::OpenLocation,
+            );
         }
         if let Some(e) = entry.filter(|e| crate::jobs::is_archive_file(e)) {
             ui.separator();
-            item(ui, "Extract here", "", Action::ExtractHere);
-            let folder = format!(
-                "Extract to folder \"{}\"",
-                crate::jobs::archive_stem(&e.name)
-            );
+            item(ui, tr("menu.extract_here"), "", Action::ExtractHere);
+            let folder = tr("menu.extract_to_folder_named")
+                .replace("{name}", crate::jobs::archive_stem(&e.name));
             item(ui, &folder, "", Action::ExtractToFolder);
-            item(ui, "Extract to…", "", Action::ExtractTo);
-            item(ui, "Extract to the other pane", "", Action::ExtractToOther);
+            item(ui, tr("menu.extract_to"), "", Action::ExtractTo);
+            item(ui, tr("menu.extract_to_other"), "", Action::ExtractToOther);
         }
         ui.separator();
-        item(ui, "Copy", "Ctrl+C", Action::Copy);
-        item(ui, "Cut", "Ctrl+X", Action::Cut);
+        item(ui, tr("menu.copy"), "Ctrl+C", Action::Copy);
+        item(ui, tr("menu.cut"), "Ctrl+X", Action::Cut);
     }
-    item(ui, "Paste", "Ctrl+V", Action::Paste);
+    item(ui, tr("menu.paste"), "Ctrl+V", Action::Paste);
     let folder = entry.map_or_else(
         || Some(tab.dir.clone()),
         |e| (e.kind == keel_vfs::Kind::Dir).then(|| e.path.clone()),
     );
     if let Some(a) = folder.and_then(|d| crate::mount_ui::folder_action(&d)) {
-        item(ui, "Mount this folder…", "", a);
+        item(ui, tr("menu.mount_folder"), "", a);
     }
-    item(ui, "Copy path", "", Action::CopyPath);
+    item(ui, tr("menu.copy_path"), "", Action::CopyPath);
     if on_item {
-        item(ui, "Copy name", "", Action::CopyName);
+        item(ui, tr("menu.copy_name"), "", Action::CopyName);
     }
     if let Some(e) = entry.filter(|e| crate::clouds::can_link(ui.ctx(), e)) {
-        item(ui, "Copy link", "", Action::CopyLink(e.path.clone()));
+        item(
+            ui,
+            tr("menu.copy_link"),
+            "",
+            Action::CopyLink(e.path.clone()),
+        );
     }
     // Task 56: Folder color, Folder icon.
     let mut styled = Vec::new();
@@ -772,87 +769,81 @@ pub fn context_menu(
         ui.separator();
         if let Some(e) = entry.filter(|e| e.kind == keel_vfs::Kind::Dir) {
             let pin = crate::sidebar_prefs::SidebarCmd::PinFolder(e.path.clone());
-            item(ui, "Add to Sidebar", "", Action::Sidebar(pin));
+            item(ui, tr("menu.add_to_sidebar"), "", Action::Sidebar(pin));
         }
-        item(ui, "Rename", "F2", Action::Rename);
-        item(ui, "Bulk rename…", "Ctrl+F2", Action::BulkRename);
-        item(ui, "Delete", "Del", Action::Delete);
+        item(ui, tr("menu.rename"), "F2", Action::Rename);
+        item(ui, tr("menu.bulk_rename"), "Ctrl+F2", Action::BulkRename);
+        item(ui, tr("menu.delete"), "Del", Action::Delete);
         // Task 85: never on a key, never the menu's own Delete.
         if tab.dir.to_local_path().is_some() {
-            ui.menu_button("More delete options", |ui| {
+            ui.menu_button(tr("menu.more_delete"), |ui| {
                 let now = Action::System(crate::system_cleanup::SysCmd::DeletePermanently);
-                item(ui, "Delete permanently…", "", now);
+                item(ui, tr("menu.delete_permanently"), "", now);
             });
         }
         // Task 60: folder operations, as library plans (local folders and library views).
         if tab.dir.to_local_path().is_some() || tab.dir.scheme == "library" {
             use crate::folder_ops::Kind;
             let op = |k| Action::Library(crate::library::LibCmd::FolderOp(k));
-            ui.menu_button("Folder operations", |ui| {
+            ui.menu_button(tr("menu.folder_operations"), |ui| {
                 if entry.is_some_and(|e| e.kind == keel_vfs::Kind::Dir) {
-                    item(ui, "Merge into…", "", op(Kind::Merge));
-                    item(ui, "Flatten…", "", op(Kind::Flatten));
-                    item(ui, "Organize by…", "", op(Kind::Organize));
-                    item(ui, "Remove empty folders…", "", op(Kind::RemoveEmpty));
-                    let dates = crate::folder_ops::FOLDER_DATES;
-                    item(ui, dates, "", op(Kind::FolderDates));
+                    item(ui, tr("menu.merge_into"), "", op(Kind::Merge));
+                    item(ui, tr("menu.flatten"), "", op(Kind::Flatten));
+                    item(ui, tr("menu.organize_by"), "", op(Kind::Organize));
+                    item(ui, tr("menu.remove_empty"), "", op(Kind::RemoveEmpty));
+                    item(ui, tr("menu.folder_dates"), "", op(Kind::FolderDates));
                 }
-                item(ui, "Attributes…", "", op(Kind::Attributes));
-                item(ui, "Create link…", "", op(Kind::Link));
+                item(ui, tr("menu.attributes"), "", op(Kind::Attributes));
+                item(ui, tr("menu.create_link"), "", op(Kind::Link));
             });
         }
         ui.separator();
         item(
             ui,
-            "Send with Spacedrop…",
+            tr("menu.send_spacedrop"),
             "",
             Action::Devices(crate::devices::DevCmd::SendSelection),
         );
         // Zips are made in local folders only (not inside an archive or on a remote).
         if tab.dir.to_local_path().is_some() {
-            let add = format!("Add to \"{}\"", crate::jobs::zip_name(tab));
+            let add = tr("menu.add_to_named").replace("{name}", &crate::jobs::zip_name(tab));
             item(ui, &add, "", Action::AddToZip);
-            item(ui, "Compress to zip…", "", Action::CompressToZip);
+            item(ui, tr("menu.compress_to_zip"), "", Action::CompressToZip);
             // Task 85: NTFS and WOF compression.
             if cfg!(windows) {
-                item(ui, "Compress (NTFS)…", "", Action::Compress);
+                item(ui, tr("menu.compress_ntfs"), "", Action::Compress);
             }
         }
         if let Some((archive, _)) = crate::jobs::add_target(&tab.targets()) {
             item(
                 ui,
-                &format!("Add to \"{}\"…", archive.name),
+                &tr("menu.add_to_archive_named").replace("{name}", &archive.name),
                 "",
                 Action::AddToArchive,
             );
         }
     }
     ui.separator();
-    item(ui, "New folder", "Ctrl+Shift+N", Action::NewFolder);
-    item(ui, "New file", "", Action::NewFile);
+    item(ui, tr("menu.new_folder"), "Ctrl+Shift+N", Action::NewFolder);
+    item(ui, tr("menu.new_file"), "", Action::NewFile);
     ui.separator();
-    item(ui, "Select all", "Ctrl+A", Action::SelectAll);
-    item(ui, "Invert selection", "", Action::InvertSelection);
+    item(ui, tr("menu.select_all"), "Ctrl+A", Action::SelectAll);
+    item(ui, tr("menu.invert_selection"), "", Action::InvertSelection);
     // Task 77: the shown rows as an EFU, CSV, TXT, M3U or JSON file.
     let export = Action::FileList(crate::filelist_ui::FileListCmd::Export);
     item(
         ui,
         if search {
-            "Export results…"
+            tr("menu.export_results")
         } else {
-            "Export list…"
+            tr("menu.export_list")
         },
         "",
         export,
     );
     ui.separator();
-    item(
-        ui,
-        "Show in system file manager",
-        "",
-        Action::RevealInSystem,
-    );
-    item(ui, "Open terminal here", "", Action::OpenTerminal);
+    item(ui, tr("menu.reveal"), "", Action::RevealInSystem);
+    item(ui, tr("menu.open_terminal"), "", Action::OpenTerminal);
     // Task 85: user-defined cleanups (Settings → Cleanups), for the item or the folder.
     if tab.dir.to_local_path().is_some() {
         let cleanups: Vec<crate::cleanups::UserCleanup> = ui
@@ -864,25 +855,25 @@ pub fn context_menu(
             Some(_) => c.files,
             None => c.folders || c.drives,
         };
-        ui.menu_button("Cleanups", |ui| {
+        ui.menu_button(tr("menu.cleanups"), |ui| {
             for (i, c) in cleanups.iter().enumerate().filter(|(_, c)| fits(c)) {
                 item(ui, &c.title, "", Action::RunCleanup(i));
             }
             if !cleanups.is_empty() {
                 ui.separator();
             }
-            item(ui, "Edit cleanups…", "", Action::CleanupSettings);
+            item(ui, tr("menu.edit_cleanups"), "", Action::CleanupSettings);
         });
     }
     if !search {
         item(
             ui,
-            "Calculate sizes",
+            tr("menu.calculate_sizes"),
             "",
             Action::CalculateSizes { fresh: true },
         );
     }
-    item(ui, "Get Info", "", Action::Properties);
+    item(ui, tr("menu.get_info"), "", Action::Properties);
     #[cfg(windows)]
     if on_item {
         ui.separator();
@@ -891,11 +882,11 @@ pub fn context_menu(
             keyboard: false,
         };
         match crate::shell_menu::targets(tab) {
-            Ok(_) => item(ui, "More options", "Shift+F10", shell),
+            Ok(_) => item(ui, tr("menu.more_options"), "Shift+F10", shell),
             Err(why) => {
                 // Shown, not a tooltip: egui shows none on a disabled menu item.
                 let keys = crate::keymap::shortcut(ui.ctx(), &shell, "Shift+F10");
-                let b = egui::Button::new("More options").shortcut_text(keys);
+                let b = egui::Button::new(tr("menu.more_options")).shortcut_text(keys);
                 ui.add_enabled(false, b);
                 ui.add(egui::Label::new(egui::RichText::new(why).small().weak()).wrap());
             }

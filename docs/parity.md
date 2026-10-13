@@ -41,7 +41,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Overview statistics | v1 (0.4.0) | [SD-REL] | **Has**: library Overview ([library.md](library.md#library)) |
 | Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has**: drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
 | Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (0.23.0): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
-| 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
+| 11+ interface languages | v1 (0.2) | [SD-B02] | **Part** (unreleased): English and Spanish (Settings → General → Language) for the panes' chrome, sidebar, status bar, context menu, command palette and Settings → General; the rest is English ([files.md](files.md#interface-language)) |
 | Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Has** (0.23.0): a user-arranged Favorites section (drag folders in or **Add to Sidebar** from a folder's context menu, drag to reorder, remove), kept per profile, beside library saved views; no Spaces ([files.md](files.md#sidebar)) |
 | Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Part**: tags and saved views; no hand-ordered collection |
 | Mobile explorer | alpha (alpha.2); v1 mobile alpha | [SD-REL] | **Part**: the installable web app (PWA) with a phone layout ([devices.md](devices.md#phones)); no native app |

@@ -65,7 +65,7 @@ fn entries(selection: bool, search: bool, keys: &Bindings) -> [Vec<Item>; 3] {
             _ => continue,
         };
         list.push(Item {
-            label: c.label.to_owned(),
+            label: crate::i18n::command(c.id, c.label).to_owned(),
             shortcut: keys.label(&c.action),
             action: c.action,
         });
@@ -87,12 +87,12 @@ impl Palette {
         // Task 85: Delete permanently (with a selection), system cleanups, launchers.
         items.extend(crate::system_cleanup::palette_items(selection));
         items.extend(self.cleanups.iter().enumerate().map(|(i, title)| Item {
-            label: format!("Run cleanup: {title}"),
+            label: crate::i18n::tr("palette.run_cleanup").replace("{title}", title),
             shortcut: String::new(),
             action: Action::RunCleanup(i),
         }));
         items.extend(self.profiles.iter().map(|name| Item {
-            label: format!("Switch profile: {name}"),
+            label: crate::i18n::tr("palette.switch_profile").replace("{name}", name),
             shortcut: String::new(),
             action: Action::SwitchProfile(name.clone()),
         }));
@@ -154,7 +154,7 @@ impl Palette {
                 .min(self.shown.len().saturating_sub(1));
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.text)
-                    .hint_text("Type a command")
+                    .hint_text(crate::i18n::tr("palette.hint"))
                     .desired_width(f32::INFINITY),
             );
             if std::mem::take(&mut self.focus) || !r.has_focus() {

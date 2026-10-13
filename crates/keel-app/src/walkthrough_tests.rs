@@ -1934,6 +1934,48 @@ fn settings_controls_persist_after_reopening() {
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
+/// Settings → Language: Español turns the window chrome, Settings and the palette Spanish
+/// at once; English turns them back.
+#[test]
+fn language_switch_to_spanish_and_back() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    let pick = |h: &mut H, combo: &str, language: &str| {
+        let at = h
+            .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::ComboBox))
+            .find(|n| n.label().as_deref() == Some(combo))
+            .map(|n| center_of(&n))
+            .expect("language combo box");
+        click_at(h, at, NONE, PointerButton::Primary);
+        click_last(h, language);
+    };
+    key(&mut h, CMD, Key::Comma);
+    assert!(has(&h, "Language"));
+    pick(&mut h, "Language", "Español");
+    assert_eq!(s(&h).settings.language, "es");
+    for shown in [
+        "Ajustes",
+        "Idioma",
+        "Panel doble",
+        "Tema: dark",
+        "Ubicaciones",
+        "Detalles",
+    ] {
+        assert!(has(&h, shown), "{shown:?} shown");
+    }
+    assert!(!has(&h, "Dual pane"));
+    shot(&mut h, "settings-spanish");
+    key(&mut h, CMD_SHIFT, Key::P);
+    let labels: Vec<String> = (s(&h).palette.items.iter())
+        .map(|i| i.label.clone())
+        .collect();
+    assert!(labels.iter().any(|l| l == "Buscar archivos"), "{labels:?}");
+    key(&mut h, NONE, Key::Escape);
+    pick(&mut h, "Idioma", "English");
+    assert_eq!(s(&h).settings.language, "en");
+    assert!(has(&h, "Dual pane") && has(&h, "Theme: dark") && !has(&h, "Ajustes"));
+}
+
 /// Theme in the status bar switches dark / light; three screens in the light theme.
 #[test]
 fn theme_switch_and_light_screens() {
