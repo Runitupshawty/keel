@@ -77,7 +77,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Live index kept current by watchers | described | [SD-README] | **Has**: local sources watched live; remote and cloud polled or change feeds |
 | Stable identity across moves, BLAKE3 content ids, duplicates confirmed by full hash | described | [SD-README] | **Has** |
 | Portable source store, kept on the source itself if wanted ("provider exit") | described | [SD-README], [SD-DIR] | **Part**: one store per source that can move between libraries; always under the data folder, never on the source |
-| Point-in-time freezes, browsing an old state | described | [SD-README] | **Part**: an offline source shows its last indexed state; no dated freezes |
+| Point-in-time freezes, browsing an old state | described | [SD-README] | **Has** (unreleased): Freeze now, then browse a dated freeze read-only ([library.md](library.md#freezes)); the index only, not the files' bytes |
 | Multiple libraries | described | [SD-LIB] | **Has** |
 | Library backup and restore | landed (2026-10-07) | [SD-STATUS], [SD-LIB] | **Has**: a `.keelbackup` file, restored as a new library ([library.md](library.md#backup-and-restore)) |
 | Locked or unmounted volumes, drive inventory | landed | [SD-STATUS], [SD-README] | **Has**: drive inventory with Archived, Lost, Retired ([library.md](library.md#protection)) |
@@ -242,7 +242,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 19 | Tag assign mode with number keys (**done**: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
 | 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D. **Done** ([files.md](files.md#inspector)) | S-M |
-| 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
+| 22 | Dated freezes and browsing a past state (**done**, unreleased: [library.md](library.md#freezes); the index only) | Spacedrive | — | L |
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
 | 25 | Agent skill, `keel op <name>`, generated SDK (**done**: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); generated TypeScript and Swift SDKs with drift tests, unreleased) | Spacedrive | — | S |

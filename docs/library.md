@@ -86,6 +86,14 @@ While attached: files are read from their real paths (the daemon runs on the sam
 
 Limits: hashing skips cloud sources unless Cloud hashing is on, and remote files over the size cap; remote and cloud sources are polled rather than watched; the text inside documents is not read from remote, cloud and device sources unless their **Contents** switch is on, and never from images or scans (no OCR).
 
+### Freezes
+
+A freeze keeps a source's index as it was at one moment, so you can look back at what a folder or drive held (before a cleanup, a sync or a reorganisation). Right-click a source in the sidebar and choose **Freeze now**; a toast says how many files it holds. The same menu's **Freezes** lists them by date, newest first: click a date to open that state in the active pane, or **Delete…** (it asks first) to remove it. `keel op freezes.add`, `freezes.list` and `freezes.delete` do the same from a terminal or through keel-daemon ([api.md](api.md)).
+
+**Browsing.** A freeze opens as `library://<source>@<freeze>/`, titled `<label> (freeze N)`, and is browsed like an offline source: folders, names, sizes and modified dates as they were, from the index. It is read-only, and its files cannot be opened or copied: a freeze keeps the index, not the files (the file may have changed or be gone; open the source for it). It is not searched (library search covers the live index).
+
+**What it costs.** Making a freeze copies nothing. Each row of the index belongs to every freeze made since it last changed; only when a row some freeze holds changes (a rename, a move, a new size or modified time, hidden or unreadable) or leaves the index is the old row copied, once for all the freezes that hold it. Hashes, walk generations and change times do not count as changes. Deleting a freeze deletes the copies no other freeze holds. Freezes live in the source's store (`source.db`), go with it when the source is removed, and are in its backups. A freeze is refused while the source is being walked (its index is half old, half new then); try again when the walk has ended.
+
 ### Backup and restore
 
 A library that was hashed, tagged and marked with favorites took hours to build. **Back up library…** in the command palette (or **Back up…** in Settings → Library) writes it to one file, `<library>-<YYYY-MM-DD>.keelbackup`, wherever you save it; `keel library backup <file or folder>` does the same from a terminal. Settings → Library → **Last backup** shows when the last one was written. Backups are not automatic. A library whose `library.db` or any one source store is over 4 GiB cannot be backed up (a restore reads no larger file): the backup says so before it writes anything, and an older backup file stays as it was.

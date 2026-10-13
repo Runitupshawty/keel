@@ -63,11 +63,16 @@ pub fn overview_path() -> VPath {
 static LABELS: RwLock<Vec<(String, String)>> = parking_lot::const_rwlock(Vec::new());
 
 pub fn label_of(source: &str) -> Option<String> {
-    LABELS
+    let (source, freeze) = vlib::freeze_of(source);
+    let label = LABELS
         .read()
         .iter()
         .find(|(id, _)| id == source)
-        .map(|(_, l)| l.clone())
+        .map(|(_, l)| l.clone())?;
+    Some(match freeze {
+        Some(f) => format!("{label} (freeze {f})"),
+        None => label,
+    })
 }
 
 /// Settings → Library → Hashing.
@@ -148,6 +153,13 @@ pub enum LibCmd {
     /// Asks first.
     RemoveSource(SourceId),
     RemoveConfirmed(SourceId),
+    /// Freeze the source's index as it is now.
+    Freeze(SourceId),
+    /// Read the source's freezes (the sidebar's Freezes menu).
+    LoadFreezes(SourceId),
+    /// Asks first.
+    DeleteFreeze(SourceId, i64),
+    DeleteFreezeConfirmed(SourceId, i64),
     PauseHashing(bool),
     AddSource,
     /// The Add source wizard's answer.
@@ -335,6 +347,8 @@ pub enum LibMsg {
     /// Task 57: the Type chips' extensions.
     TopExt(Vec<String>),
     Watching(SourceId, Option<WatchHandle>),
+    /// A source's freezes, newest first.
+    Freezes(SourceId, Vec<keel_core::Freeze>),
     /// A job this app started (index, hash, operation); None: it failed to start.
     Spawned {
         kind: &'static str,
@@ -966,6 +980,8 @@ pub struct LibraryUi {
     size_asked: HashSet<VPath>,
     /// Bumped whenever `sizes` changes (tabs sort again).
     pub sizes_gen: u64,
+    /// Each source's freezes, newest first, once read (`LibCmd::LoadFreezes`).
+    pub freezes: HashMap<SourceId, Vec<keel_core::Freeze>>,
     tx: Sender<Msg>,
     ctx: egui::Context,
 }
@@ -1033,6 +1049,7 @@ impl LibraryUi {
             size_wanted: parking_lot::Mutex::new(HashSet::new()),
             size_asked: HashSet::new(),
             sizes_gen: 0,
+            freezes: HashMap::new(),
             tx,
             ctx,
         }
@@ -1835,6 +1852,9 @@ impl AppState {
             LibMsg::Libraries(list) => l.libraries = list,
             LibMsg::Native(read) => l.native_read(read),
             LibMsg::Note(text) => self.toasts.info(text),
+            LibMsg::Freezes(id, list) => {
+                self.library.freezes.insert(id, list);
+            }
             LibMsg::RestorePicked { file, about, name } => {
                 self.dialog = Some(crate::dialogs::Dialog::RestoreLibrary {
                     file,
@@ -2324,7 +2344,12 @@ impl AppState {
                 "The library is off (Settings → Library)"
             });
         }
-        if self.library.lost && !always && !matches!(cmd, LibCmd::OpenSource(_) | LibCmd::Query(_))
+        if self.library.lost
+            && !always
+            && !matches!(
+                cmd,
+                LibCmd::OpenSource(_) | LibCmd::Query(_) | LibCmd::LoadFreezes(_)
+            )
         {
             return self.toasts.error(LOST);
         }
@@ -2362,6 +2387,46 @@ impl AppState {
                         drop(watch);
                         b.remove_source(&id)?;
                         Ok(Some(LibMsg::Sources(b.sources()?)))
+                    });
+            }
+            LibCmd::LoadFreezes(id) => {
+                // Asked once; the answer (or a later freeze or delete) fills it.
+                self.library.freezes.insert(id.clone(), Vec::new());
+                self.library
+                    .spawn_try("keel-library-freezes", "Freezes", move |b| {
+                        Ok(Some(LibMsg::Freezes(id.clone(), b.freezes(&id)?)))
+                    });
+            }
+            LibCmd::Freeze(id) => {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let label = label_of(&id.0).unwrap_or_default();
+                self.library
+                    .spawn_try("keel-library-freeze", "Freeze", move |b| {
+                        let f = b.freeze(&id)?;
+                        let note = format!("Froze {label}: {} files", count(f.files));
+                        worker::send(&tx, &ctx, Msg::Library(LibMsg::Note(note)));
+                        Ok(Some(LibMsg::Freezes(id.clone(), b.freezes(&id)?)))
+                    });
+            }
+            LibCmd::DeleteFreeze(id, freeze) => {
+                let label = label_of(&id.0).unwrap_or_default();
+                let at = (self.library.freezes.get(&id))
+                    .and_then(|l| l.iter().find(|f| f.id == freeze))
+                    .map(|f| when(Some(f.at)))
+                    .unwrap_or_default();
+                self.dialog = Some(crate::dialogs::Dialog::Confirm {
+                    text: format!(
+                        "Delete the freeze of {label} made {at}? The files and the current \
+                         index are not touched."
+                    ),
+                    on_yes: Action::Library(LibCmd::DeleteFreezeConfirmed(id, freeze)),
+                });
+            }
+            LibCmd::DeleteFreezeConfirmed(id, freeze) => {
+                self.library
+                    .spawn_try("keel-library-unfreeze", "Delete freeze", move |b| {
+                        b.delete_freeze(&id, freeze)?;
+                        Ok(Some(LibMsg::Freezes(id.clone(), b.freezes(&id)?)))
                     });
             }
             LibCmd::PauseHashing(on) => {

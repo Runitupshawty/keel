@@ -412,3 +412,48 @@ ALTER TABLE view ADD COLUMN folder TEXT NOT NULL DEFAULT '';
 ALTER TABLE view ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE view ADD COLUMN shortcut TEXT NOT NULL DEFAULT '';
 UPDATE view SET position = id;
+
+-- @source 14
+-- Freezes: dated, read-only states of the index, kept copy-on-write. A record row belongs to
+-- every freeze made after it was last written (`since`: the newest freeze then, 0 = none) and
+-- before it is next changed or removed; changing or removing a row some freeze holds first
+-- copies the old row into `frozen`, for the freezes `lo`..`hi`. Unchanged rows are never
+-- copied. Only what a listing shows counts as a change (hashes, generations and change
+-- times do not).
+CREATE TABLE freeze(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    records INTEGER NOT NULL,
+    files INTEGER NOT NULL,
+    bytes INTEGER NOT NULL);
+ALTER TABLE record ADD COLUMN since INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE frozen(
+    lo INTEGER NOT NULL,
+    hi INTEGER NOT NULL,
+    id INTEGER NOT NULL,
+    parent INTEGER,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    kind INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    mtime INTEGER,
+    flags INTEGER NOT NULL);
+CREATE INDEX frozen_parent ON frozen(parent, name);
+CREATE TRIGGER record_freeze_ai AFTER INSERT ON record WHEN EXISTS (SELECT 1 FROM freeze) BEGIN
+    UPDATE record SET since = (SELECT max(id) FROM freeze) WHERE id = new.id;
+END;
+CREATE TRIGGER record_freeze_au AFTER UPDATE OF parent, name, path, kind, size, mtime, flags
+    ON record
+    WHEN (old.parent IS NOT new.parent OR old.name IS NOT new.name OR old.path IS NOT new.path
+        OR old.kind IS NOT new.kind OR old.size IS NOT new.size OR old.mtime IS NOT new.mtime
+        OR old.flags IS NOT new.flags)
+        AND (SELECT max(id) FROM freeze) > old.since BEGIN
+    INSERT INTO frozen SELECT old.since + 1, max(id), old.id, old.parent, old.name, old.path,
+        old.kind, old.size, old.mtime, old.flags FROM freeze;
+    UPDATE record SET since = (SELECT max(id) FROM freeze) WHERE id = new.id;
+END;
+CREATE TRIGGER record_freeze_ad AFTER DELETE ON record
+    WHEN (SELECT max(id) FROM freeze) > old.since BEGIN
+    INSERT INTO frozen SELECT old.since + 1, max(id), old.id, old.parent, old.name, old.path,
+        old.kind, old.size, old.mtime, old.flags FROM freeze;
+END;

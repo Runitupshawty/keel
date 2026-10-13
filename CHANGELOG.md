@@ -9,16 +9,19 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A search box in each pane (**Search here**, at the right end of the tab row): typing opens a search tab next to the folder that finds names only under it and its subfolders, with the same backend menu, query syntax, toggles, filters and library chips as Ctrl+F; its bar reads "in <folder>". It is on folder tabs of local folders and remote hosts (not the Recycle Bin, archives or library views). Esc, the **×** or an emptied box closes it and shows the folder again. Everything gets the folder as a path term, Keel's own indexes as `in:`, Spotlight as `-onlyin`, `locate` and the home-folder walk keep to it, Keel's own index walks a folder it does not hold (another drive, a share); the library keeps the hits under it from its first page of results (local folders only). A typed `in:` searches its own folder instead. The search backends take the folder as `keel_search::Query::within`. See [The search tab](docs/files.md#the-search-tab).
 - **Add to Sidebar** in a folder's context menu (also on search results) adds that folder to the sidebar's Favorites, at the end; a folder already there is not added twice. Before, folders were added by dragging or from the command palette. See [Sidebar](docs/files.md#sidebar).
 - Hover previews: resting the pointer on a file in the Details, Grid, Columns, Gallery or Media view for 500 ms shows a large floating preview next to it, at most 40 % of the window each way and kept inside it: images, PDF pages, video frames, audio covers and font samples, or the first 30 lines of a text or Markdown file. It comes from the preview panel's worker and cache (the panel need not be open; other kinds show nothing). Moving off the file, scrolling, a key or a click hides it until the pointer rests on another file; it never shows over Quick Look or the media viewer. Settings → General → **Hover preview** turns it off and sets the delay (200 to 2000 ms); `hover_preview` and `hover_preview_ms` in `config.toml`.
+- Freezes of a library source: right-click a source in the sidebar and choose **Freeze now** to keep its index as it is (names, folders, sizes, dates). **Freezes** in the same menu lists them by date: a date opens that state read-only, as a `library://<source>@<freeze>/` tab browsed like an offline source; **Delete…** removes one. A freeze copies nothing when it is made: rows are shared with the live index, and only a row that changes or leaves the index later is copied, once for every freeze that holds it. See [Freezes](docs/library.md#freezes).
+- The API's `freezes.list`, `freezes.add` (previewed) and `freezes.delete` (previewed), and `list` of a `library://<source>@<freeze>/` path. See [api.md](docs/api.md).
+- A multi-stage Docker build for keel-daemon with the embedded web client, a non-root runtime and persistent data/config storage ([Docker](docs/daemon.md#docker)).
+- A generated TypeScript JSON-RPC client with parameter/result types and methods from the Rust API registry, an API drift test, and strict TypeScript/runtime checks ([API client](docs/api.md#generated-typescript-client)).
+- A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
+
+### Changed
+
+- Source stores are now at version 14 (freezes): a store this Keel opened is refused by an older Keel ("newer than this Keel").
 
 ### Fixed
 
 - Confirmations whose action has no button of its own no longer offer **Move to trash**: removing a library source asks **Remove**, deleting a bookmark **Delete**, and a mount change **Mount** or **Unmount** (it said OK). Each confirmation now names its button where it is asked.
-
-- A multi-stage Docker build for keel-daemon with the embedded web client, a non-root runtime and persistent data/config storage ([Docker](docs/daemon.md#docker)).
-
-- A generated TypeScript JSON-RPC client with parameter/result types and methods from the Rust API registry, an API drift test, and strict TypeScript/runtime checks ([API client](docs/api.md#generated-typescript-client)).
-
-- A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
 
 ## [0.23.0] - 2026-10-12
 

@@ -1061,6 +1061,26 @@ pub struct Inbox {
 
 // --- what the desktop app needs while it is attached to a daemon ---
 
+/// A dated state of a source's index (`freezes.list`), browsed as
+/// `library://<source>@<id>/`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FreezeInfo {
+    pub id: i64,
+    /// Unix seconds.
+    pub at: i64,
+    pub records: u64,
+    pub files: u64,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FreezeParams {
+    /// The source.
+    pub id: String,
+    pub freeze: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IndexParams {

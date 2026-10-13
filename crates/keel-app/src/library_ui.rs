@@ -199,6 +199,33 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
                     ui.close_menu();
                 }
             }
+            if ui.button("Freeze now").clicked() {
+                out.push(lib(LibCmd::Freeze(s.id.clone())));
+                ui.close_menu();
+            }
+            match l.freezes.get(&s.id) {
+                None => out.push(lib(LibCmd::LoadFreezes(s.id.clone()))),
+                Some(list) if !list.is_empty() => {
+                    ui.menu_button("Freezes", |ui| {
+                        for f in list {
+                            let at = crate::library::when(Some(f.at));
+                            // The date opens the freeze; Delete… asks first.
+                            ui.horizontal(|ui| {
+                                if ui.button(at).clicked() {
+                                    let auth = keel_vfs::library::frozen(&s.id.0, f.id);
+                                    out.push(Action::Navigate(keel_vfs::library::path(&auth, "")));
+                                    ui.close_menu();
+                                }
+                                if ui.small_button("Delete…").clicked() {
+                                    out.push(lib(LibCmd::DeleteFreeze(s.id.clone(), f.id)));
+                                    ui.close_menu();
+                                }
+                            });
+                        }
+                    });
+                }
+                Some(_) => {}
+            }
             crate::mount_ui::source_menu(ui, &s.id.0, out);
         });
     }

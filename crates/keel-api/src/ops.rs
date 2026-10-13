@@ -64,7 +64,7 @@ pub static OPS: &[Operation] = &[
         RemoveSourceParams => RemovedSource, sources_remove_preview, sources_remove, json!({"id": "0123456789abcdef0123456789abcdef"})),
     previewed!("sources.index", "Indexes a source as a background job (adopt: first accept whatever folder is at its root now).",
         IndexParams => JobStarted, sources_index_preview, sources_index, json!({"id": "0123456789abcdef0123456789abcdef"})),
-    now!("list", "Lists a folder: a library path (library://<source>/<rel>, from the index, works offline) or any path Keel can reach.",
+    now!("list", "Lists a folder: a library path (library://<source>/<rel>, from the index, works offline; library://<source>@<freeze>/<rel> as a freeze holds it) or any path Keel can reach.",
         ListParams => Listing, list, json!({"path": example_dir(), "max": 100})),
     now!("stat", "One file or folder, with its library record, tags and favorite state when indexed.",
         PathParams => StatInfo, stat, json!({"path": example_dir()})),
@@ -128,6 +128,12 @@ pub static OPS: &[Operation] = &[
         PathParams => CommentInfo, library_comment, json!({"path": example_file()})),
     previewed!("library.set_comment", "Sets the Get Info comment on an indexed file or folder (\"\" clears it). Changes only the library.",
         SetCommentParams => CommentInfo, set_comment_preview, set_comment, json!({"path": example_file(), "comment": "Send to the printer"})),
+    now!("freezes.list", "A source's freezes (dated states of its index, browsed as library://<source>@<freeze>/), newest first.",
+        SourceIdParams => Vec<FreezeInfo>, freezes_list, json!({"id": "0123456789abcdef0123456789abcdef"})),
+    previewed!("freezes.add", "Freezes a source's index as it is now (refused while it is being walked); only rows that change later are copied.",
+        SourceIdParams => FreezeInfo, freezes_add_preview, freezes_add, json!({"id": "0123456789abcdef0123456789abcdef"})),
+    previewed!("freezes.delete", "Deletes a freeze of a source (the files and the live index are not touched).",
+        FreezeParams => Done, freezes_delete_preview, freezes_delete, json!({"id": "0123456789abcdef0123456789abcdef", "freeze": 1})),
     now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
     now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
@@ -582,12 +588,18 @@ fn sources_index(ctx: &Ctx, p: IndexParams) -> Result<JobStarted> {
 fn list(ctx: &Ctx, p: ListParams) -> Result<Listing> {
     let max = p.max.unwrap_or(1000).max(1);
     let dir = vpath(&p.path)?;
-    crate::files::readable(ctx, &crate::files::real(ctx, &dir)?)?;
+    let freeze =
+        keel_vfs::library::split(&dir).and_then(|(auth, _)| keel_vfs::library::freeze_of(auth).1);
+    if freeze.is_none() {
+        crate::files::readable(ctx, &crate::files::real(ctx, &dir)?)?;
+    }
     let mut entries: Vec<EntryInfo> = if let Some((id, rel)) = keel_vfs::library::split(&dir) {
-        let children = ctx
-            .lib
-            .list_children(&SourceId(id.to_owned()), rel)
-            .map_err(|e| ApiError::not_found(format!("{e:#}")))?;
+        let source = SourceId(keel_vfs::library::freeze_of(id).0.to_owned());
+        let children = match freeze {
+            Some(f) => ctx.lib.list_frozen(&source, f, rel),
+            None => ctx.lib.list_children(&source, rel),
+        }
+        .map_err(|e| ApiError::not_found(format!("{e:#}")))?;
         children
             .iter()
             .map(|h| EntryInfo {
@@ -1716,6 +1728,68 @@ fn library_inspect(ctx: &Ctx, p: InspectParams) -> Result<Inspection> {
             }),
         }),
     })
+}
+
+fn freeze_info(f: keel_core::Freeze) -> FreezeInfo {
+    FreezeInfo {
+        id: f.id,
+        at: f.at,
+        records: f.records,
+        files: f.files,
+        bytes: f.bytes,
+    }
+}
+
+fn freezes_list(ctx: &Ctx, p: SourceIdParams) -> Result<Vec<FreezeInfo>> {
+    find_source(ctx, &p.id)?;
+    let all = ctx.lib.freezes(&SourceId(p.id))?;
+    Ok(all.into_iter().map(freeze_info).collect())
+}
+
+fn freezes_add_preview(ctx: &Ctx, p: &SourceIdParams) -> Result<Preview> {
+    let s = find_source(ctx, &p.id)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!("Freeze the index of {} as it is now", s.label),
+        changes: vec![change(
+            "freeze.add",
+            Some(s.root.display()),
+            Some(s.label.clone()),
+        )],
+        warnings: Vec::new(),
+    })
+}
+
+fn freezes_add(ctx: &Ctx, p: SourceIdParams) -> Result<FreezeInfo> {
+    find_source(ctx, &p.id)?;
+    Ok(freeze_info(ctx.lib.freeze(&SourceId(p.id))?))
+}
+
+fn freezes_delete_preview(ctx: &Ctx, p: &FreezeParams) -> Result<Preview> {
+    let s = find_source(ctx, &p.id)?;
+    let all = ctx.lib.freezes(&SourceId(p.id.clone()))?;
+    if !all.iter().any(|f| f.id == p.freeze) {
+        return Err(ApiError::not_found(format!(
+            "{} has no freeze {}",
+            s.label, p.freeze
+        )));
+    }
+    Ok(Preview {
+        pin: None,
+        summary: format!("Delete freeze {} of {}", p.freeze, s.label),
+        changes: vec![change(
+            "freeze.delete",
+            Some(s.root.display()),
+            Some(s.label.clone()),
+        )],
+        warnings: Vec::new(),
+    })
+}
+
+fn freezes_delete(ctx: &Ctx, p: FreezeParams) -> Result<Done> {
+    find_source(ctx, &p.id)?;
+    ctx.lib.delete_freeze(&SourceId(p.id), p.freeze)?;
+    Ok(Done { ok: true })
 }
 
 fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {

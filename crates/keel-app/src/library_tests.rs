@@ -221,6 +221,47 @@ fn library_tab_lists_from_the_index_and_works_offline() {
 }
 
 #[test]
+fn a_freeze_is_made_browsed_read_only_and_deleted() {
+    let (tmp, lib, id) = fixture("freeze", false);
+    let mut s = state_with(&lib, &tmp);
+    s.library_cmd(0, LibCmd::LoadFreezes(id.clone()));
+    assert_eq!(s.library.freezes.get(&id).map(Vec::len), Some(0));
+    s.library_cmd(0, LibCmd::Freeze(id.clone()));
+    pump_until(&mut s, "frozen", |s| {
+        s.library.freezes.get(&id).is_some_and(|l| l.len() == 1)
+    });
+    let freeze = s.library.freezes[&id][0].clone();
+    assert_eq!(freeze.files, 3);
+
+    // The source changes; the freeze still lists the old state.
+    std::fs::remove_file(tmp.join("docs").join("c.txt")).unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    let root = vlib::path(&vlib::frozen(&id.0, freeze.id), "");
+    s.run(0, Action::Navigate(root.clone()));
+    pump_until(&mut s, "freeze listed", |s| {
+        s.tab(0).listed_dir.as_ref() == Some(&root)
+    });
+    assert_eq!(names(&s), ["sub", "a.txt", "c.txt"]);
+    assert_eq!(s.tab(0).title(), format!("Docs (freeze {})", freeze.id));
+    let c = vlib::path(&vlib::frozen(&id.0, freeze.id), "c.txt");
+    let err = (s.router.provider_for(&c).unwrap())
+        .local_copy(&c)
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("a freeze keeps the index"),
+        "{err:#}"
+    );
+
+    s.library_cmd(0, LibCmd::DeleteFreeze(id.clone(), freeze.id));
+    assert!(s.dialog.is_some(), "asks first");
+    s.dialog = None;
+    s.library_cmd(0, LibCmd::DeleteFreezeConfirmed(id.clone(), freeze.id));
+    pump_until(&mut s, "deleted", |s| s.library.freezes[&id].is_empty());
+    assert!(lib.freezes(&id).unwrap().is_empty());
+}
+
+#[test]
 fn tags_and_favorites_round_trip_through_the_ui_model() {
     let (tmp, lib, id) = fixture("tags", false);
     let tag = lib.create_tag("work", Some("#e5484d"), None).unwrap();

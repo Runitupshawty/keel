@@ -529,6 +529,51 @@ mod tests {
         .unwrap();
     }
 
+    /// Freezes: a version-13 store keeps its records, all of them in a first freeze, and a
+    /// change after it copies the old row for that freeze.
+    #[test]
+    fn a_version_13_store_gains_freezes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for (v, sql) in migrations(Store::Source)
+                .into_iter()
+                .filter(|(v, _)| *v <= 13)
+            {
+                conn.execute_batch(&sql).unwrap();
+                conn.pragma_update(None, "user_version", v).unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO record(id, parent, name, path, kind, size, fs_id, gen)
+                     VALUES (1, NULL, 'r', '', 1, 0, 'r', 1),
+                            (2, 1, 'a.txt', 'a.txt', 0, 5, 'f', 1);",
+            )
+            .unwrap();
+        }
+        let pool = Pool::open(&path, Store::Source).unwrap();
+        let c = pool.get().unwrap();
+        let version: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 14);
+        let since: i64 = c
+            .query_row("SELECT sum(since) FROM record", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(since, 0, "old rows belong to every freeze");
+        c.execute_batch(
+            "INSERT INTO freeze(at, records, files, bytes) VALUES (0, 2, 1, 5);
+             UPDATE record SET size = 9 WHERE id = 2;",
+        )
+        .unwrap();
+        let frozen: (i64, i64, i64) = c
+            .query_row("SELECT lo, hi, size FROM frozen WHERE id = 2", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(frozen, (1, 1, 5));
+    }
+
     /// Stores written by v0.7.0 (library v6, source v7; migrations never change once released)
     /// reach the newest versions with their rows intact.
     #[test]
