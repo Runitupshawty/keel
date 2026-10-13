@@ -1578,3 +1578,30 @@ fn add_to_zip_keeps_the_comment_and_mode_and_writes_local_time() {
         assert_eq!(mode & 0o777, 0o640);
     }
 }
+
+/// Extracted files get the mode any new file gets (the umask's), not the staging temp
+/// file's private 0600: a site extracted into a served folder stays readable.
+#[cfg(unix)]
+#[test]
+fn extracted_files_get_the_usual_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("site.zip");
+    zip_file(&file, &[("index.html", b"<p>hi</p>")]);
+    let dst = tmp.path().join("out");
+    fs::create_dir(&dst).unwrap();
+    extract_all(&VPath::local(&file), &dst, &router(&tmp)).unwrap();
+    fs::write(dst.join("plain.txt"), b"x").unwrap();
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    if mode(&dst.join("plain.txt")) & 0o077 == 0 {
+        // A umask of 077 makes every new file 0600: nothing here tells the two apart.
+        eprintln!("skipped: the umask gives new files no group or other bits");
+        return;
+    }
+    assert_eq!(
+        mode(&dst.join("index.html")),
+        mode(&dst.join("plain.txt")),
+        "{:o}",
+        mode(&dst.join("index.html"))
+    );
+}

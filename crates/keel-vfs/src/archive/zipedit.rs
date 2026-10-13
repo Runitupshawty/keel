@@ -1200,6 +1200,9 @@ fn walk(
 struct Taken {
     files: HashSet<String>,
     dirs: HashSet<String>,
+    /// The files a move adds: Overwrite never replaces one of them (its source is gone).
+    ours: HashSet<String>,
+    moving: bool,
 }
 impl Taken {
     fn exists(&self, name: &str) -> bool {
@@ -1214,6 +1217,9 @@ impl Taken {
             self.dirs.insert(name.to_owned());
         } else {
             self.files.insert(name.to_owned());
+            if self.moving {
+                self.ours.insert(name.to_owned());
+            }
         }
     }
     /// `name (2).ext`, `name (3).ext`… for a file, `name (2)`… for a folder.
@@ -1252,6 +1258,8 @@ fn landing(taken: &Taken, top: &str, is_dir: bool, conflict: Conflict) -> Result
         Conflict::RenameNew => Landing::Whole(taken.free(top, is_dir), false),
         _ if is_dir && folder => Landing::Merge,
         Conflict::Skip => Landing::Skip,
+        // Another source of this move landed there: skipped, never written over.
+        Conflict::Overwrite if taken.ours.contains(top) => Landing::Skip,
         Conflict::Overwrite if !is_dir && !folder => Landing::Whole(top.to_owned(), true),
         Conflict::Overwrite => bail!("unsafe destination: {top}"),
     })
@@ -1273,7 +1281,7 @@ fn merge_file(taken: &Taken, target: &str, conflict: Conflict) -> Result<Option<
     }
     Ok(match (taken.files.contains(target), conflict) {
         (false, _) => Some(false),
-        (true, Conflict::Overwrite) => Some(true),
+        (true, Conflict::Overwrite) if !taken.ours.contains(target) => Some(true),
         (true, _) => None,
     })
 }
@@ -1388,6 +1396,8 @@ pub(crate) fn transfer_into(
     let mut taken = Taken {
         files: names.files.clone(),
         dirs: names.dirs.clone(),
+        ours: HashSet::new(),
+        moving: mv,
     };
     let mut edits: Vec<Edit> = Vec::new();
     let mut skipped = 0usize;

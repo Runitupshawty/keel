@@ -1041,3 +1041,23 @@ fn a_flush_before_any_write_publishes_nothing() {
     assert_eq!(fs::read(docs.join("empty.txt")).unwrap(), b"");
     assert!(partials(&docs).is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_truncating_write_keeps_the_files_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let id = indexed(&f);
+    let m = mount_fs(&f, &id, "", false);
+    let a = f.files.path().join("docs/a.txt");
+    for mode in [0o600, 0o755] {
+        fs::set_permissions(&a, fs::Permissions::from_mode(mode)).unwrap();
+        // A private file stays private, a script stays executable (`>`, `cp` onto it).
+        let (h, _) = m.open(&mp("docs/a.txt"), true, true).unwrap();
+        m.write(h, 0, b"new").unwrap();
+        m.release(h).unwrap();
+        assert_eq!(fs::read(&a).unwrap(), b"new");
+        let now = fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+        assert_eq!(now, mode, "{now:o}");
+    }
+}

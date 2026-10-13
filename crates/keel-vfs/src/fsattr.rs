@@ -140,7 +140,10 @@ pub fn set_attributes(path: &Path, set: &Attributes) -> Result<()> {
             _ => {}
         }
         if set.mode.is_some() || set.readonly.is_some() {
-            fs::set_permissions(path, fs::Permissions::from_mode(mode)).with_context(shown)?;
+            // Setuid, setgid and sticky stay: only owner/group/other bits are set here.
+            let special = m.permissions().mode() & 0o7000;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode | special))
+                .with_context(shown)?;
         }
         Ok(())
     }
@@ -454,6 +457,38 @@ mod tests {
         };
         set_attributes(&f, &back).unwrap();
         assert_eq!(attributes(&f).unwrap(), before);
+    }
+
+    /// A shared folder's sticky bit (and setgid, setuid) survives a read-only toggle or a
+    /// mode change: only the owner/group/other bits are set.
+    #[cfg(unix)]
+    #[test]
+    fn special_bits_survive_attribute_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let mode = || fs::metadata(&shared).unwrap().permissions().mode() & 0o7777;
+        let ro = Attributes {
+            readonly: Some(true),
+            ..Attributes::default()
+        };
+        set_attributes(&shared, &ro).unwrap();
+        assert_eq!(mode(), 0o1555, "{:o}", mode());
+        let bits = Attributes {
+            mode: Some(0o775),
+            ..Attributes::default()
+        };
+        set_attributes(&shared, &bits).unwrap();
+        assert_eq!(mode(), 0o1775, "{:o}", mode());
+        // A setuid program stays setuid when made read-only.
+        let tool = dir.path().join("tool");
+        fs::write(&tool, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o4755)).unwrap();
+        set_attributes(&tool, &ro).unwrap();
+        let tool_mode = fs::metadata(&tool).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(tool_mode, 0o4555, "{tool_mode:o}");
     }
 
     #[cfg(unix)]

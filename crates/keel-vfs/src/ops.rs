@@ -237,6 +237,9 @@ pub struct Journal<'j> {
     record: Record<'j>,
     fresh: Vec<(crate::VPath, Placed)>,
     bytes: u64,
+    /// What was placed, by this run or recorded by an earlier one: case-folded target ->
+    /// the targets as placed, and whether each is a folder (made, or moved whole).
+    landed: HashMap<String, Vec<(crate::VPath, bool)>>,
 }
 
 impl<'j> Journal<'j> {
@@ -248,7 +251,15 @@ impl<'j> Journal<'j> {
         record: impl FnMut(Vec<(crate::VPath, Placed)>, Option<&Unfinished>) -> Result<()> + 'j,
     ) -> Journal<'j> {
         let files = placed.values().filter(|p| p.file.is_some()).count() as u64;
+        let mut landed: HashMap<String, Vec<(crate::VPath, bool)>> = HashMap::new();
+        for p in placed.values() {
+            landed
+                .entry(folded_target(&p.target))
+                .or_default()
+                .push((p.target.clone(), p.file.is_none()));
+        }
         Journal {
+            landed,
             placed,
             unfinished,
             files,
@@ -272,6 +283,11 @@ impl<'j> Journal<'j> {
             self.files += 1;
             self.bytes += stamp.size;
         }
+        (self
+            .landed
+            .entry(folded_target(&placed.target))
+            .or_default())
+        .push((placed.target.clone(), placed.file.is_none()));
         self.fresh.push((source, placed));
         if now || self.fresh.len() >= RECORD_FILES || self.bytes >= RECORD_BYTES {
             self.flush()?;
@@ -279,10 +295,84 @@ impl<'j> Journal<'j> {
         Ok(())
     }
 
+    /// A file (`dir` false) or a folder was placed at `target`, or at another spelling of
+    /// it that is the same file (`A.txt` for `a.txt` on a disk that ignores case).
+    fn landed_at(&self, target: &crate::VPath, dir: bool) -> bool {
+        let same = |p: &crate::VPath| match (p.to_local_path(), target.to_local_path()) {
+            (Some(a), Some(b)) => same_file::is_same_file(a, b).unwrap_or(false),
+            _ => false,
+        };
+        (self.landed.get(&folded_target(target))).is_some_and(|placed| {
+            (placed.iter()).any(|(p, d)| *d == dir && (p == target || same(p)))
+        })
+    }
+
+    /// A file was placed at `target`.
+    fn landed(&self, target: &crate::VPath) -> bool {
+        self.landed_at(target, false)
+    }
+
+    /// `target` was placed, or is inside a folder that was (made, or moved whole).
+    fn holds(&self, target: &crate::VPath) -> bool {
+        self.landed(target)
+            || std::iter::successors(target.parent(), crate::VPath::parent)
+                .any(|dir| self.landed_at(&dir, true))
+    }
+
     /// The unfinished record of `source`, taken out.
     fn take_unfinished(&mut self, source: &crate::VPath) -> Option<Unfinished> {
         self.unfinished.take_if(|u| u.source == *source)
     }
+}
+
+fn folded_target(p: &crate::VPath) -> String {
+    format!("{}://{}{}", p.scheme, p.authority, p.path.to_lowercase())
+}
+
+/// What a move placed (files, and folders moved whole by one rename): Overwrite never
+/// replaces one of them, or a file inside one, since its source is gone. Local targets
+/// are known by file identity (so `a.txt` is `A.txt` exactly where the disk ignores case),
+/// others by path.
+#[derive(Default)]
+struct Moved {
+    ids: std::collections::HashSet<(u64, u64)>,
+    paths: std::collections::HashSet<crate::VPath>,
+}
+impl Moved {
+    fn add(&mut self, p: &crate::VPath) {
+        match p.to_local_path() {
+            Some(local) => {
+                if let Some(id) = long(&local).ok().and_then(|l| sys::file_id(&l)) {
+                    self.ids.insert(id);
+                }
+            }
+            None => {
+                self.paths.insert(p.clone());
+            }
+        }
+    }
+    /// `p` exists and is (or is inside) something this move placed.
+    fn holds(&self, p: &crate::VPath) -> bool {
+        match p.to_local_path() {
+            Some(local) => {
+                let Ok(local) = long(&local) else {
+                    return false;
+                };
+                !self.ids.is_empty()
+                    && sys::file_id(&local).is_some()
+                    && (local.ancestors())
+                        .any(|a| sys::file_id(a).is_some_and(|id| self.ids.contains(&id)))
+            }
+            None => std::iter::successors(Some(p.clone()), crate::VPath::parent)
+                .any(|a| self.paths.contains(&a)),
+        }
+    }
+}
+
+/// `target` exists and this move placed it (or a folder holding it), in this run or, from
+/// its journal, an earlier one.
+fn moved_here(moved: &Moved, journal: Option<&Journal>, target: &crate::VPath) -> bool {
+    moved.holds(target) || journal.is_some_and(|j| j.holds(target))
 }
 
 /// How a journaled transfer takes one source before its conflict policy.
@@ -345,6 +435,9 @@ fn settle(
         None if unfinished.is_some() => Settle::Into(target),
         None => Settle::Normal,
         Some((true, _)) if source_dir && ours => Settle::Into(target),
+        // Another source of this transfer landed there (`A.txt` and `a.txt` from a disk
+        // that tells case apart): a clash, never a file of this one.
+        Some((false, _)) if unfinished.is_none() && j.landed(&target) => Settle::Normal,
         Some((false, now)) if !source_dir && ours => {
             anyhow::ensure!(same(now), TargetChanged(target.display()));
             Settle::Done(target)
@@ -450,6 +543,7 @@ fn transfer_local(
             cancel,
             moving,
             swept: Default::default(),
+            moved: Moved::default(),
             journal,
             top: None,
             pool: (threads > 1)
@@ -631,6 +725,8 @@ struct Job<'a, 'j> {
     moving: bool,
     /// Folders already swept for stale staging files.
     swept: std::collections::HashSet<PathBuf>,
+    /// What a move placed. A copy's later source of one name replaces an earlier one.
+    moved: Moved,
     journal: Option<&'a mut Journal<'j>>,
     /// The target picked for the top-level source being transferred, and whether it was
     /// free (set by the first `node` of each source: the top level picks before it recurses).
@@ -680,6 +776,19 @@ impl Job<'_, '_> {
                         picked => break picked,
                     }
                 };
+                // Another source of this move landed there (two picked files of one name,
+                // or `A.txt` and `a.txt` into a folder that ignores case): it is skipped,
+                // never written over.
+                let picked = picked.filter(|t| {
+                    metadata.is_dir()
+                        || !self.moving
+                        || self.conflict != Conflict::Overwrite
+                        || !moved_here(
+                            &self.moved,
+                            self.journal.as_deref(),
+                            &crate::VPath::local(t),
+                        )
+                });
                 match picked {
                     Some(target) => target,
                     None => {
@@ -710,6 +819,22 @@ impl Job<'_, '_> {
             // Same volume: one rename. Another volume: fall through to copy + delete.
             match sys::rename_noreplace(source, &target) {
                 Ok(()) => {
+                    self.moved.add(&crate::VPath::local(&target));
+                    if let Some(j) = self.journal.as_deref_mut() {
+                        // Recorded like any placed file; a folder moved whole holds only
+                        // the move's own files.
+                        let file = (!metadata.is_dir()).then(|| Stamp::of(&metadata));
+                        let target = crate::VPath::local(&target);
+                        j.placed(
+                            key.clone(),
+                            Placed {
+                                target,
+                                file,
+                                archive: None,
+                            },
+                            false,
+                        )?;
+                    }
                     let (bytes, items) = plan_size(std::slice::from_ref(&target))?;
                     self.state.done_bytes += bytes;
                     self.state.done_items += items;
@@ -868,6 +993,7 @@ impl Job<'_, '_> {
         stamp: Option<Stamp>,
     ) -> Result<()> {
         if self.moving {
+            self.moved.add(&crate::VPath::local(target));
             // The verified copy is in place at `target`; only now drop the source.
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
@@ -904,6 +1030,7 @@ impl Job<'_, '_> {
         target: crate::VPath,
     ) -> Result<bool> {
         if self.moving {
+            self.moved.add(&target);
             fs::remove_file(source)
                 .with_context(|| format!("remove moved file {}", source.display()))?;
         }
@@ -1346,6 +1473,7 @@ fn transfer_with(
         cancel,
         moving: mv,
         swept: Default::default(),
+        moved: Moved::default(),
         journal,
     };
     let mut result = Ok(());
@@ -1501,6 +1629,8 @@ struct ProviderJob<'a, 'j> {
     root: crate::VPath,
     /// Destination folders already swept for stale staging files.
     swept: std::collections::HashSet<String>,
+    /// What a move placed.
+    moved: Moved,
     journal: Option<&'a mut Journal<'j>>,
 }
 fn provider_stat(
@@ -1565,8 +1695,16 @@ impl ProviderJob<'_, '_> {
                         "cannot copy onto itself: {}",
                         source.display()
                     );
-                    if self.conflict == Conflict::Skip
-                        && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
+                    // Another source of this move landed there (two picked files of one name,
+                    // or `A.txt` and `a.txt` into a folder that ignores case): skipped, never
+                    // written over.
+                    let ours = self.moving
+                        && self.conflict == Conflict::Overwrite
+                        && before.kind != Kind::Dir
+                        && moved_here(&self.moved, self.journal.as_deref(), &target);
+                    if ours
+                        || self.conflict == Conflict::Skip
+                            && !(before.kind == Kind::Dir && e.kind == Kind::Dir && !e.is_link)
                     {
                         self.state.skipped += 1;
                         (self.progress)(self.state.clone());
@@ -1612,6 +1750,7 @@ impl ProviderJob<'_, '_> {
             // is one rename on the server.
             let merge = before.kind == Kind::Dir && occupied.is_some();
             if !merge && self.rename_on_server(src, &dst, source, &target, occupied.is_some())? {
+                self.moved.add(&target);
                 return Ok(true);
             }
         }
@@ -1648,6 +1787,7 @@ impl ProviderJob<'_, '_> {
         let picked = target != *proposed;
         let placed = self.copy(src, source, &before, &target, picked)?;
         if self.moving {
+            self.moved.add(&target);
             check_cancel(self.cancel)?;
             // The copy is verified: delete the source permanently, like `move_local` (the
             // local provider's `remove` would only send it to the Recycle Bin).
@@ -1685,6 +1825,7 @@ impl ProviderJob<'_, '_> {
         target: crate::VPath,
     ) -> Result<bool> {
         if self.moving {
+            self.moved.add(&target);
             match source.to_local_path() {
                 Some(local) => fs::remove_file(&local)
                     .with_context(|| format!("remove moved file {}", local.display()))?,
@@ -2226,7 +2367,11 @@ pub fn extract_under(
                 below(&dst, name)?;
                 ready.insert(parent.to_path_buf());
             }
-            let mut partial = tempfile::NamedTempFile::new_in(parent)?;
+            // The usual umask-filtered mode, not the temp file's private 0600.
+            let mut staging = tempfile::Builder::new();
+            #[cfg(unix)]
+            staging.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+            let mut partial = staging.tempfile_in(parent)?;
             let copied = copy_archive_bytes(input, &mut partial, &mut state, progress, cancel)?;
             // Readers already hold bodies to their declared size; never persist a short file.
             anyhow::ensure!(copied == *size, "archive entry is truncated: {name}");
@@ -2871,7 +3016,13 @@ pub fn add_to_zip(
         for index in 0..old.len() {
             check_cancel(cancel)?;
             let entry = old.by_index_raw(index)?;
-            if !files.contains_key(entry.name()) {
+            let key = crate::archive::replaced_key(entry.name());
+            let key = if entry.is_dir() {
+                format!("{key}/")
+            } else {
+                key
+            };
+            if !files.contains_key(&key) {
                 output.raw_copy_file(entry)?;
             }
         }
@@ -3044,6 +3195,151 @@ mod tests {
         assert!(stays_under(&remote, &remote.join("a")).is_ok());
         assert!(stays_under(&remote, &remote.join("..")).is_err());
         assert!(stays_under(&remote, &VPath::parse("sftp://box/destx").unwrap()).is_err());
+    }
+}
+
+/// A journaled move from a source that tells case apart (an SFTP host, a Linux disk) into
+/// a folder that does not (macOS, Windows, a FAT stick): `A.txt` and `a.txt` land on one
+/// name. The second is not taken for a file an earlier run placed in the folder this run
+/// made: it gets the conflict policy, and its source is never deleted uncopied.
+#[cfg(test)]
+mod case_twin_tests {
+    use super::{transfer_resumable, Conflict, Journal};
+    use crate::{memory::MemoryProvider, Provider, Router, VPath};
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    #[test]
+    fn a_case_twin_is_not_taken_for_a_placed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("PROBE"), b"").unwrap();
+        if !tmp.path().join("probe").exists() {
+            // This temp folder tells case apart: no twins land on one name.
+            eprintln!("skipped: the temp folder is case-sensitive");
+            return;
+        }
+        let router = Router::new();
+        let mem = Arc::new(MemoryProvider::new());
+        router.register(mem.clone());
+        mem.put("/src/A.txt", "one");
+        mem.put("/src/a.txt", "two");
+        let src = VPath::parse("memory://box/src").unwrap();
+        let mut journal = Journal::new(Default::default(), None, |_, _| Ok(()));
+        transfer_resumable(
+            &[src],
+            &VPath::local(tmp.path()),
+            true,
+            Conflict::Skip,
+            &|_| {},
+            &AtomicBool::new(false),
+            &router,
+            &mut journal,
+        )
+        .unwrap();
+        drop(journal);
+        let landed = std::fs::read_dir(tmp.path().join("src")).unwrap().count();
+        let left = mem
+            .list(&VPath::parse("memory://box/src").unwrap())
+            .map_or(0, |l| l.len());
+        assert_eq!(
+            (landed, left),
+            (1, 1),
+            "one copied, its twin skipped and kept"
+        );
+    }
+
+    /// On a destination that tells case apart, `A.txt` and `a.txt` are two files: moving
+    /// both with Overwrite replaces an `a.txt` that was there, not skips it.
+    #[test]
+    fn overwrite_replaces_a_case_twin_on_a_case_sensitive_destination() {
+        let router = Router::new();
+        let mem = Arc::new(MemoryProvider::new());
+        router.register(mem.clone());
+        mem.put("/src/A.txt", "big");
+        mem.put("/src/a.txt", "new");
+        mem.put("/dst/src/a.txt", "old");
+        super::transfer(
+            &[VPath::parse("memory://box/src").unwrap()],
+            &VPath::parse("memory://box/dst").unwrap(),
+            true,
+            Conflict::Overwrite,
+            &|_| {},
+            &AtomicBool::new(false),
+            &router,
+        )
+        .unwrap();
+        let read = |p: &str| {
+            let mut body = String::new();
+            std::io::Read::read_to_string(
+                &mut mem.read(&VPath::parse(p).unwrap()).unwrap(),
+                &mut body,
+            )
+            .unwrap();
+            body
+        };
+        assert_eq!(read("memory://box/dst/src/A.txt"), "big");
+        assert_eq!(read("memory://box/dst/src/a.txt"), "new");
+    }
+
+    /// Overwrite replaces what was there before, never a file this same move just placed:
+    /// moved over it, the first twin would be gone from both sides.
+    #[test]
+    fn overwrite_never_replaces_what_the_transfer_placed() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("PROBE"), b"").unwrap();
+        if !tmp.path().join("probe").exists() {
+            eprintln!("skipped: the temp folder is case-sensitive");
+            return;
+        }
+        for journaled in [false, true] {
+            let dst = tmp.path().join(format!("dst{journaled}"));
+            std::fs::create_dir(&dst).unwrap();
+            let router = Router::new();
+            let mem = Arc::new(MemoryProvider::new());
+            router.register(mem.clone());
+            mem.put("/src/A.txt", "one");
+            mem.put("/src/a.txt", "two!");
+            let src = [VPath::parse("memory://box/src").unwrap()];
+            let (to, cancel) = (VPath::local(&dst), AtomicBool::new(false));
+            let mut journal = Journal::new(Default::default(), None, |_, _| Ok(()));
+            match journaled {
+                true => transfer_resumable(
+                    &src,
+                    &to,
+                    true,
+                    Conflict::Overwrite,
+                    &|_| {},
+                    &cancel,
+                    &router,
+                    &mut journal,
+                ),
+                false => super::transfer(
+                    &src,
+                    &to,
+                    true,
+                    Conflict::Overwrite,
+                    &|_| {},
+                    &cancel,
+                    &router,
+                ),
+            }
+            .unwrap();
+            drop(journal);
+            let mut kept: Vec<Vec<u8>> = std::fs::read_dir(dst.join("src"))
+                .unwrap()
+                .map(|e| std::fs::read(e.unwrap().path()).unwrap())
+                .collect();
+            for e in mem.list(&src[0]).unwrap_or_default() {
+                let mut body = Vec::new();
+                std::io::Read::read_to_end(&mut mem.read(&e.path).unwrap(), &mut body).unwrap();
+                kept.push(body);
+            }
+            kept.sort();
+            assert_eq!(
+                kept,
+                [b"one".to_vec(), b"two!".to_vec()],
+                "journaled: {journaled}"
+            );
+        }
     }
 }
 

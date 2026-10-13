@@ -41,11 +41,15 @@ pub fn parent(path: &str) -> Option<String> {
         None => 0,
     };
     let (root, rest) = path.split_at(root_len);
-    let rest = rest.trim_end_matches(['/', '\\']);
+    // `\` separates only Windows paths (`D:\x`, `\\server\share`); elsewhere it is part
+    // of a name.
+    let windows = root.is_empty() && (rest.get(1..2) == Some(":") || rest.starts_with('\\'));
+    let seps: &[char] = if windows { &['/', '\\'] } else { &['/'] };
+    let rest = rest.trim_end_matches(seps);
     if rest.is_empty() {
         return None;
     }
-    match rest.rfind(['/', '\\']) {
+    match rest.rfind(seps) {
         Some(0) => Some(format!("{root}{}", &rest[..1])),
         Some(i) if rest[..i].ends_with(':') => Some(format!("{root}{}", &rest[..=i])),
         Some(i) => Some(format!("{root}{}", &rest[..i])),
@@ -146,6 +150,10 @@ mod tests {
         assert_eq!(p("/home").as_deref(), Some("/"));
         assert_eq!(p("/"), None);
         assert_eq!(p("sftp://host/a/b").as_deref(), Some("sftp://host/a"));
+        // `\` is a separator on Windows only: elsewhere it is part of a name.
+        assert_eq!(p(r"/home/x/a\b").as_deref(), Some("/home/x"));
+        assert_eq!(p(r"sftp://host/a/b\c").as_deref(), Some("sftp://host/a"));
+        assert_eq!(p(r"\\server\share\x").as_deref(), Some(r"\\server\share"));
     }
 
     #[test]
