@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use keel_search::{split_list, FolderRoot, IndexSettings, ScanOptions, Schedule, VolumeRoot};
 
 use crate::a11y::Named;
+use crate::i18n::tr;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -78,10 +79,10 @@ fn scan_options(
         .num_columns(2)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
-            ui.label("Changes");
-            ui.checkbox(&mut scan.monitor, "Monitor changes");
+            ui.label(tr("search_settings.changes"));
+            ui.checkbox(&mut scan.monitor, tr("search_settings.monitor_changes"));
             ui.end_row();
-            let label = ui.label("Change buffer");
+            let label = ui.label(tr("search_settings.change_buffer"));
             ui.add_enabled_ui(scan.monitor, |ui| {
                 let r = ui.add(
                     egui::DragValue::new(&mut scan.buffer_kib)
@@ -90,21 +91,21 @@ fn scan_options(
                 );
                 let _ = r
                     .labelled_by(label.id)
-                    .on_hover_text("Windows; a network share takes at most 64 KiB");
+                    .on_hover_text(tr("search_settings.change_buffer_tip"));
             });
             ui.end_row();
             ui.label("");
             ui.checkbox(
                 &mut scan.rescan_on_overflow,
-                "Rescan when the change buffer overflows",
+                tr("search_settings.rescan_on_overflow"),
             );
             ui.end_row();
-            ui.label("Rescan");
+            ui.label(tr("search_settings.rescan"));
             ui.horizontal(|ui| {
                 let shown = match &scan.schedule {
-                    Schedule::Never => "Never",
-                    Schedule::EveryHours(_) => "Every N hours",
-                    Schedule::Daily(_) => "Daily at",
+                    Schedule::Never => tr("search_settings.never"),
+                    Schedule::EveryHours(_) => tr("search_settings.every_n_hours"),
+                    Schedule::Daily(_) => tr("search_settings.daily_at"),
                 };
                 let combo = egui::ComboBox::from_id_salt(format!("search-schedule-{id}"))
                     .selected_text(shown)
@@ -116,16 +117,24 @@ fn scan_options(
                                 scan.schedule = value;
                             }
                         };
-                        pick(ui, Schedule::Never, "Never");
-                        pick(ui, Schedule::EveryHours(24), "Every N hours");
-                        pick(ui, Schedule::Daily("03:00".into()), "Daily at");
+                        pick(ui, Schedule::Never, tr("search_settings.never"));
+                        pick(
+                            ui,
+                            Schedule::EveryHours(24),
+                            tr("search_settings.every_n_hours"),
+                        );
+                        pick(
+                            ui,
+                            Schedule::Daily("03:00".into()),
+                            tr("search_settings.daily_at"),
+                        );
                     });
-                let _ = combo.response.named("Rescan");
+                let _ = combo.response.named(tr("search_settings.rescan"));
                 match &mut scan.schedule {
                     Schedule::Never => {}
                     Schedule::EveryHours(hours) => {
                         let r = ui.add(egui::DragValue::new(hours).range(1..=720).suffix(" h"));
-                        let _ = r.named("Rescan every N hours");
+                        let _ = r.named(tr("search_settings.rescan_every_n_hours"));
                     }
                     Schedule::Daily(time) => {
                         let text = texts
@@ -139,7 +148,7 @@ fn scan_options(
                         if r.changed() {
                             *time = text.trim().to_owned();
                         }
-                        let _ = r.named("Rescan daily at");
+                        let _ = r.named(tr("search_settings.rescan_daily_at"));
                         if keel_search::parse_time_of_day(time).is_none() {
                             ui.colored_label(ui.visuals().warn_fg_color, "HH:MM");
                         }
@@ -148,8 +157,8 @@ fn scan_options(
             });
             ui.end_row();
             ui.label("");
-            ui.checkbox(&mut scan.fast_rescan, "Fast rescan")
-                .on_hover_text("A rescan lists only the folders whose modified time changed");
+            ui.checkbox(&mut scan.fast_rescan, tr("search_settings.fast_rescan"))
+                .on_hover_text(tr("search_settings.fast_rescan_tip"));
             ui.end_row();
         });
 }
@@ -170,16 +179,29 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
         .draft
         .take()
         .unwrap_or_else(|| (s.search_index.clone(), s.search_index.clone()));
-    ui.label(
-        "Keel's own index reads NTFS drives directly; these folders and volumes \
-         (FAT, exFAT, ReFS, removable and network drives) are indexed by walking them.",
-    );
+    ui.label(tr("search_settings.intro"));
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut page.tab, Tab::Folders, "Folders");
-        ui.selectable_value(&mut page.tab, Tab::Volumes, "Volumes");
-        ui.selectable_value(&mut page.tab, Tab::Exclude, "Exclude");
-        ui.selectable_value(&mut page.tab, Tab::Journal, "Journal");
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::Folders,
+            tr("search_settings.tab_folders"),
+        );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::Volumes,
+            tr("search_settings.tab_volumes"),
+        );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::Exclude,
+            tr("search_settings.tab_exclude"),
+        );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::Journal,
+            tr("search_settings.tab_journal"),
+        );
     });
     ui.separator();
     egui::ScrollArea::vertical()
@@ -194,14 +216,14 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
     ui.horizontal(|ui| {
         let edited = draft != s.search_index;
         if ui
-            .add_enabled(edited, egui::Button::new("Apply"))
-            .on_hover_text("Indexes what changed; an index whose rules changed is walked again")
+            .add_enabled(edited, egui::Button::new(tr("search_settings.apply")))
+            .on_hover_text(tr("search_settings.apply_tip"))
             .clicked()
         {
             s.search_index = draft.clone();
         }
         if ui
-            .add_enabled(edited, egui::Button::new("Revert"))
+            .add_enabled(edited, egui::Button::new(tr("search_settings.revert")))
             .clicked()
         {
             draft = s.search_index.clone();
@@ -221,7 +243,7 @@ fn folders(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
     for (i, f) in d.folders.iter_mut().enumerate() {
         let offline = page.is_offline(&f.path);
         let title = if offline {
-            format!("{} (offline)", f.path)
+            tr("search_settings.offline").replace("{path}", &f.path)
         } else {
             f.path.clone()
         };
@@ -229,7 +251,7 @@ fn folders(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
             .id_salt(format!("search-folder-{i}"))
             .show(ui, |ui| {
                 scan_options(ui, &mut page.texts, &format!("folder-{i}"), &mut f.scan);
-                if ui.button("Remove folder").clicked() {
+                if ui.button(tr("search_settings.remove_folder")).clicked() {
                     remove = Some(i);
                 }
             });
@@ -239,7 +261,7 @@ fn folders(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
         page.texts.clear();
     }
     if d.folders.is_empty() {
-        ui.weak("No folders yet.");
+        ui.weak(tr("search_settings.no_folders_yet"));
     }
     ui.horizontal(|ui| {
         let r = ui.add(
@@ -247,10 +269,13 @@ fn folders(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
                 .hint_text(r"C:\Data, \\server\share or /mnt/data")
                 .desired_width(280.0),
         );
-        let _ = r.named("New folder");
+        let _ = r.named(tr("search_settings.new_folder"));
         let path = page.new_folder.trim().to_owned();
         if ui
-            .add_enabled(!path.is_empty(), egui::Button::new("Add folder"))
+            .add_enabled(
+                !path.is_empty(),
+                egui::Button::new(tr("search_settings.add_folder")),
+            )
             .clicked()
         {
             d.folders.push(FolderRoot {
@@ -265,30 +290,30 @@ fn folders(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
 fn volumes(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
     ui.checkbox(
         &mut d.auto_include_fixed,
-        "Automatically include new fixed volumes",
+        tr("search_settings.auto_include_fixed"),
     );
     ui.checkbox(
         &mut d.auto_include_removable,
-        "Automatically include new removable volumes",
+        tr("search_settings.auto_include_removable"),
     );
     ui.checkbox(
         &mut d.auto_remove_offline,
-        "Automatically remove offline volumes",
+        tr("search_settings.auto_remove_offline"),
     )
-    .on_hover_text("Off: an offline volume stays searchable from its last scan, marked offline");
+    .on_hover_text(tr("search_settings.auto_remove_offline_tip"));
     ui.add_space(4.0);
     let mut remove = None;
     for (i, v) in d.volumes.iter_mut().enumerate() {
         let offline = page.is_offline(&v.root);
         let title = match (v.include, offline) {
-            (_, true) => format!("{} (offline)", v.root),
-            (false, _) => format!("{} (not indexed)", v.root),
+            (_, true) => tr("search_settings.offline").replace("{path}", &v.root),
+            (false, _) => tr("search_settings.not_indexed").replace("{path}", &v.root),
             _ => v.root.clone(),
         };
         egui::CollapsingHeader::new(title)
             .id_salt(format!("search-volume-{i}"))
             .show(ui, |ui| {
-                ui.checkbox(&mut v.include, "Include in database");
+                ui.checkbox(&mut v.include, tr("search_settings.include_in_database"));
                 egui::Grid::new(format!("search-volume-only-{i}"))
                     .num_columns(2)
                     .show(ui, |ui| {
@@ -296,13 +321,13 @@ fn volumes(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
                             ui,
                             &mut page.texts,
                             &format!("volume-{i}-only"),
-                            "Include only",
+                            tr("search_settings.include_only"),
                             "Photos; Work\\Projects",
                             &mut v.include_only,
                         );
                     });
                 scan_options(ui, &mut page.texts, &format!("volume-{i}"), &mut v.scan);
-                if ui.button("Remove volume").clicked() {
+                if ui.button(tr("search_settings.remove_volume")).clicked() {
                     remove = Some(i);
                 }
             });
@@ -314,13 +339,16 @@ fn volumes(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
     ui.horizontal(|ui| {
         let r = ui.add(
             egui::TextEdit::singleline(&mut page.new_volume)
-                .hint_text(r"E:\ or a mapped network drive")
+                .hint_text(tr("search_settings.new_volume_hint"))
                 .desired_width(200.0),
         );
-        let _ = r.named("New volume");
+        let _ = r.named(tr("search_settings.new_volume"));
         let root = page.new_volume.trim().to_owned();
         if ui
-            .add_enabled(!root.is_empty(), egui::Button::new("Add volume"))
+            .add_enabled(
+                !root.is_empty(),
+                egui::Button::new(tr("search_settings.add_volume")),
+            )
             .clicked()
         {
             d.volumes.push(VolumeRoot {
@@ -334,8 +362,8 @@ fn volumes(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
 
 fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
     let x = &mut d.exclude;
-    ui.checkbox(&mut x.hidden, "Exclude hidden files and folders");
-    ui.checkbox(&mut x.system, "Exclude system files and folders");
+    ui.checkbox(&mut x.hidden, tr("search_settings.exclude_hidden"));
+    ui.checkbox(&mut x.system, tr("search_settings.exclude_system"));
     ui.add_space(4.0);
     egui::Grid::new("search-exclude")
         .num_columns(2)
@@ -346,7 +374,7 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
                 ui,
                 t,
                 "exclude-folders",
-                "Exclude folders",
+                tr("search_settings.exclude_folders"),
                 r"node_modules; C:\Temp; *\cache",
                 &mut x.folders,
             );
@@ -354,7 +382,7 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
                 ui,
                 t,
                 "include-only-folders",
-                "Include only folders",
+                tr("search_settings.include_only_folders"),
                 r"C:\Users; D:\Work",
                 &mut x.include_only_folders,
             );
@@ -362,7 +390,7 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
                 ui,
                 t,
                 "include-only-files",
-                "Include only files",
+                tr("search_settings.include_only_files"),
                 "*.pdf; *.docx",
                 &mut x.include_only_files,
             );
@@ -370,36 +398,31 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
                 ui,
                 t,
                 "exclude-files",
-                "Exclude files",
+                tr("search_settings.exclude_files"),
                 "*.tmp; ~$*",
                 &mut x.files,
             );
         });
-    ui.weak("Lists are separated by ';'. Rules apply while indexing: an index walks again when they change.");
+    ui.weak(tr("search_settings.lists_note"));
 }
 
 /// The Journal tab: the index journal on or off, and its size.
 fn journal(ui: &mut egui::Ui, d: &mut IndexSettings) {
     let j = &mut d.journal;
-    ui.checkbox(&mut j.enabled, "Keep an index journal")
-        .on_hover_text(
-            "Every create, delete, rename, modify and attribute change the index applies",
-        );
+    ui.checkbox(&mut j.enabled, tr("search_settings.keep_journal"))
+        .on_hover_text(tr("search_settings.keep_journal_tip"));
     ui.add_enabled_ui(j.enabled, |ui| {
         ui.horizontal(|ui| {
-            ui.label("Size");
+            ui.label(tr("search_settings.size"));
             ui.add(
                 egui::DragValue::new(&mut j.max_mb)
                     .range(1..=4096)
                     .suffix(" MB"),
             )
-            .named("Journal size in MB");
+            .named(tr("search_settings.journal_size"));
         });
     });
-    ui.weak(
-        "When the journal reaches its size the oldest entries go first. Open it with \
-         Index journal in the command palette, or `keel journal` on the command line.",
-    );
+    ui.weak(tr("search_settings.journal_note"));
 }
 
 /// Hands Settings → Search index to the search backend on a worker (it may list volumes and
