@@ -292,8 +292,11 @@ impl Library {
             fits(name, std::fs::metadata(scratch.0.join(name))?.len())?;
         }
         let partial = to.with_extension(format!("{EXTENSION}.{}.partial", std::process::id()));
+        // Only clean up a partial this call created; another backup may own this name.
+        let file = std::fs::File::create_new(&partial)
+            .with_context(|| format!("writing {}", to.display()))?;
         let written = (|| -> Result<Manifest> {
-            let mut zip = zip::ZipWriter::new(std::fs::File::create_new(&partial)?);
+            let mut zip = zip::ZipWriter::new(file);
             let mut files = Vec::new();
             let mut buf = vec![0u8; 1 << 16];
             for name in names {

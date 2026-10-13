@@ -585,3 +585,19 @@ fn a_backup_leaves_the_text_out_and_the_restore_reads_it_again() {
         5
     );
 }
+
+#[test]
+fn a_failed_backup_does_not_remove_another_writers_partial() {
+    let (data, files, out) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let (lib, _src) = library(data.path(), files.path(), 1);
+    let to = out.path().join("same.keelbackup");
+    let partial = to.with_extension(format!("{EXTENSION}.{}.partial", std::process::id()));
+    std::fs::write(&partial, b"another writer").unwrap();
+    assert!(lib.backup(&to).is_err());
+    assert_eq!(std::fs::read(&partial).unwrap(), b"another writer");
+    assert!(!to.exists());
+}
