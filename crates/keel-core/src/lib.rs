@@ -25,6 +25,8 @@ mod db;
 pub mod finder_tags;
 /// Set folder dates to the newest change below (a plan like the folder operations).
 mod folder_dates;
+/// Dated, read-only states of a source's index.
+mod freeze;
 mod fsid;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -62,6 +64,7 @@ pub use backup::{
 pub use comments::MAX_COMMENT;
 pub use finder_tags::{FinderColor, FinderTag};
 pub use folder_dates::{ns_time, FolderDate};
+pub use freeze::Freeze;
 pub use fsid::unix_ns;
 pub use hash::{
     background_thread, is_background_thread, on_battery, DupGroup, HashJob, HashResult,

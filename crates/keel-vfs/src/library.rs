@@ -37,6 +37,23 @@ pub fn split(p: &VPath) -> Option<(&str, &str)> {
         .then(|| (p.authority.as_str(), p.path.trim_matches('/')))
 }
 
+/// The authority of a source's freeze: `library://<source>@<freeze>/<rel>` lists the index as
+/// it was when the freeze was made (read-only, like an offline source; files are not read).
+pub fn frozen(source: &str, freeze: i64) -> String {
+    format!("{source}@{freeze}")
+}
+
+/// The source and freeze of a `library://` authority (`None`: the live index).
+pub fn freeze_of(authority: &str) -> (&str, Option<i64>) {
+    match authority.split_once('@') {
+        Some((source, f)) => match f.parse() {
+            Ok(f) => (source, Some(f)),
+            Err(_) => (authority, None),
+        },
+        None => (authority, None),
+    }
+}
+
 pub struct LibraryProvider {
     index: Arc<dyn LibraryIndex>,
     /// Weak: the router holds this provider.
@@ -55,6 +72,11 @@ impl LibraryProvider {
     /// The real path and its provider.
     fn real(&self, p: &VPath) -> Result<(Arc<dyn Provider>, VPath)> {
         let (source, rel) = Self::parts(p)?;
+        anyhow::ensure!(
+            freeze_of(source).1.is_none(),
+            "{}: a freeze keeps the index as it was, not the files; open the source for them",
+            p.display()
+        );
         let real = self.index.resolve(source, rel)?;
         let router = self
             .router
@@ -226,5 +248,27 @@ mod tests {
         let err = p.local_copy(&path("src1", "a.TXT")).unwrap_err();
         assert!(format!("{err:#}").contains("offline (last seen"), "{err:#}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn freezes_are_listed_never_read() {
+        assert_eq!(freeze_of(&frozen("src1", 3)), ("src1", Some(3)));
+        assert_eq!(freeze_of("src1"), ("src1", None));
+        assert_eq!(freeze_of("src1@x"), ("src1@x", None));
+        let router = Arc::new(Router::new());
+        let fake = Arc::new(Fake {
+            root: std::env::temp_dir(),
+            online: true,
+        });
+        router.register(Arc::new(LibraryProvider::new(
+            fake,
+            Arc::downgrade(&router),
+        )));
+        let p = router.provider_for(&path("src1@3", "")).unwrap();
+        let err = p.read(&path("src1@3", "a.TXT")).err().unwrap();
+        assert!(
+            format!("{err:#}").contains("a freeze keeps the index"),
+            "{err:#}"
+        );
     }
 }
