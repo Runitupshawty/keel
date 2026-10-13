@@ -1,3 +1,26 @@
+/// Whether Windows treats this one path component as a device name (`CON`, `nul.txt`,
+/// `COM1`, `LPT¹`, `CONIN$`, ...): the part before the first dot, trailing spaces dropped,
+/// any case. COM and LPT take one digit 0-9 or a superscript ¹ ² ³.
+pub fn is_windows_device(part: &str) -> bool {
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|prefix| {
+        stem.strip_prefix(prefix).is_some_and(|n| {
+            matches!(
+                n,
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VPath {
     pub scheme: String,
@@ -186,8 +209,26 @@ impl VPath {
 
 #[cfg(test)]
 mod tests {
-    use super::VPath;
+    use super::{is_windows_device, VPath};
     use std::path::PathBuf;
+
+    #[test]
+    fn windows_device_names() {
+        for part in [
+            "CON",
+            "nul.txt",
+            "Com1 .log",
+            "lpt³",
+            "CONIN$",
+            "conout$.txt",
+            "COM0",
+        ] {
+            assert!(is_windows_device(part), "{part}");
+        }
+        for part in ["CONIN$x", "COM10", "COM⁴", "console", "", "LPT"] {
+            assert!(!is_windows_device(part), "{part}");
+        }
+    }
 
     #[cfg(windows)]
     #[test]

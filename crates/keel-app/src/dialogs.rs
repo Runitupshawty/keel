@@ -467,19 +467,7 @@ pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
             return Some("A name cannot end with a dot or a space".into());
         }
         let stem = name.split('.').next().unwrap_or(name).trim_end();
-        let upper = stem.to_ascii_uppercase();
-        let reserved = matches!(
-            upper.as_str(),
-            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-        ) || upper
-            .strip_prefix("COM")
-            .or_else(|| upper.strip_prefix("LPT"))
-            .is_some_and(|suffix| {
-                matches!(
-                    suffix,
-                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-                )
-            });
+        let reserved = keel_vfs::path::is_windows_device(name);
         if reserved {
             return Some(format!("\"{stem}\" is a reserved name on Windows"));
         }
@@ -510,7 +498,7 @@ mod tests {
         ] {
             assert!(invalid_name_for(bad, true).is_some(), "{bad} on Windows");
         }
-        for ok in ["COM0", "COM10", "console.txt", "a b.txt", "LPT", ".hidden"] {
+        for ok in ["COM10", "console.txt", "a b.txt", "LPT", ".hidden"] {
             assert_eq!(invalid_name_for(ok, true), None, "{ok} on Windows");
         }
         assert!(invalid_name_for("a/b", false).is_some());

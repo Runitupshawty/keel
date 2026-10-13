@@ -27,22 +27,7 @@ pub fn windows_name(name: &str) -> bool {
     {
         return false;
     }
-    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
-    let upper = stem.to_uppercase();
-    let device = match upper.as_str() {
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" => true,
-        _ => match upper
-            .strip_prefix("COM")
-            .or_else(|| upper.strip_prefix("LPT"))
-        {
-            Some(n) => {
-                matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-                    || matches!(n, "\u{b9}" | "\u{b2}" | "\u{b3}")
-            }
-            None => false,
-        },
-    };
-    !device
+    !keel_vfs::path::is_windows_device(name)
 }
 
 /// A bidirectional-text control: it can make `photo\u{202E}gpj.exe` read as `photoexe.jpg`.
@@ -292,13 +277,13 @@ mod tests {
             "<a>",
             "tab\there",
             "conin$",
+            "com0",
         ] {
             assert!(!windows_name(bad), "{bad:?} should be refused");
         }
         for ok in [
             "CONSOLE",
             "com10",
-            "com0",
             "lpt",
             "a.b",
             ".hidden",

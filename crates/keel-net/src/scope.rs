@@ -25,17 +25,7 @@ fn bidi(c: char) -> bool {
 
 /// Reserved DOS device names, with or without an extension, any case.
 fn device(part: &str) -> bool {
-    let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
-    let upper = stem.to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) || ["COM", "LPT"].iter().any(|prefix| {
-        upper.strip_prefix(prefix).is_some_and(|n| {
-            matches!(n, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-                || matches!(n, "\u{B9}" | "\u{B2}" | "\u{B3}")
-        })
-    })
+    keel_vfs::path::is_windows_device(part)
 }
 
 /// Device and peer labels: at most 256 bytes, no control or bidi characters.

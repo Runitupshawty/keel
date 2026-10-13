@@ -678,26 +678,7 @@ pub fn safe_name(name: &str) -> Result<String> {
     anyhow::ensure!(!parts.is_empty(), "empty archive path");
     for part in &parts {
         // Windows ignores everything from the first dot and trailing spaces before it.
-        let stem = part
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim_end_matches(' ')
-            .to_uppercase();
-        let numbered = |prefix: &str| {
-            stem.strip_prefix(prefix).is_some_and(|n| {
-                let mut chars = n.chars();
-                matches!(
-                    (chars.next(), chars.next()),
-                    (Some('0'..='9' | '¹' | '²' | '³'), None)
-                )
-            })
-        };
-        let device = matches!(
-            stem.as_str(),
-            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-        ) || numbered("COM")
-            || numbered("LPT");
+        let device = crate::path::is_windows_device(part);
         anyhow::ensure!(
             *part != ".." && !part.ends_with(['.', ' ']) && !device,
             "unsafe archive path: {name}"
