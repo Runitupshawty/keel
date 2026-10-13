@@ -79,7 +79,11 @@ pub fn sessions_dir(name: &str) -> Option<PathBuf> {
 
 /// The current profile's session `name` (named like a profile: it is a file name).
 pub fn named_session_path(name: &str) -> Result<PathBuf> {
-    ensure!(valid_name(name), "\"{name}\": {NAME_RULE}");
+    ensure!(
+        valid_name(name),
+        "\"{name}\": {}",
+        crate::i18n::tr("profiles.name_rule")
+    );
     let dir = sessions_dir(&current()).context("no cache folder")?;
     Ok(dir.join(format!("{name}.json")))
 }
@@ -312,46 +316,53 @@ impl Profiles {
                         ui.add(egui::TextEdit::singleline(to).desired_width(160.0));
                         ui.horizontal(|ui| {
                             let ok = valid_name(to.trim());
-                            if ui.add_enabled(ok, egui::Button::new("Rename")).clicked() {
+                            if ui
+                                .add_enabled(ok, egui::Button::new(crate::i18n::tr("menu.rename")))
+                                .clicked()
+                            {
                                 ask = Some(Ask::Rename(name.clone(), to.trim().to_owned()));
                             }
-                            if ui.button("Cancel").clicked() {
+                            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                                 ask = Some(Ask::Rename(String::new(), String::new()));
                             }
                         });
                     } else if self.confirm_delete.as_ref() == Some(name) {
-                        ui.label(format!("Delete \"{name}\"?"));
+                        ui.label(
+                            crate::i18n::tr("profiles.delete_confirm").replace("{name}", name),
+                        );
                         ui.horizontal(|ui| {
                             if ui
-                                .button("Move to trash")
-                                .on_hover_text("Its settings and saved tabs go to the trash")
+                                .button(crate::i18n::tr("profiles.move_to_trash"))
+                                .on_hover_text(crate::i18n::tr("profiles.trash_tip"))
                                 .clicked()
                             {
                                 ask = Some(Ask::Delete(name.clone()));
                             }
-                            if ui.button("Cancel").clicked() {
+                            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                                 ask = Some(Ask::Delete(String::new()));
                             }
                         });
                     } else {
                         match mine {
-                            true => ui.strong(format!("{name}  (current)")),
+                            true => ui.strong(
+                                crate::i18n::tr("profiles.current").replace("{name}", name),
+                            ),
                             false => ui.label(name),
                         };
                         ui.add_enabled_ui(!self.busy && !mine, |ui| {
                             ui.horizontal(|ui| {
-                                if ui.button("Switch").clicked() {
+                                if ui.button(crate::i18n::tr("profiles.switch")).clicked() {
                                     ask = Some(Ask::Switch(name.clone()));
                                 }
-                                if ui.button("Rename").clicked() {
+                                if ui.button(crate::i18n::tr("menu.rename")).clicked() {
                                     self.renaming = Some((name.clone(), name.clone()));
                                 }
-                                if ui.button("Delete").clicked() {
+                                if ui.button(crate::i18n::tr("menu.delete")).clicked() {
                                     self.confirm_delete = Some(name.clone());
                                 }
                             })
                             .response
-                            .on_disabled_hover_text("Switch to another profile first");
+                            .on_disabled_hover_text(crate::i18n::tr("profiles.switch_first"));
                         });
                     }
                     ui.end_row();
@@ -361,45 +372,47 @@ impl Profiles {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_name)
-                    .hint_text("new profile name")
+                    .hint_text(crate::i18n::tr("profiles.new_name_hint"))
                     .desired_width(160.0),
             );
             let name = self.new_name.trim();
             let ok = !self.busy && valid_name(name);
             if ui
-                .add_enabled(ok, egui::Button::new("New"))
-                .on_hover_text("A copy of the current profile's settings")
+                .add_enabled(ok, egui::Button::new(crate::i18n::tr("profiles.new")))
+                .on_hover_text(crate::i18n::tr("profiles.new_tip"))
                 .clicked()
             {
                 ask = Some(Ask::New(name.to_owned()));
             }
         });
         if !self.new_name.trim().is_empty() && !valid_name(self.new_name.trim()) {
-            ui.weak(NAME_RULE);
+            ui.weak(crate::i18n::tr("profiles.name_rule"));
         }
         ui.add_space(4.0);
-        ui.weak("keel --profile <name> starts with a profile");
+        ui.weak(crate::i18n::tr("profiles.start_hint"));
         match ask {
             None => {}
             Some(Ask::Switch(name)) => self.switch(&name),
             Some(Ask::Rename(from, to)) => {
                 self.renaming = None;
                 if !from.is_empty() {
-                    let text = format!("Profile \"{from}\" renamed to \"{to}\"");
+                    let text = crate::i18n::tr("profiles.renamed")
+                        .replace("{from}", &from)
+                        .replace("{to}", &to);
                     self.run(move || rename(&from, &to).map(|()| Done::Changed(text)));
                 }
             }
             Some(Ask::Delete(name)) => {
                 self.confirm_delete = None;
                 if !name.is_empty() {
-                    let text = format!("Profile \"{name}\" moved to the trash");
+                    let text = crate::i18n::tr("profiles.trashed").replace("{name}", &name);
                     self.run(move || delete(&name).map(|()| Done::Changed(text)));
                 }
             }
             Some(Ask::New(name)) => {
                 self.new_name.clear();
                 let settings = s.clone();
-                let text = format!("Profile \"{name}\" created");
+                let text = crate::i18n::tr("profiles.created").replace("{name}", &name);
                 self.run(move || create(&name, &settings).map(|()| Done::Changed(text)));
             }
         }
@@ -422,7 +435,8 @@ impl AppState {
                 Done::Session(name, mut session) => {
                     session.repair(&self.home);
                     self.apply_session(*session);
-                    self.toasts.info(format!("Session: {name}"));
+                    self.toasts
+                        .info(crate::i18n::tr("profiles.session_opened").replace("{name}", &name));
                 }
                 Done::Loaded(loaded) => {
                     self.apply_profile(*loaded);
@@ -453,9 +467,8 @@ impl AppState {
         if let Some(server) = &mut self.instance {
             if let Err(e) = server.rebind(&crate::single_instance::name(&name)) {
                 tracing::info!("single instance for the new profile: {e}");
-                self.toasts.error(format!(
-                    "Profile \"{name}\" is open in another Keel window: switch to that window"
-                ));
+                self.toasts
+                    .error(crate::i18n::tr("profiles.open_elsewhere").replace("{name}", &name));
                 return;
             }
         }
@@ -484,7 +497,8 @@ impl AppState {
         for notice in notices {
             self.toasts.error(notice);
         }
-        self.toasts.info(format!("Profile: {name}"));
+        self.toasts
+            .info(crate::i18n::tr("profiles.profile_now").replace("{name}", &name));
     }
 }
 
@@ -534,27 +548,28 @@ impl AppState {
             SessionCmd::SaveAs => {}
             SessionCmd::Save(_) => {
                 let session = Session::of_tabs(self);
-                let text = format!("Session \"{name}\" saved");
+                let text = crate::i18n::tr("profiles.session_saved").replace("{name}", &name);
                 self.profiles.run(move || {
                     session.save_to(&path)?;
                     Ok(Done::Changed(text))
                 });
             }
-            SessionCmd::Open(_) => self.profiles.run(move || match Session::load_from(&path) {
-                (Some(session), _) => Ok(Done::Session(name, Box::new(session))),
-                (None, notice) => Err(anyhow::anyhow!(
-                    notice.unwrap_or_else(|| format!("No session \"{name}\""))
-                )),
-            }),
+            SessionCmd::Open(_) => {
+                let missing = crate::i18n::tr("profiles.no_session").replace("{name}", &name);
+                self.profiles.run(move || match Session::load_from(&path) {
+                    (Some(session), _) => Ok(Done::Session(name, Box::new(session))),
+                    (None, notice) => Err(anyhow::anyhow!(notice.unwrap_or(missing))),
+                });
+            }
             SessionCmd::Delete(_) => {
                 self.dialog = Some(crate::dialogs::Dialog::Confirm {
-                    text: format!("Delete the session \"{name}\"? Its file goes to the trash."),
-                    yes: "Move to trash",
+                    text: crate::i18n::tr("profiles.delete_session").replace("{name}", &name),
+                    yes: crate::i18n::tr("profiles.move_to_trash"),
                     on_yes: crate::keys::Action::Session(SessionCmd::DeleteNow(name)),
                 });
             }
             SessionCmd::DeleteNow(_) => {
-                let text = format!("Session \"{name}\" moved to the trash");
+                let text = crate::i18n::tr("profiles.session_trashed").replace("{name}", &name);
                 self.profiles.run(move || {
                     keel_vfs::LocalProvider.remove(&VPath::local(&path))?;
                     Ok(Done::Changed(text))
