@@ -154,6 +154,14 @@ fn registry_is_preview_first() {
         "system.search",
         "library.comment",
         "library.set_comment",
+        "collections.list",
+        "collections.items",
+        "collections.create",
+        "collections.rename",
+        "collections.delete",
+        "collections.add",
+        "collections.remove",
+        "collections.move",
     ] {
         assert!(find(name).is_some(), "{name} missing");
     }
@@ -322,6 +330,83 @@ fn comments_are_previewed_set_read_and_cleared() {
     )
     .unwrap_err();
     assert_eq!(err.code, ApiError::NOT_FOUND);
+}
+
+/// Collections: created with paths in the order given, appended to, reordered, renamed,
+/// emptied and deleted, each previewed first.
+#[test]
+fn collections_keep_a_hand_order() {
+    let f = fixture(None);
+    add_and_index(&f);
+    let pdf = s(&f.files.path().join("docs/invoice-2026.pdf"));
+    let txt = s(&f.files.path().join("docs/notes.txt"));
+    let docs = s(&f.files.path().join("docs"));
+    let names = |id: &Value| -> Vec<String> {
+        let hits = call(&f.ctx, "collections.items", json!({ "id": id })).unwrap();
+        (hits.as_array().unwrap().iter())
+            .map(|h| h["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let preview = call(
+        &f.ctx,
+        "collections.create",
+        json!({"name": "Trip", "paths": [txt, pdf]}),
+    )
+    .unwrap();
+    assert!(preview["plan_id"].is_string(), "{preview}");
+    assert!(call(&f.ctx, "collections.list", Value::Null)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let trip = apply(
+        &f.ctx,
+        "collections.create",
+        json!({"name": "Trip", "paths": [txt, pdf]}),
+    );
+    assert_eq!(trip["items"], 2);
+    let id = trip["id"].clone();
+    assert_eq!(names(&id), ["notes.txt", "invoice-2026.pdf"]);
+    assert!(
+        call(&f.ctx, "collections.create", json!({"name": "trip"})).is_err(),
+        "names are unique"
+    );
+
+    apply(
+        &f.ctx,
+        "collections.add",
+        json!({"id": id, "paths": [docs, pdf]}),
+    );
+    assert_eq!(names(&id), ["notes.txt", "invoice-2026.pdf", "docs"]);
+    apply(
+        &f.ctx,
+        "collections.move",
+        json!({"id": id, "paths": [docs], "before": txt}),
+    );
+    assert_eq!(names(&id), ["docs", "notes.txt", "invoice-2026.pdf"]);
+    apply(
+        &f.ctx,
+        "collections.move",
+        json!({"id": id, "paths": [docs]}),
+    );
+    assert_eq!(names(&id), ["notes.txt", "invoice-2026.pdf", "docs"]);
+    let left = apply(
+        &f.ctx,
+        "collections.remove",
+        json!({"id": id, "paths": [txt]}),
+    );
+    assert_eq!(left["items"], 2);
+
+    let renamed = apply(
+        &f.ctx,
+        "collections.rename",
+        json!({"id": id, "name": "Rome"}),
+    );
+    assert_eq!(renamed["name"], "Rome");
+    apply(&f.ctx, "collections.delete", json!({ "id": id }));
+    assert!(call(&f.ctx, "collections.items", json!({ "id": id })).is_err());
+    assert!(std::path::Path::new(&pdf).exists(), "the files stay");
 }
 
 /// Task 56: a folder's color and icon, previewed then set; omitted fields stay, "" clears.

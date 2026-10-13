@@ -111,6 +111,12 @@ user is working) also act directly: they change no file.
 | `favorites.list` | read | Favorites |
 | `favorites.set` | preview | Add to (or with `on: false` remove from) Favorites |
 | `recents` | read | Recently opened files |
+| `collections.list` | read | Collections (hand-ordered lists of indexed files and folders from any source): `[{id, name, items}]`, by name |
+| `collections.items` | read | A collection's files and folders (`id`) in its order, as `search` hits; an item whose record is gone (its file left the index, its source was removed) is dropped |
+| `collections.create` | preview | Create a collection `name` (unique, case-insensitively), with `paths` in it in that order when given; answers `{id, name, items}` |
+| `collections.rename` / `collections.delete` | preview | Rename (`id`, `name`) or delete (`id`) a collection; deleting never touches its files |
+| `collections.add` / `collections.remove` | preview | Append indexed `paths` to collection `id` (ones already in it stay where they are), or take them out of it; answers `{id, name, items}` |
+| `collections.move` | preview | Reorder collection `id`: its items `paths` move together, in their collection order, before the item `before` (absent: to the end) |
 | `recents.note` | direct | Note that an indexed file was opened (it moves to the top of `recents`) |
 | `jobs.list` / `jobs.info` | read | Jobs; one job with its log |
 | `jobs.cancel` | preview | Cancel a job. A copy or move uploading to a cloud account stops its request on the wire (within the current 8 MiB chunk); an unfinished S3 multipart upload is aborted, Drive and Dropbox sessions expire on their own |

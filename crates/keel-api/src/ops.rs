@@ -104,6 +104,22 @@ pub static OPS: &[Operation] = &[
         NoParams => Vec<Hit>, favorites_list, json!({})),
     previewed!("favorites.set", "Adds indexed paths to Favorites (on=false removes them).",
         FavoritesSetParams => Tagged, favorites_set_preview, favorites_set, json!({"paths": [example_file()], "on": true})),
+    now!("collections.list", "Collections (hand-ordered lists of files and folders): id, name and item count.",
+        NoParams => Vec<CollectionInfo>, collections_list, json!({})),
+    now!("collections.items", "A collection's files and folders, in its order.",
+        CollectionParams => Vec<Hit>, collections_items, json!({"id": 1})),
+    previewed!("collections.create", "Creates a collection, with indexed paths in it (in the order given) when given.",
+        CollectionCreateParams => CollectionInfo, collections_create_preview, collections_create, json!({"name": "Trip 2026", "paths": [example_file()]})),
+    previewed!("collections.rename", "Renames a collection.",
+        CollectionRenameParams => CollectionInfo, collections_rename_preview, collections_rename, json!({"id": 1, "name": "Trip"})),
+    previewed!("collections.delete", "Deletes a collection (never its files).",
+        CollectionParams => Done, collections_delete_preview, collections_delete, json!({"id": 1})),
+    previewed!("collections.add", "Adds indexed paths at the end of a collection (ones already in it stay where they are).",
+        CollectionPathsParams => CollectionInfo, collections_add_preview, collections_add, json!({"id": 1, "paths": [example_file()]})),
+    previewed!("collections.remove", "Takes paths out of a collection (never touching the files).",
+        CollectionPathsParams => CollectionInfo, collections_remove_preview, collections_remove, json!({"id": 1, "paths": [example_file()]})),
+    previewed!("collections.move", "Reorders a collection: moves its items `paths` (in their collection order) before the item `before`, or to the end.",
+        CollectionMoveParams => CollectionInfo, collections_move_preview, collections_move, json!({"id": 1, "paths": [example_file()]})),
     now!("recents", "Recently opened files, newest first.",
         LimitParams => Vec<Hit>, recents, json!({"limit": 20})),
     now!("recents.note", "Notes that an indexed file was opened (it moves to the top of recents); acts directly.",
@@ -1117,6 +1133,182 @@ fn views_delete(ctx: &Ctx, p: ViewIdParams) -> Result<ViewInfo> {
     let v = existing_view(ctx, p.id)?;
     ctx.lib.delete_view(p.id)?;
     Ok(view_info(v))
+}
+
+// --- collections ---
+
+fn collection_info(c: keel_core::Collection) -> CollectionInfo {
+    CollectionInfo {
+        id: c.id,
+        name: c.name,
+        items: c.items,
+    }
+}
+
+fn collection(ctx: &Ctx, id: i64) -> Result<CollectionInfo> {
+    (ctx.lib.collections()?.into_iter())
+        .find(|c| c.id == id)
+        .map(collection_info)
+        .ok_or_else(|| ApiError::not_found(format!("no collection {id}")))
+}
+
+fn collections_list(ctx: &Ctx, _: NoParams) -> Result<Vec<CollectionInfo>> {
+    Ok(ctx
+        .lib
+        .collections()?
+        .into_iter()
+        .map(collection_info)
+        .collect())
+}
+
+fn collections_items(ctx: &Ctx, p: CollectionParams) -> Result<Vec<Hit>> {
+    collection(ctx, p.id)?;
+    Ok(hits(ctx.lib.collection_items(p.id)?))
+}
+
+/// A refusal of the library's (a clashing or invalid name) as invalid params.
+fn invalid(e: anyhow::Error) -> ApiError {
+    ApiError::invalid_params(format!("{e:#}"))
+}
+
+fn check_collection_name(ctx: &Ctx, name: &str, except: Option<i64>) -> Result<()> {
+    if name.trim().is_empty() || name.trim() != name {
+        return Err(ApiError::invalid_params(format!("invalid name {name:?}")));
+    }
+    let clash = (ctx.lib.collections()?.iter())
+        .any(|c| Some(c.id) != except && c.name.to_lowercase() == name.to_lowercase());
+    match clash {
+        true => Err(ApiError::invalid_params(format!(
+            "collection {name:?} already exists"
+        ))),
+        false => Ok(()),
+    }
+}
+
+fn collections_create_preview(ctx: &Ctx, p: &CollectionCreateParams) -> Result<Preview> {
+    check_collection_name(ctx, &p.name, None)?;
+    let hits = match p.paths.is_empty() {
+        true => Vec::new(),
+        false => records(ctx, &p.paths)?,
+    };
+    let mut changes = vec![change("collection.create", None, Some(p.name.clone()))];
+    changes.extend(tag_changes("collection.add", &hits, &p.name));
+    Ok(Preview {
+        pin: None,
+        summary: format!("Create collection {} with {} item(s)", p.name, hits.len()),
+        changes,
+        warnings: Vec::new(),
+    })
+}
+
+fn collections_create(ctx: &Ctx, p: CollectionCreateParams) -> Result<CollectionInfo> {
+    let hits = match p.paths.is_empty() {
+        true => Vec::new(),
+        false => records(ctx, &p.paths)?,
+    };
+    let id = ctx.lib.create_collection(&p.name).map_err(invalid)?;
+    ctx.lib.add_to_collection(id, &refs(&hits))?;
+    collection(ctx, id)
+}
+
+fn collections_rename_preview(ctx: &Ctx, p: &CollectionRenameParams) -> Result<Preview> {
+    let c = collection(ctx, p.id)?;
+    check_collection_name(ctx, &p.name, Some(p.id))?;
+    Ok(Preview {
+        pin: None,
+        summary: format!("Rename collection {} to {}", c.name, p.name),
+        changes: vec![change("collection.rename", None, Some(p.name.clone()))],
+        warnings: Vec::new(),
+    })
+}
+
+fn collections_rename(ctx: &Ctx, p: CollectionRenameParams) -> Result<CollectionInfo> {
+    collection(ctx, p.id)?;
+    ctx.lib.rename_collection(p.id, &p.name).map_err(invalid)?;
+    collection(ctx, p.id)
+}
+
+fn collections_delete_preview(ctx: &Ctx, p: &CollectionParams) -> Result<Preview> {
+    let c = collection(ctx, p.id)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!(
+            "Delete collection {} ({} item(s); the files stay)",
+            c.name, c.items
+        ),
+        changes: vec![change("collection.delete", None, Some(c.name))],
+        warnings: Vec::new(),
+    })
+}
+
+fn collections_delete(ctx: &Ctx, p: CollectionParams) -> Result<Done> {
+    collection(ctx, p.id)?;
+    ctx.lib.delete_collection(p.id)?;
+    Ok(Done { ok: true })
+}
+
+fn collections_add_preview(ctx: &Ctx, p: &CollectionPathsParams) -> Result<Preview> {
+    let c = collection(ctx, p.id)?;
+    let hits = records(ctx, &p.paths)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!("Add {} item(s) to collection {}", hits.len(), c.name),
+        changes: tag_changes("collection.add", &hits, &c.name),
+        warnings: Vec::new(),
+    })
+}
+
+fn collections_add(ctx: &Ctx, p: CollectionPathsParams) -> Result<CollectionInfo> {
+    collection(ctx, p.id)?;
+    let hits = records(ctx, &p.paths)?;
+    ctx.lib.add_to_collection(p.id, &refs(&hits))?;
+    collection(ctx, p.id)
+}
+
+fn collections_remove_preview(ctx: &Ctx, p: &CollectionPathsParams) -> Result<Preview> {
+    let c = collection(ctx, p.id)?;
+    let hits = records(ctx, &p.paths)?;
+    Ok(Preview {
+        pin: None,
+        summary: format!("Remove {} item(s) from collection {}", hits.len(), c.name),
+        changes: tag_changes("collection.remove", &hits, &c.name),
+        warnings: Vec::new(),
+    })
+}
+
+fn collections_remove(ctx: &Ctx, p: CollectionPathsParams) -> Result<CollectionInfo> {
+    collection(ctx, p.id)?;
+    let hits = records(ctx, &p.paths)?;
+    ctx.lib.remove_from_collection(p.id, &refs(&hits))?;
+    collection(ctx, p.id)
+}
+
+fn collections_move_preview(ctx: &Ctx, p: &CollectionMoveParams) -> Result<Preview> {
+    let c = collection(ctx, p.id)?;
+    let hits = records(ctx, &p.paths)?;
+    let place = match &p.before {
+        Some(b) => format!("before {}", record_at(ctx, b)?.path.display()),
+        None => "to the end".into(),
+    };
+    Ok(Preview {
+        pin: None,
+        summary: format!(
+            "Move {} item(s) of collection {} {place}",
+            hits.len(),
+            c.name
+        ),
+        changes: tag_changes("collection.move", &hits, &place),
+        warnings: Vec::new(),
+    })
+}
+
+fn collections_move(ctx: &Ctx, p: CollectionMoveParams) -> Result<CollectionInfo> {
+    collection(ctx, p.id)?;
+    let hits = records(ctx, &p.paths)?;
+    let before = p.before.as_deref().map(|b| record_at(ctx, b)).transpose()?;
+    ctx.lib
+        .move_in_collection(p.id, &refs(&hits), before.as_ref().map(|h| &h.record))?;
+    collection(ctx, p.id)
 }
 
 fn tag_changes(action: &str, hits: &[LibraryHit], detail: &str) -> Vec<Change> {
