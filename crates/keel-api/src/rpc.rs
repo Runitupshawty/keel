@@ -16,10 +16,10 @@ pub struct Request {
     pub params: Value,
 }
 
-fn request(v: Value) -> std::result::Result<Request, (Value, ApiError)> {
+pub(crate) fn request(v: Value) -> std::result::Result<Request, (Option<Value>, ApiError)> {
     let invalid = |id: Value, why: &str| {
         Err((
-            id,
+            Some(id),
             ApiError::new(ApiError::INVALID_REQUEST, format!("invalid request: {why}")),
         ))
     };
@@ -43,7 +43,7 @@ fn request(v: Value) -> std::result::Result<Request, (Value, ApiError)> {
     let params = map.remove("params").unwrap_or(Value::Null);
     if !matches!(params, Value::Null | Value::Object(_)) {
         return Err((
-            shown,
+            id,
             ApiError::invalid_params("params must be an object (by-name)"),
         ));
     }
@@ -78,7 +78,7 @@ pub fn handle(msg: &[u8], dispatch: &mut dyn FnMut(&Request) -> Result<Value>) -
             let result = dispatch(&req);
             req.id.map(|id| response(id, result))
         }
-        Err((id, e)) => Some(response(id, Err(e))),
+        Err((id, e)) => id.map(|id| response(id, Err(e))),
     };
     match v {
         Value::Array(items) if items.is_empty() => Some(response(
@@ -161,6 +161,17 @@ mod tests {
             "echo" => Ok(r.params.clone()),
             _ => Err(ApiError::new(ApiError::METHOD_NOT_FOUND, "no")),
         })
+    }
+
+    #[test]
+    fn bughunt_invalid_notification_params_have_no_response() {
+        assert_eq!(run(r#"{"jsonrpc":"2.0","method":"echo","params":7}"#), None);
+        assert_eq!(run(r#"[{"jsonrpc":"2.0","method":"echo","params":7},{"jsonrpc":"2.0","id":2,"method":"echo"}]"#).unwrap().as_array().unwrap().len(), 1);
+        assert_eq!(
+            run(r#"{"jsonrpc":"2.0","id":null,"method":"echo","params":7}"#).unwrap()["error"]
+                ["code"],
+            ApiError::INVALID_PARAMS
+        );
     }
 
     #[test]

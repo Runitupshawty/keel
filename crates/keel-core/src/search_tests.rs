@@ -1053,3 +1053,83 @@ fn taking_an_extension_out_keeps_a_quoted_rest_quoted() {
     assert_eq!(q, "ext:\"a b\" x");
     assert_eq!(LibraryQuery::parse_at(&q, NOW, 0).unwrap().ext, ["a b"]);
 }
+
+#[test]
+fn repeated_numeric_and_date_filters_intersect() {
+    for text in ["size:>1kb size:<2kb", "size:<2kb size:>1kb"] {
+        let q = LibraryQuery::parse_at(text, NOW, 0).unwrap();
+        assert_eq!((q.min_size, q.max_size), (Some(1025), Some(2047)));
+    }
+    for text in ["dm:>=2026-01 dm:<2026-03", "dm:<2026-03 dm:>=2026-01"] {
+        let q = LibraryQuery::parse_at(text, NOW, 0).unwrap();
+        assert_eq!(q.modified_from, Some(days_from_civil(2026, 1, 1) * 86_400));
+        assert_eq!(
+            q.modified_before,
+            Some(days_from_civil(2026, 3, 1) * 86_400)
+        );
+    }
+    assert!(names(&fixture().lib, "size:>10 size:<5").is_empty());
+    let q = LibraryQuery::parse_at(
+        "w:>1000 w:<2000 h:>500 h:<1000 duration:>30s duration:<2m taken:>=2024 taken:<2025",
+        NOW,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        q.width,
+        Span {
+            min: Some(1001),
+            max: Some(1999)
+        }
+    );
+    assert_eq!(
+        q.height,
+        Span {
+            min: Some(501),
+            max: Some(999)
+        }
+    );
+    assert_eq!(
+        q.duration_ms,
+        Span {
+            min: Some(30001),
+            max: Some(119999)
+        }
+    );
+    assert_eq!(q.taken.min, Some(days_from_civil(2024, 1, 1) * 86_400));
+    assert_eq!(q.taken.max, Some(days_from_civil(2025, 1, 1) * 86_400 - 1));
+}
+
+#[test]
+fn bughunt_invalid_calendar_days_are_rejected() {
+    for date in ["2026-02-29", "2024-02-30", "2026-04-31"] {
+        assert!(
+            LibraryQuery::parse_at(&format!("dm:{date}"), NOW, 0).is_err(),
+            "{date}"
+        );
+        assert!(
+            LibraryQuery::parse_at(&format!("taken:{date}"), NOW, 0).is_err(),
+            "{date}"
+        );
+    }
+    assert!(LibraryQuery::parse_at("dm:2024-02-29", NOW, 0).is_ok());
+    assert!(LibraryQuery::parse_at("dm:2000-02-29", NOW, 0).is_ok());
+    assert!(LibraryQuery::parse_at("dm:1900-02-29", NOW, 0).is_err());
+}
+
+#[test]
+fn bughunt_photo_kind_excludes_video_extensions() {
+    let f = media_fixture();
+    f.a.store
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE media SET duration_ms = NULL WHERE record = ?1",
+            [id_of(&f.a, "delta.mp4").unwrap()],
+        )
+        .unwrap();
+    assert_eq!(
+        sorted(&f.lib, "kind:photo"),
+        ["alpha.jpg", "bravo.jpg", "charlie.jpg", "echo.jpg"]
+    );
+}
