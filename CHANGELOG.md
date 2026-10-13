@@ -25,6 +25,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Fixed
 
 - Confirmations whose action has no button of its own no longer offer **Move to trash**: removing a library source asks **Remove**, deleting a bookmark **Delete**, and a mount change **Mount** or **Unmount** (it said OK). Each confirmation now names its button where it is asked.
+- On macOS, `~/Applications/Keel.app` made by `install.sh` did not open: double-clicking it or `open ~/Applications/Keel.app` failed with LaunchServices error -10669, because its executable was a shell script. Its executable is now a link to the installed `keel` itself; run the install script again to replace an existing Keel.app.
 
 ## [0.23.0] - 2026-10-12
 
