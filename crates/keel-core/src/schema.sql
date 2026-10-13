@@ -412,3 +412,16 @@ ALTER TABLE view ADD COLUMN folder TEXT NOT NULL DEFAULT '';
 ALTER TABLE view ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE view ADD COLUMN shortcut TEXT NOT NULL DEFAULT '';
 UPDATE view SET position = id;
+
+-- @library 10
+-- Collections: hand-ordered lists of files and folders from any source. An item points at a
+-- record like `opened` does (record ids are never reused); `pos` orders the items, and an
+-- item whose record is gone (its source removed) is dropped when the collection is read.
+CREATE TABLE collection(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+CREATE UNIQUE INDEX collection_name ON collection(name COLLATE NOCASE);
+CREATE TABLE collection_item(
+    collection INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    record INTEGER NOT NULL,
+    pos INTEGER NOT NULL,
+    PRIMARY KEY(collection, source, record)) WITHOUT ROWID;
