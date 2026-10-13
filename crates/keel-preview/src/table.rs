@@ -16,7 +16,7 @@ pub(crate) fn accepts(ext: &str) -> bool {
 
 pub(crate) fn render(req: &Request, ext: &str) -> Preview {
     let result = match ext {
-        "csv" | "tsv" => csv(req),
+        "csv" | "tsv" => csv(req, ext == "tsv"),
         _ => workbook(req, ext),
     };
     match result {
@@ -74,11 +74,12 @@ fn delimiter(head: &[u8]) -> u8 {
     candidates[best]
 }
 
-fn csv(req: &Request) -> Result<TableData, String> {
+fn csv(req: &Request, tsv: bool) -> Result<TableData, String> {
     let file = std::fs::File::open(&req.bytes_path).map_err(|error| error.to_string())?;
     let mut input = std::io::BufReader::with_capacity(64 * 1024, file);
     let head = input.fill_buf().map_err(|error| error.to_string())?;
-    let delimiter = delimiter(head);
+    // A .tsv is tab-separated by definition: commas in its text are not separators.
+    let delimiter = if tsv { b'\t' } else { delimiter(head) };
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
         .delimiter(delimiter)
@@ -298,10 +299,36 @@ mod tests {
             ("\"a\tb\tc\",value\nhello,42\n", "a\tb\tc"),
         ] {
             std::fs::write(file.path(), input).unwrap();
-            let (headers, rows, truncated) = csv(&req).unwrap();
+            let (headers, rows, truncated) = csv(&req, false).unwrap();
             assert_eq!(headers, [first, "value"]);
             assert_eq!(rows, [vec!["hello".to_owned(), "42".to_owned()]]);
             assert!(!truncated);
         }
+    }
+
+    #[test]
+    fn tsv_whose_text_has_commas_splits_on_tabs() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "name, title\nSmith, Jane\n").unwrap();
+        let req = Request {
+            entry: keel_vfs::Entry {
+                path: keel_vfs::VPath::local(file.path()),
+                name: "sample.tsv".into(),
+                kind: keel_vfs::Kind::File,
+                size: 0,
+                modified: None,
+                hidden: false,
+                is_link: false,
+                encrypted: false,
+                ext: "tsv".into(),
+            },
+            bytes_path: file.path().into(),
+            page: 0,
+            max_px: 480,
+            fit_width: false,
+        };
+        let (headers, rows, _) = csv(&req, true).unwrap();
+        assert_eq!(headers, ["name, title"]);
+        assert_eq!(rows, [vec!["Smith, Jane".to_owned()]]);
     }
 }
