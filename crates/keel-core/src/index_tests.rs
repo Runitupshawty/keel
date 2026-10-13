@@ -796,26 +796,6 @@ pub(crate) fn eventually(what: &str, check: impl Fn() -> bool) {
     }
 }
 
-/// Waits until `count` reaches `target`. A job that is starved of CPU crawls but moves, so
-/// the limit is for a stall (no progress for three minutes), not for the whole climb.
-pub(crate) fn eventually_reaches(what: &str, target: i64, count: impl Fn() -> i64) {
-    let (mut best, mut moved) = (i64::MIN, Instant::now());
-    loop {
-        let now = count();
-        if now >= target {
-            return;
-        }
-        if now > best {
-            (best, moved) = (now, Instant::now());
-        }
-        assert!(
-            moved.elapsed() < Duration::from_secs(180),
-            "stalled at {now} of {target}: {what}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 #[test]
 fn watch_applies_local_changes() {
     let files = tempfile::tempdir().unwrap();

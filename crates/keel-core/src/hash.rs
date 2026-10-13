@@ -317,7 +317,9 @@ pub fn is_background_thread() -> bool {
 /// priority, Windows only while it holds no pooled store connection). Best effort.
 pub fn background_thread() {
     LOWERED.with(|l| l.set(true));
-    #[cfg(windows)]
+    // Unit tests exercise pause/cancel policy, not OS starvation. Native background QoS
+    // can prevent even a tiny fixture from running before its extraction deadline.
+    #[cfg(all(windows, not(test)))]
     {
         use windows::Win32::System::Threading::{
             GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_IDLE,
@@ -329,13 +331,13 @@ pub fn background_thread() {
             let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE) };
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     // SAFETY: applies to the calling thread only.
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
     }
     // On Linux, nice applies per thread (who = 0 is the calling thread).
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(all(any(target_os = "linux", target_os = "android"), not(test)))]
     // SAFETY: plain syscall wrapper.
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, 19);

@@ -1,14 +1,14 @@
 use super::*;
-use crate::index::tests::{eventually, eventually_reaches, walk, write};
+use crate::index::tests::{eventually, walk, write};
 use crate::library::tests::{folder, remote};
 use crate::{JobStatus, LibraryQuery};
 use std::time::Duration;
 
 /// A text reader for tests: `.txt` and `.md` are their text (cut at the caps), `.doc` is
-/// damaged, `.slow` hangs until its file is deleted, `.lag` is text read in 5 ms, `.bin` is no text.
+/// damaged, `.slow` hangs until its file is deleted, `.bin` is no text.
 pub(crate) fn extractor() -> TextExtractor {
     TextExtractor {
-        extensions: &["txt", "md", "doc", "slow", "lag", "bin"],
+        extensions: &["txt", "md", "doc", "slow", "bin"],
         extract: Arc::new(|path, ext, caps| {
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             if size > caps.max_bytes {
@@ -31,9 +31,6 @@ pub(crate) fn extractor() -> TextExtractor {
                     }
                 }
                 _ => {
-                    if ext == "lag" {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
                     let text = std::fs::read_to_string(path).unwrap_or_default();
                     let truncated = text.chars().count() > caps.max_chars;
                     TextOutcome::Done {
@@ -211,18 +208,18 @@ fn caps_skip_big_files_cut_long_ones_and_abandon_stuck_readers() {
 fn a_stopped_job_resumes_from_its_checkpoint() {
     let data = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
-    // Plenty past the first checkpoint, so the job is still running when the test sees it.
-    let n = CHECKPOINT_EVERY * 30;
+    let n = CHECKPOINT_EVERY * 2;
     for i in 0..n {
-        write(&files.path().join(format!("{i:03}.lag")), "resume words");
+        write(&files.path().join(format!("{i:03}.txt")), "resume words");
     }
     let (lib, id) = library(data.path(), files.path());
+    lib.shared
+        .jobs
+        .stop_at_checkpoint
+        .store(true, Ordering::SeqCst);
     let job = lib.index_text(&id).unwrap().unwrap();
-    eventually_reaches("first checkpoint", CHECKPOINT_EVERY as i64, || {
-        rows(&lib, &id)
-    });
-    // Pause (user activity), then close: the job stops at its pause.
-    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Running);
+    assert_eq!(rows(&lib, &id), CHECKPOINT_EVERY as i64);
     drop(lib);
 
     let lib = Library::open(data.path(), "t").unwrap();

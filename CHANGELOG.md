@@ -34,6 +34,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - File URIs with a mixed-case `localhost` host now open as local paths when pasted or dropped.
 - The inspector's protection count counts a file reached through multiple sources once, including hard links, as the library's full redundancy count does.
 - A backup that cannot create its staging file no longer deletes another backup's in-progress file at the same target.
+- Checkpoint-resume unit tests stop at a durable checkpoint and join the worker before reopening the library, instead of racing a polling thread. Unit-test workers keep normal OS priority so CPU load does not starve their text readers and cause false extraction timeouts; application workers still use background priority.
 
 ## [0.23.0] - 2026-10-12
 

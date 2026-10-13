@@ -1,5 +1,5 @@
 use super::*;
-use crate::index::tests::{eventually, eventually_reaches, walk};
+use crate::index::tests::{eventually, walk};
 use crate::library::tests::folder;
 use crate::media::tests::{exif_jpeg, png};
 use crate::JobStatus;
@@ -134,18 +134,18 @@ fn sidecars_follow_a_content_id_that_appears_later() {
 fn a_stopped_job_resumes_from_its_checkpoint() {
     let data = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
-    // Plenty past the first checkpoint, so the job is still running when the test sees it.
-    let n = CHECKPOINT_EVERY + 1000;
+    let n = CHECKPOINT_EVERY * 2;
     for i in 0..n {
         png(&files.path().join(format!("{i:04}.png")), 8, 8);
     }
     let (lib, id) = library(data.path(), files.path());
+    lib.shared
+        .jobs
+        .stop_at_checkpoint
+        .store(true, Ordering::SeqCst);
     let job = lib.media_job(&id).unwrap();
-    eventually_reaches("first checkpoint", CHECKPOINT_EVERY as i64, || {
-        media_rows(&lib, &id)
-    });
-    // Pause (user activity), then close: the job stops at its pause.
-    lib.shared.busy_until.store(u64::MAX, Ordering::SeqCst);
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Running);
+    assert_eq!(media_rows(&lib, &id), CHECKPOINT_EVERY as i64);
     drop(lib);
 
     let lib = Library::open(data.path(), "m").unwrap();
