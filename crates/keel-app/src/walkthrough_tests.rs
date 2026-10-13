@@ -2393,7 +2393,17 @@ fn pane_search_box_searches_under_the_folder() {
     assert_eq!(h.query_all_by_label("Search in this folder").count(), 2);
 
     click_nth(&mut h, "Search in this folder", 0);
-    type_text(&mut h, "budget");
+    // An IME composition stays in the box; its commit opens the search.
+    let ime = |h: &mut H, e: egui::ImeEvent| {
+        h.input_mut().events.push(Event::Ime(e));
+        h.run_steps(2);
+    };
+    ime(&mut h, egui::ImeEvent::Enabled);
+    ime(&mut h, egui::ImeEvent::Preedit("bud".into()));
+    assert_eq!(s(&h).panes[0].tabs.len(), 1, "still composing");
+    assert!(!s(&h).tab(0).is_search());
+    ime(&mut h, egui::ImeEvent::Preedit("budget".into()));
+    ime(&mut h, egui::ImeEvent::Commit("budget".into()));
     let tab = s(&h).tab(0);
     assert!(tab.is_search());
     assert_eq!(

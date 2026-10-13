@@ -160,9 +160,15 @@ impl EverythingSearcher {
 /// flag, so it is Everything's `diacritics:` modifier over the whole search as a group.
 /// Keel's "Match whole filename when using wildcards" is Everything's own setting there.
 /// Keel's `in:<folder>` (outside regex mode) or a pane's folder (`Query::within`) becomes
-/// Everything's path term `"<folder>\"`: a term with a backslash matches the full path
-/// (a regex then follows it as `regex:`).
+/// Everything's path term `nocase:"<folder>\"` (a term with a backslash matches the full
+/// path; Match Case is for the query, never the folder); a regex then follows it quoted,
+/// as `regex:"…"`, so its `|`, `<`, `!` and spaces are not Everything's operators. A regex
+/// holding a `"` cannot be quoted: it stays whole-string and the hits are kept to the
+/// folder afterwards ([`kept_to`]).
 fn search_text(query: &Query) -> (String, bool) {
+    if kept_to(query).is_some() {
+        return (query.text.clone(), true);
+    }
     let mut regex = query.regex;
     let text = match crate::scope(query) {
         (Some(folder), rest) => {
@@ -173,12 +179,14 @@ fn search_text(query: &Query) -> (String, bool) {
                 "\\"
             };
             let rest = match std::mem::take(&mut regex) {
-                true if !rest.is_empty() => format!("regex:{rest}"),
+                true if !rest.is_empty() => format!("regex:\"{rest}\""),
                 _ => rest,
             };
-            format!("\"{folder}{sep}\" {rest}").trim_end().to_owned()
+            format!("nocase:\"{folder}{sep}\" {rest}")
+                .trim_end()
+                .to_owned()
         }
-        (None, _) => query.text.clone(),
+        _ => query.text.clone(),
     };
     let text = if query.match_diacritics && !query.regex && !text.trim().is_empty() {
         format!("diacritics:<{text}>")
@@ -192,6 +200,20 @@ fn search_text(query: &Query) -> (String, bool) {
     }
 }
 
+/// How many more hits to ask Everything for when it cannot keep to the folder itself.
+const OVERFETCH: u32 = 10;
+
+/// The pane's folder when the query is a regex holding a `"` (no `regex:"…"` form): the
+/// hits are filtered to it after the query, which asks for [`OVERFETCH`] times as many.
+// ponytail: a folder with fewer than 1 in OVERFETCH of the regex's matches shows fewer
+// hits than it has; a page loop would fix that if it matters.
+fn kept_to(query: &Query) -> Option<std::path::PathBuf> {
+    match crate::scope(query) {
+        (Some(folder), rest) if query.regex && rest.contains('"') => Some(folder),
+        _ => None,
+    }
+}
+
 impl Searcher for EverythingSearcher {
     fn name(&self) -> &'static str {
         "Everything"
@@ -200,6 +222,11 @@ impl Searcher for EverythingSearcher {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         let functions = self.functions;
         let (text, regex) = search_text(query);
+        let keep = kept_to(query);
+        let max = match keep {
+            Some(_) => query.max.saturating_mul(OVERFETCH),
+            None => query.max,
+        };
         let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
 
         let _guard = EVERYTHING_LOCK.lock();
@@ -212,7 +239,7 @@ impl Searcher for EverythingSearcher {
                     | EVERYTHING_REQUEST_SIZE
                     | EVERYTHING_REQUEST_DATE_MODIFIED,
             );
-            (functions.set_max)(query.max);
+            (functions.set_max)(max);
             (functions.set_match_case)(i32::from(query.match_case));
             (functions.set_match_path)(i32::from(query.match_path));
             (functions.set_match_whole_word)(i32::from(query.whole_word));
@@ -234,6 +261,11 @@ impl Searcher for EverythingSearcher {
             for index in 0..count {
                 let path = result_path(functions, index, &mut buffer)?;
                 let is_dir = (functions.is_folder_result)(index) != 0;
+                if let Some(dir) = &keep {
+                    if !crate::is_under(Path::new(&path), dir) || (query.folders_only && !is_dir) {
+                        continue;
+                    }
+                }
 
                 // Folders report -1.
                 let mut raw_size = 0_i64;
@@ -258,6 +290,7 @@ impl Searcher for EverythingSearcher {
                     snippet: None,
                 });
             }
+            hits.truncate(query.max as usize);
             Ok(hits)
         }
     }
@@ -358,9 +391,10 @@ mod tests {
             })
             .0
         };
-        assert_eq!(text(r#"in:"C:\a b" report"#, false), r#""C:\a b\" report"#);
-        assert_eq!(text(r"report in:D:\", false), r#""D:\" report"#);
-        assert_eq!(text(r"in:C:\x", false), r#""C:\x\""#);
+        let spaced = r#"nocase:"C:\a b\" report"#;
+        assert_eq!(text(r#"in:"C:\a b" report"#, false), spaced);
+        assert_eq!(text(r"report in:D:\", false), r#"nocase:"D:\" report"#);
+        assert_eq!(text(r"in:C:\x", false), r#"nocase:"C:\x\""#);
         // A regex is the whole text.
         assert_eq!(text(r"in:C:\x", true), r"in:C:\x");
     }
@@ -376,15 +410,33 @@ mod tests {
                 ..Query::default()
             })
         };
-        let plain = (r#""C:\Users\ann\" ^ab+c$"#.to_owned(), false);
+        let plain = (r#"nocase:"C:\Users\ann\" ^ab+c$"#.to_owned(), false);
         assert_eq!(within("^ab+c$", false, false), plain);
-        // A regex keeps to the text, after the folder.
-        let regex = (r#""C:\Users\ann\" regex:^ab+c$"#.to_owned(), false);
-        assert_eq!(within("^ab+c$", true, false), regex);
-        let folders = (r#"folder: "C:\Users\ann\" regex:^a"#.to_owned(), false);
+        // A regex keeps to the text, after the folder, quoted: `|`, `<` and spaces in it
+        // are not Everything's operators.
+        let regex = r#"nocase:"C:\Users\ann\" regex:"^(foo|bar) <x>\.rs$""#;
+        assert_eq!(
+            within(r"^(foo|bar) <x>\.rs$", true, false),
+            (regex.to_owned(), false)
+        );
+        let folders = (
+            r#"folder: nocase:"C:\Users\ann\" regex:"^a""#.to_owned(),
+            false,
+        );
         assert_eq!(within("^a", true, true), folders);
         // A typed in: takes the pane's folder's place.
-        let typed = (r#""D:\x\" report"#.to_owned(), false);
+        let typed = (r#"nocase:"D:\x\" report"#.to_owned(), false);
         assert_eq!(within(r"report in:D:\x", false, false), typed);
+        // A regex with a `"` cannot be quoted: whole-string regex, kept to the folder after.
+        let quote = r#"^say "hi"$"#;
+        assert_eq!(within(quote, true, false), (quote.to_owned(), true));
+        let q = Query {
+            text: quote.into(),
+            regex: true,
+            within: Some(r"C:\Users\ann".into()),
+            ..Query::default()
+        };
+        assert_eq!(super::kept_to(&q), Some(r"C:\Users\ann".into()));
+        assert_eq!(super::kept_to(&Query { regex: false, ..q }), None);
     }
 }

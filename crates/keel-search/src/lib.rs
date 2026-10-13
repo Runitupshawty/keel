@@ -199,6 +199,11 @@ pub trait Searcher: Send + Sync {
     fn index_settings_changed(&self) -> Option<IndexSettings> {
         None
     }
+    /// Whether the index holds `dir` (a pane's folder, [`Query::within`]); Keel's own
+    /// indexes walk a folder they do not hold instead. Backends over everything: true.
+    fn covers(&self, _dir: &Path) -> bool {
+        true
+    }
 }
 
 /// A soft-failure backend the app falls back to when no search backend works;
@@ -373,12 +378,35 @@ pub(crate) fn scope(query: &Query) -> (Option<PathBuf>, String) {
     (typed.map(PathBuf::from).or(query.within.clone()), text)
 }
 
-/// Last resort: walk the home folder (with [`Query::within`], that folder) on every query.
+/// [`Query::within`] when no typed `in:` takes its place.
+pub(crate) fn pane_folder(query: &Query) -> Option<&Path> {
+    let typed = !query.regex && take_within(&query.text).0.is_some();
+    query.within.as_deref().filter(|_| !typed)
+}
+
+/// Whether `path` is `dir` or below it, by whole names; Windows ignores case.
+pub fn is_under(path: &Path, dir: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let low = |p: &Path| PathBuf::from(p.to_string_lossy().to_lowercase());
+        low(path).starts_with(low(dir))
+    }
+    #[cfg(not(windows))]
+    path.starts_with(dir)
+}
+
+/// Last resort: walk the home folder (a typed `in:` or [`Query::within`]: that folder) on
+/// every query.
 struct HomeWalk(std::path::PathBuf);
 
 impl Searcher for HomeWalk {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
-        Ok(walk(query.within.as_deref().unwrap_or(&self.0), query))
+        let (dir, text) = scope(query);
+        let query = Query {
+            text,
+            ..query.clone()
+        };
+        Ok(walk(dir.as_deref().unwrap_or(&self.0), &query))
     }
 
     fn available(&self) -> bool {
@@ -516,7 +544,7 @@ fn command_hits(
         }
         let line = line?;
         let path = Path::new(std::ffi::OsStr::from_bytes(&line));
-        if within.is_some_and(|w| !path.starts_with(w)) {
+        if within.is_some_and(|w| !is_under(path, w)) {
             continue;
         }
         match hit_for_path(path) {
@@ -672,7 +700,8 @@ mod tests {
     /// Spotlight, locate) and the home walk; a typed `in:` takes its place.
     #[test]
     fn a_pane_folder_scopes_the_query() {
-        use super::{scope, HomeWalk};
+        use super::{pane_folder, scope, HomeWalk};
+        use std::path::Path;
         use std::path::PathBuf;
         let q = |text: &str, regex, within: Option<&str>| Query {
             text: text.into(),
@@ -704,7 +733,32 @@ mod tests {
         let hits = home.query(&q("needle", false, Some(&a))).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.display().starts_with(&a));
+        // A typed in: is walked too, without the term in the text.
+        let b = root.join("b").display().to_string();
+        let typed = home.query(&q(&format!("needle in:\"{b}\""), false, Some(&a)));
+        let typed = typed.unwrap();
+        assert_eq!(typed.len(), 1);
+        assert!(typed[0].path.display().starts_with(&b));
+        // A pane's folder is the query's unless a typed in: replaces it.
+        let pane = q("x", false, Some("/pane"));
+        assert_eq!(pane_folder(&pane), Some(Path::new("/pane")));
+        assert_eq!(pane_folder(&q("x in:/t", false, Some("/pane"))), None);
+        assert_eq!(
+            pane_folder(&q("x in:/t", true, Some("/pane"))),
+            pane_folder(&pane)
+        );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn is_under_takes_whole_names() {
+        use super::is_under;
+        use std::path::Path;
+        let p = Path::new;
+        assert!(is_under(p("/a/b/c.txt"), p("/a/b")) && is_under(p("/a/b"), p("/a/b")));
+        assert!(!is_under(p("/a/bc/d"), p("/a/b")));
+        #[cfg(windows)]
+        assert!(is_under(p(r"C:\Users\Ann\x.txt"), p(r"c:\users\ann")));
     }
 
     #[test]

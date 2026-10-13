@@ -173,6 +173,14 @@ fn substring_glob_regex_and_filters() {
     assert_eq!(names(&s, &scoped(oldies, "^rep", true)), ["report.pdf"]);
     let partial = d.root.join("docs").join("old");
     assert!(names(&s, &scoped(partial, "report", false)).is_empty());
+    // A folder outside the roots (another drive, a share) is walked instead.
+    let other = Dirs::new();
+    other.file("elsewhere/report.txt", b"x");
+    assert!(!s.covers(&other.root) && s.covers(&d.root.join("docs")) && s.covers(&d.root));
+    assert_eq!(
+        names(&s, &scoped(other.root.clone(), "report", false)),
+        ["report.txt"]
+    );
     let capped = Query {
         max: 2,
         ..q("report")

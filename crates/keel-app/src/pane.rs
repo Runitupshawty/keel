@@ -434,18 +434,32 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
 }
 
 /// The pane's search box: its first character opens a search tab under this folder
-/// (`Action::SearchIn`), which takes the typing over; the box itself stays empty.
+/// (`Action::SearchIn`), which takes the typing over; the box itself stays empty. An IME
+/// composition stays in the box until it is committed.
 fn search_box(ui: &mut egui::Ui, out: &mut Vec<Action>) {
-    let mut text = String::new();
-    ui.add(
-        egui::TextEdit::singleline(&mut text)
-            .desired_width(160.0)
-            .hint_text("Search here"),
-    )
-    .named("Search in this folder");
-    if !text.is_empty() {
-        out.push(Action::SearchIn(text));
+    let id = ui.id().with("pane-search");
+    let (mut text, mut composing): (String, bool) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let r = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .desired_width(160.0)
+                .hint_text("Search here"),
+        )
+        .named("Search in this folder");
+    ui.input(|i| {
+        for e in &i.events {
+            if let egui::Event::Ime(ime) = e {
+                composing = matches!(ime, egui::ImeEvent::Preedit(t) if !t.is_empty());
+            }
+        }
+    });
+    if r.lost_focus() {
+        (text, composing) = Default::default();
     }
+    if !text.is_empty() && !composing {
+        out.push(Action::SearchIn(std::mem::take(&mut text)));
+    }
+    ui.data_mut(|d| d.insert_temp(id, (text, composing)));
 }
 
 fn path_box(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {

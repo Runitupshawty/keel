@@ -1584,7 +1584,9 @@ impl Searcher for LibSearch {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         let mut hits = self.search(q)?;
         if let Some(dir) = &q.within {
-            hits.retain(|h| h.path.to_local_path().is_some_and(|p| p.starts_with(dir)));
+            hits.retain(|h| {
+                (h.path.to_local_path()).is_some_and(|p| keel_search::is_under(&p, dir))
+            });
         }
         Ok(hits)
     }

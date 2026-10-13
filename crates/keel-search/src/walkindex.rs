@@ -1390,6 +1390,10 @@ pub(crate) fn normalize_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
 
 impl Searcher for WalkIndexSearcher {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        // A pane's folder outside the roots (another drive, a share): walk it.
+        if let Some(dir) = crate::pane_folder(q).filter(|d| !self.covers(d)) {
+            return Ok(crate::walk(dir, q));
+        }
         anyhow::ensure!(
             self.shared.ready.load(Relaxed),
             "{}",
@@ -1415,6 +1419,13 @@ impl Searcher for WalkIndexSearcher {
 
     fn available(&self) -> bool {
         self.shared.ready.load(Relaxed)
+    }
+
+    /// A folder under a root, or above one (its hits are the root's part of it).
+    fn covers(&self, dir: &Path) -> bool {
+        #[cfg(not(windows))]
+        let dir = &std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+        (self.roots.iter()).any(|r| crate::is_under(dir, r) || crate::is_under(r, dir))
     }
 
     fn status(&self) -> Option<String> {

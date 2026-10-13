@@ -1848,7 +1848,15 @@ impl AppState {
                     // Backspace in a search tab edits the query (Alt+Up does not).
                     query.pop();
                 }
-                self.search_edited(p);
+                match &self.tab(p).kind {
+                    // An emptied pane's search goes back to its folder, like its emptied box.
+                    TabKind::Search {
+                        query,
+                        within: Some(_),
+                        ..
+                    } if query.is_empty() => self.run(p, Action::CloseSearch),
+                    _ => self.search_edited(p),
+                }
             }
             Action::Up | Action::Backspace => {
                 if !self.tab(p).is_search() && self.tab_mut(p).up() {
@@ -2623,11 +2631,13 @@ impl AppState {
                     self.refresh_omissions();
                 }
             }
-            Action::Search if self.settings.searches_in_windows && !self.tab(p).is_search() => {
+            Action::Search
+                if self.settings.searches_in_windows && !self.tab(p).is_open_search() =>
+            {
                 self.search_window = Some(self.tab(p).dir.clone());
             }
             Action::Search => {
-                if !self.tab(p).is_search() {
+                if !self.tab(p).is_open_search() {
                     let mut tab = Tab::search(self.tab(p).dir.clone());
                     if let TabKind::Search { toggles, .. } = &mut tab.kind {
                         *toggles = self.settings.search.toggles;
@@ -2682,13 +2692,15 @@ impl AppState {
                 if let Some(dir) = self.tab(p).search_within().cloned() {
                     let pane = &mut self.panes[p];
                     let i = pane.active;
-                    match pane.tabs.len() {
-                        // Its folder tab was closed: this tab shows the folder.
-                        1 => self.run(p, Action::Navigate(dir)),
-                        _ => {
+                    let folder = |t: &Tab| t.kind == TabKind::Dir && t.dir == dir;
+                    match i.checked_sub(1).filter(|&f| folder(&pane.tabs[f])) {
+                        Some(f) => {
                             pane.close_tab(i);
-                            pane.active = i.saturating_sub(1);
+                            pane.active = f;
                         }
+                        // Its folder tab was closed, moved or went elsewhere: this tab
+                        // shows the folder.
+                        None => self.run(p, Action::Navigate(dir)),
                     }
                 }
             }

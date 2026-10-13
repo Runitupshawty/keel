@@ -285,7 +285,7 @@ impl Searcher for FolderIndexes {
         let mut hits = Vec::new();
         let mut error = None;
         for index in self.inner.indexes() {
-            if !index.available() {
+            if !index.available() || crate::pane_folder(q).is_some_and(|d| !index.covers(d)) {
                 continue;
             }
             match index.query(q) {
@@ -302,6 +302,10 @@ impl Searcher for FolderIndexes {
 
     fn available(&self) -> bool {
         self.inner.indexes().iter().any(|i| i.available())
+    }
+
+    fn covers(&self, dir: &Path) -> bool {
+        (self.inner.indexes().iter()).any(|i| i.available() && i.covers(dir))
     }
 
     fn state(&self) -> SearchState {
