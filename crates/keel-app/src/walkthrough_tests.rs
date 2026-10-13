@@ -2823,14 +2823,24 @@ fn inspector_copies_and_folder_totals() {
     // A folder: its totals.
     sm(&mut h).run(0, Action::Navigate(VPath::local(&dir)));
     assert!(wait(&mut h, 10, &listed));
-    click_row(&mut h, "a", 0, NONE);
+    // With the inspector open, the short label can lie outside the pane's clip rect;
+    // AccessKit's raw label bounds are not a reliable click target. Select the first
+    // folder from the keyboard instead.
+    key(&mut h, NONE, Key::Home);
+    assert_eq!(s(&h).tab(0).cursor.as_deref(), Some("a"));
     let totals = |s: &AppState| match &s.preview.inspector.answer {
         Some(Ok(i)) => {
             i.entry.name == "a" && i.library.as_ref().is_some_and(|l| l.folder.is_some())
         }
         _ => false,
     };
-    assert!(wait(&mut h, 30, &totals), "folder inspected");
+    assert!(
+        wait(&mut h, 30, &totals),
+        "folder inspected: dir {:?}, cursor {:?}, answer {:?}",
+        s(&h).tab(0).dir,
+        s(&h).tab(0).cursor,
+        s(&h).preview.inspector.answer
+    );
     let lib_part = s(&h)
         .preview
         .inspector
