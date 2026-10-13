@@ -391,7 +391,9 @@ impl<R: BufRead, W: Write> Server<'_, R, W> {
             };
             if msg.get("method").is_none() && msg.get("id") == Some(&id) {
                 let r = &msg["result"];
-                break Ok(r["action"] == "accept" && r["content"]["confirm"] == true);
+                break Ok(msg["jsonrpc"] == "2.0"
+                    && r["action"] == "accept"
+                    && r["content"]["confirm"] == true);
             }
             match self.handle(&msg) {
                 Ok(Some(answer)) => self.send(&answer)?,
@@ -548,6 +550,26 @@ mod tests {
         assert_eq!(out[2]["result"]["structuredContent"]["api"], 1);
         assert_eq!(out[3]["result"]["isError"], true);
         assert_eq!(out[4]["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn elicitation_requires_jsonrpc_2() {
+        for version in [None, Some(json!("1.0")), Some(json!(2))] {
+            let mut response = json!({"id":"keel-confirm-1","result":{"action":"accept","content":{"confirm":true}}});
+            if let Some(version) = version {
+                response["jsonrpc"] = version;
+            }
+            let input = lines(&[
+                init(true),
+                tool_call(2, "tags_add", json!({})),
+                exec(3, "p1", None),
+                response,
+            ]);
+            let mut fake = Fake::default();
+            let out = run(&mut fake, &input, Options::default());
+            assert!(fake.executed.is_empty());
+            assert_eq!(by_id(&out, 3)["result"]["isError"], true);
+        }
     }
 
     #[test]
