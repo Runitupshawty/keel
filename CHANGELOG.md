@@ -14,6 +14,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Confirmations whose action has no button of its own no longer offer **Move to trash**: removing a library source asks **Remove**, deleting a bookmark **Delete**, and a mount change **Mount** or **Unmount** (it said OK). Each confirmation now names its button where it is asked.
 
+- A multi-stage Docker build for keel-daemon with the embedded web client, a non-root runtime and persistent data/config storage ([Docker](docs/daemon.md#docker)).
+
+- A generated TypeScript JSON-RPC client with parameter/result types and methods from the Rust API registry, an API drift test, and strict TypeScript/runtime checks ([API client](docs/api.md#generated-typescript-client)).
+
+- A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
+
 ## [0.23.0] - 2026-10-12
 
 ### Added

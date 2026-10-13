@@ -12,3 +12,7 @@ tmp/
 crates/keel-web/dist/
 # Fuzz inputs are committed whatever their extension (docs/fuzzing.md).
 !fuzz/corpus/**
+
+# Generated TypeScript test output and tooling
+sdk/typescript/node_modules/
+sdk/typescript/dist/

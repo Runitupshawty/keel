@@ -151,3 +151,48 @@ Limits: file times, attributes and permissions are the source's and cannot be ch
 ## Updating with a daemon running
 
 The install scripts note each running daemon of the install with the arguments it runs with (its profile, `--web`, `--web-host` and the rest), stop them before the files change, and start each again afterwards with the same arguments. On Windows they start detached and hidden; on macOS and Linux a daemon that ran without arguments starts through `keel daemon start` (its log in `daemon.log`), the others detached with their output discarded (their arguments as `ps` shows them, split at spaces). A restarted daemon holds none of the installer's output, so a script that pipes the installer's output does not wait for it.
+
+## Docker
+
+Build a local image from the repository root (the build includes the browser bundle):
+
+```sh
+docker build -t keel-daemon .
+docker run -d --name keel -p 127.0.0.1:7421:7421 \
+  -v keel-state:/var/lib/keel \
+  -v /path/to/files:/files:ro keel-daemon
+docker exec keel cat /var/lib/keel/config/daemon.token
+```
+
+Open `http://localhost:7421` and sign in with that token. Add `/files` as a library
+source in the web client; source paths are paths inside the container. The image runs
+as UID 10001: bind-mounted state and writable sources must be writable by that user.
+The named state volume keeps the library, settings, identity and token across restarts.
+`docker stop keel` sends SIGTERM, which the daemon handles for shutdown.
+
+| Environment variable | Image default | Purpose |
+| --- | --- | --- |
+| `KEEL_DATA_DIR` | `/var/lib/keel/data` | Library databases, indexes, inbox and crash reports |
+| `KEEL_CONFIG_DIR` | `/var/lib/keel/config` | Profile settings, identity and `daemon.token` |
+| `RUST_LOG` | `info` | Log filter; logs go to stderr (`docker logs keel`) |
+
+The daemon listens on `0.0.0.0:7421` inside the container, the only address a published
+port reaches. It has no TLS, so keel-daemon refuses such a bind unless the profile's
+`config.toml` has `[web]` `allow_plaintext = true`: the image ships that file for the
+`default` profile (`/var/lib/keel/config/profiles/default/config.toml`), and a new named
+volume starts with it. Bind-mounted state, or another profile, needs those two lines in
+its own `config.toml`. Which networks can connect is then up to `docker run -p`. As on
+any plain-http bind, the Everything search takes only `Authorization: Bearer <token>`,
+not Basic auth.
+
+When overriding directories, mount persistent storage at the new paths too. To select
+a profile or a proxy hostname, replace the command after the image name, for example
+`--profile server --web 0.0.0.0:7421 --ws-allow-remote --web-host files.example.com`.
+The default command allows the `localhost` and `127.0.0.1` Host headers used above.
+Remote access needs an allowed `--web-host` and a private network or TLS reverse proxy;
+the default published port above is reachable only from the Docker host.
+
+This is a build recipe, not a published registry image. It has no FUSE backend,
+PDFium or ffmpeg, so mounts, PDF rendering and video/audio tooling that needs those
+runtimes are unavailable. OS keychain credentials are not provided by the state volume;
+cloud sign-in and stored remote passwords need a separately configured secret service.

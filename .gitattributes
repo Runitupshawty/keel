@@ -4,6 +4,11 @@
 *.md text eol=lf
 *.yml text eol=lf
 *.sh text eol=lf
+# Generated SDKs and their templates must match byte-for-byte on every platform.
+sdk/typescript/*.ts text eol=lf
+crates/keel-api/src/typescript_transport.txt text eol=lf
+sdk/swift/*.swift text eol=lf
+crates/keel-api/src/swift_transport.txt text eol=lf
 *.ps1 text eol=crlf
 *.png binary
 *.pdf binary

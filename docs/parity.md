@@ -137,9 +137,9 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Has**: `keel op <name> --params <json>`, preview first, `--execute` to apply ([api.md](api.md#keel-op-any-operation-by-name)) |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
 | Agent skill | landed | [SD-STATUS] | **Has**: [agent-skill.md](agent-skill.md), installable from `skills/keel` |
-| Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)) and a C SDK, `keel-sdk` (0.23.0, [api.md](api.md#sdk-c-abi-keel-sdk)); no generated TypeScript or Swift client |
+| Generated TypeScript and Swift clients | described | [SD-README] | **Has** (unreleased): generated TypeScript and Swift types and JSON-RPC methods with registry drift tests ([TypeScript](api.md#generated-typescript-client), [Swift](api.md#generated-swift-client)); also a C SDK, `keel-sdk` ([api.md](api.md#sdk-c-abi-keel-sdk)) |
 | Self-update and a nightly channel | nightly | [SD-REL] | **Part**: opt-in update check and Windows self-install; no nightly channel |
-| Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Part**: `keel-daemon --web`; no container image |
+| Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Has**: `keel-daemon --web`; non-root Docker build recipe ([daemon.md](daemon.md#docker)); no published registry image |
 | Extensions (WASM, SDK) | in progress | [SD-STATUS] | **Lacks** (spec 2.10 Extensions) |
 | macOS, Windows, Linux desktop builds | v1 all three; v2 nightlies for macOS arm64 and Linux x64 only | [SD-README], [SD-REL] | **Has**: all three in every release |
 | No telemetry, no account | v2 described; v1 had an opt-out | [SD-README], [SD-REL] | **Has**: never had any |
@@ -245,7 +245,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
-| 25 | Agent skill, `keel op <name>`, generated SDK (**done**: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); no generated SDK) | Spacedrive | — | S |
+| 25 | Agent skill, `keel op <name>`, generated SDK (**done**: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); generated TypeScript and Swift SDKs with drift tests, unreleased) | Spacedrive | — | S |
 | 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | **Done** ([files.md](files.md#folder-operations)) | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |

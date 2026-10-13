@@ -31,8 +31,10 @@ pub mod private;
 pub mod rpc;
 pub mod signature;
 pub mod socket;
+pub mod swift;
 pub mod system;
 pub mod types;
+pub mod typescript;
 
 pub use daemon_provider::DaemonProvider;
 pub use error::{ApiError, Result};

@@ -1,0 +1,25 @@
+export type RpcRequest = { jsonrpc: '2.0'; id: number; method: string; params: unknown };
+export type RpcResponse = { jsonrpc: '2.0'; id: number; result?: unknown;
+  error?: { code: number; message: string; data?: unknown } };
+/** Exchange one request for its matching response; authenticate the connection first. */
+export type Transport = (request: RpcRequest) => Promise<RpcResponse>;
+
+export class RpcError extends Error {
+  constructor(public readonly code: number, message: string, public readonly data?: unknown) {
+    super(message);
+    this.name = 'RpcError';
+  }
+}
+
+export class RpcClient {
+  private nextId = 0;
+  constructor(private readonly transport: Transport) {}
+  async call<K extends keyof Operations>(method: K, params: Operations[K]['params']): Promise<Operations[K]['result']> {
+    const id = ++this.nextId;
+    const reply = await this.transport({ jsonrpc: '2.0', id, method, params });
+    if (reply.jsonrpc !== '2.0' || reply.id !== id) throw new Error('Mismatched JSON-RPC response');
+    if (reply.error) throw new RpcError(reply.error.code, reply.error.message, reply.error.data);
+    if (!Object.prototype.hasOwnProperty.call(reply, 'result')) throw new Error('Missing JSON-RPC result');
+    return reply.result as Operations[K]['result'];
+  }
+}
