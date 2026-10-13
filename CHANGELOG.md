@@ -7,6 +7,12 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 ### Added
 
 - A search box in each pane (**Search here**, at the right end of the tab row): typing opens a search tab next to the folder that finds names only under it and its subfolders, with the same backend menu, query syntax, toggles, filters and library chips as Ctrl+F; its bar reads "in <folder>". It is on folder tabs of local folders and remote hosts (not the Recycle Bin, archives or library views). Esc, the **×** or an emptied box closes it and shows the folder again. Everything gets the folder as a path term, Keel's own indexes as `in:`, Spotlight as `-onlyin`, `locate` and the home-folder walk keep to it; the library keeps the hits under it from its first page of results. A typed `in:` searches its own folder instead. The search backends take the folder as `keel_search::Query::within`. See [The search tab](docs/files.md#the-search-tab).
+- **Collections**: named, hand-ordered lists of files and folders from any sources. Right-click → **Add to collection** (a collection, or **New collection…**), or the command palette's **Add to collection: <name>**; the sidebar's **Collections** section (between Library and Bookmarks, hidden like the others from its header) opens one in a tab in its own order, where dragging a row onto another moves it before it (below the last row: to the end). **Remove from collection**, **Rename…** and **Delete…** never touch the files. See [Library](docs/library.md#library).
+- The API's `collections.list` and `collections.items`, and previewed `collections.create`, `collections.rename`, `collections.delete`, `collections.add`, `collections.remove` and `collections.move`. See [api.md](docs/api.md).
+
+### Changed
+
+- The library database is now at version 10 (collections): a library this Keel opened is refused by an older Keel ("newer than this Keel").
 
 ## [0.23.0] - 2026-10-12
 

@@ -43,7 +43,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (unreleased): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
 | 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
 | Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Has** (unreleased): a user-arranged Favorites section (drag folders in, drag to reorder, remove), kept per profile, beside library saved views; no Spaces ([files.md](files.md#sidebar)) |
-| Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Part**: tags and saved views; no hand-ordered collection |
+| Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Has** (unreleased): hand-ordered collections across sources, reordered by dragging, with tags and saved views ([library.md](library.md#library)); not synced between devices |
 | Mobile explorer | alpha (alpha.2); v1 mobile alpha | [SD-REL] | **Part**: the installable web app (PWA) with a phone layout ([devices.md](devices.md#phones)); no native app |
 
 ### Search and understanding
