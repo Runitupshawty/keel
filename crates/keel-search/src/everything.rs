@@ -159,26 +159,33 @@ impl EverythingSearcher {
 /// with the SDK, the same switches as its Search menu); Match Diacritics has no SDK
 /// flag, so it is Everything's `diacritics:` modifier over the whole search as a group.
 /// Keel's "Match whole filename when using wildcards" is Everything's own setting there.
-/// Keel's `in:<folder>` (outside regex mode) becomes Everything's path term
-/// `"<folder>\"`: a term with a backslash matches the full path.
+/// Keel's `in:<folder>` (outside regex mode) or a pane's folder (`Query::within`) becomes
+/// Everything's path term `"<folder>\"`: a term with a backslash matches the full path
+/// (a regex then follows it as `regex:`).
 fn search_text(query: &Query) -> (String, bool) {
-    let text = match crate::take_within(&query.text) {
-        (Some(folder), rest) if !query.regex => {
+    let mut regex = query.regex;
+    let text = match crate::scope(query) {
+        (Some(folder), rest) => {
+            let folder = folder.display().to_string();
             let sep = if folder.ends_with(['\\', '/']) {
                 ""
             } else {
                 "\\"
             };
+            let rest = match std::mem::take(&mut regex) {
+                true if !rest.is_empty() => format!("regex:{rest}"),
+                _ => rest,
+            };
             format!("\"{folder}{sep}\" {rest}").trim_end().to_owned()
         }
-        _ => query.text.clone(),
+        (None, _) => query.text.clone(),
     };
     let text = if query.match_diacritics && !query.regex && !text.trim().is_empty() {
         format!("diacritics:<{text}>")
     } else {
         text
     };
-    match (query.folders_only, query.regex) {
+    match (query.folders_only, regex) {
         (true, true) => (format!("folder: regex:{text}"), false),
         (true, false) => (format!("folder: {text}"), false),
         (false, regex) => (text, regex),
@@ -356,5 +363,28 @@ mod tests {
         assert_eq!(text(r"in:C:\x", false), r#""C:\x\""#);
         // A regex is the whole text.
         assert_eq!(text(r"in:C:\x", true), r"in:C:\x");
+    }
+
+    #[test]
+    fn a_pane_folder_is_a_path_term() {
+        let within = |text: &str, regex, folders_only| {
+            search_text(&Query {
+                text: text.into(),
+                regex,
+                folders_only,
+                within: Some(r"C:\Users\ann".into()),
+                ..Query::default()
+            })
+        };
+        let plain = (r#""C:\Users\ann\" ^ab+c$"#.to_owned(), false);
+        assert_eq!(within("^ab+c$", false, false), plain);
+        // A regex keeps to the text, after the folder.
+        let regex = (r#""C:\Users\ann\" regex:^ab+c$"#.to_owned(), false);
+        assert_eq!(within("^ab+c$", true, false), regex);
+        let folders = (r#"folder: "C:\Users\ann\" regex:^a"#.to_owned(), false);
+        assert_eq!(within("^a", true, true), folders);
+        // A typed in: takes the pane's folder's place.
+        let typed = (r#""D:\x\" report"#.to_owned(), false);
+        assert_eq!(within(r"report in:D:\x", false, false), typed);
     }
 }

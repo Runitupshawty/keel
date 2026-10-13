@@ -5,6 +5,7 @@
 //! `worker::SearchWorker`. The first query asks for `PAGE` results; Load more asks for
 //! more, up to the Most results setting.
 
+use crate::a11y::Named;
 use crate::bookmarks::FindCmd;
 use crate::keys::Action;
 use crate::pane::Pane;
@@ -351,11 +352,16 @@ pub fn bar(
         toggles,
         limit,
         more,
+        within,
         ..
     } = &mut tab.kind
     else {
         return;
     };
+    let scoped = within.as_ref().map(|d| match d.name() {
+        "" => d.display(),
+        name => name.to_owned(),
+    });
     // Task 77: a file list tab searches its list: (shown, entries in the list).
     let list = (tab.filelist.as_ref()).map(|s| (s.label().to_owned(), s.len()));
     let shared = crate::bookmarks::published(ui.ctx()); // Task 76
@@ -447,6 +453,9 @@ pub fn bar(
                 }
             });
         }
+        if let Some(name) = &scoped {
+            ui.weak(format!("in {name}"));
+        }
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
@@ -457,6 +466,16 @@ pub fn bar(
                     hint(name, tab.library_search)
                 }),
         );
+        // A pane's search goes back to its folder on Esc, on ×, or when the box is emptied.
+        if scoped.is_some()
+            && ((r.changed() && query.is_empty())
+                || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)))
+                || (ui.small_button("×"))
+                    .tip("Back to the folder (Esc)")
+                    .clicked())
+        {
+            out.push(Action::CloseSearch);
+        }
         let to_end = |ui: &egui::Ui, query: &str| {
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
                 let end = egui::text::CCursor::new(query.chars().count());

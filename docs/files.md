@@ -263,6 +263,8 @@ The keys work in a search tab, also while typing in its query box (elsewhere Ctr
 
 The query box's hint names what the backend understands: Everything's syntax with Everything, names, `*` and `?` wildcards, `"exact phrase"`, `folder:`, `in:<folder>` and `regex:` with Keel's index (it has no `ext:` or `dm:` yet; those match as plain text), the library's terms with the library.
 
+A pane's **Search here** box (at the right end of its tab row, on local folders and remote hosts) opens a search tab next to the folder that keeps to it and its subfolders; the bar reads "in <folder>". Everything gets the folder as a path term, Keel's own indexes as `in:`, Spotlight as `-onlyin`; `locate` and the library keep the hits under it (the library from its first page of results, so a folder deep in a big library can show fewer). A typed `in:` searches its own folder instead. Esc, the **×** or an emptied box closes the tab and shows the folder again.
+
 Results:
 
 - The first 1,000 results show at once ("first 1000 results"). **Load more** (in the bar and the Search menu) asks for four times as many, up to **Most results** in Settings (10,000 by default, at most 1,000,000). The list draws only the rows on screen, so long lists scroll smoothly; Keel's NTFS index looks up the size and date of the extra rows on a worker.

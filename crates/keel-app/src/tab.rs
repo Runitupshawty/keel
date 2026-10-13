@@ -133,6 +133,9 @@ pub enum TabKind {
         limit: u32,
         /// Load more can ask for more than `limit` (it is below the Most results setting).
         more: bool,
+        /// A pane's search box: only hits under this folder, and Esc, × or an empty box
+        /// goes back to the folder tab it came from. None: Ctrl+F, everywhere.
+        within: Option<VPath>,
     },
     /// Task 29: the library dashboard (`library_ui::overview`); never listed.
     Overview,
@@ -342,6 +345,7 @@ impl Tab {
                 toggles: Default::default(),
                 limit: 0,
                 more: false,
+                within: None,
             },
             loading: false,
             listed_dir: Some(dir.clone()),
@@ -351,6 +355,14 @@ impl Tab {
 
     pub fn is_search(&self) -> bool {
         matches!(self.kind, TabKind::Search { .. })
+    }
+
+    /// The folder a pane's search box searches under (None: not such a search tab).
+    pub fn search_within(&self) -> Option<&VPath> {
+        match &self.kind {
+            TabKind::Search { within, .. } => within.as_ref(),
+            _ => None,
+        }
     }
 
     /// A tab showing the Recycle Bin / Trash (`trash://`): its rows are restored or
@@ -664,6 +676,7 @@ impl Tab {
             toggles,
             limit,
             more,
+            within,
             ..
         } = kind
         {
@@ -674,6 +687,7 @@ impl Tab {
                 toggles,
                 limit,
                 more,
+                within,
             });
         }
         self.selected.clear();

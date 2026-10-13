@@ -1167,6 +1167,7 @@ impl AppState {
             toggles,
             limit,
             more,
+            within,
         } = &mut tab.kind
         else {
             return;
@@ -1231,6 +1232,7 @@ impl AppState {
             *limit,
         );
         q.folders_only = applied.folders_only;
+        q.within = within.as_ref().and_then(VPath::to_local_path);
         tab.highlight = keel_search::Highlighter::new(&q);
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
@@ -1930,6 +1932,12 @@ impl AppState {
                     tab.filter_open = true;
                 }
                 self.panes[p].focus_filter = true;
+            }
+            // Esc in a pane's search goes back to its folder.
+            Action::ClearFilter
+                if self.tab(p).search_within().is_some() && self.tab(p).renaming.is_none() =>
+            {
+                self.run(p, Action::CloseSearch)
             }
             Action::ClearFilter => {
                 let tab = self.tab_mut(p);
@@ -2646,6 +2654,43 @@ impl AppState {
                 pane.tabs.push(tab);
                 pane.active = pane.tabs.len() - 1;
                 self.ctx.request_repaint();
+            }
+            Action::SearchIn(text) => {
+                let dir = self.tab(p).dir.clone();
+                let mut tab = Tab::search(dir.clone());
+                if !crate::remotes::is_network(&dir) {
+                    tab.error = self.search_reason.clone();
+                }
+                if let TabKind::Search {
+                    query,
+                    toggles,
+                    within,
+                    ..
+                } = &mut tab.kind
+                {
+                    *query = text;
+                    *toggles = self.settings.search.toggles;
+                    *within = Some(dir);
+                }
+                let pane = &mut self.panes[p];
+                pane.active += 1;
+                pane.tabs.insert(pane.active, tab);
+                pane.focus_filter = true;
+                self.search_edited(p);
+            }
+            Action::CloseSearch => {
+                if let Some(dir) = self.tab(p).search_within().cloned() {
+                    let pane = &mut self.panes[p];
+                    let i = pane.active;
+                    match pane.tabs.len() {
+                        // Its folder tab was closed: this tab shows the folder.
+                        1 => self.run(p, Action::Navigate(dir)),
+                        _ => {
+                            pane.close_tab(i);
+                            pane.active = i.saturating_sub(1);
+                        }
+                    }
+                }
             }
             Action::OpenLocation => self.open_location(p),
             Action::OpenJournal => {

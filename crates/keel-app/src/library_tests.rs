@@ -87,6 +87,30 @@ fn summary(label: &str, status: SourceStatus) -> SourceSummary {
     }
 }
 
+/// A pane's folder (`Query::within`) keeps the library's hits under it.
+#[test]
+fn library_search_keeps_to_a_pane_folder() {
+    let (tmp, lib, _) = fixture("within", false);
+    let search = |within: Option<PathBuf>| {
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+            .query(&Query {
+                text: "ext:txt".into(),
+                within,
+                ..Query::default()
+            })
+            .unwrap();
+        let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(search(None), ["a.txt", "b.txt", "c.txt"]);
+    assert_eq!(search(Some(tmp.join("docs").join("sub"))), ["b.txt"]);
+    assert!(
+        search(Some(tmp.join("doc"))).is_empty(),
+        "whole folder names"
+    );
+}
+
 #[test]
 fn sidebar_rows_follow_source_status_and_stats() {
     let rows = source_rows(&[
