@@ -144,6 +144,9 @@ fn registry_is_preview_first() {
         "du.scan",
         "du.result",
         "du.export",
+        "freezes.list",
+        "freezes.add",
+        "freezes.delete",
         "devices.settings",
         "devices.settings_set",
         "library.sync",
@@ -1667,6 +1670,53 @@ fn files_names_lists_indexed_files_up_to_max() {
     assert_eq!(one["paths"].as_array().unwrap().len(), 1, "{one}");
     assert_eq!(one["truncated"], true, "{one}");
     assert!(call(&f.ctx, "files.names", json!({"limit": 1})).is_err());
+}
+
+#[test]
+fn freezes_are_made_listed_browsed_and_deleted() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let made = apply(&f.ctx, "freezes.add", json!({"id": id}));
+    let freeze = made["id"].as_i64().unwrap();
+    assert_eq!(made["files"], 2, "{made}");
+    // The files change and the source is walked again; the freeze still lists the old state.
+    std::fs::remove_file(f.files.path().join("docs/notes.txt")).unwrap();
+    let job = apply(&f.ctx, "sources.index", json!({"id": id}))["job"]
+        .as_i64()
+        .unwrap();
+    f.ctx.lib.jobs().wait(job).unwrap();
+    let names = |path: String| -> Vec<Value> {
+        let listed = call(&f.ctx, "list", json!({ "path": path })).unwrap();
+        (listed["entries"].as_array().unwrap().iter())
+            .map(|e| e["name"].clone())
+            .collect()
+    };
+    assert_eq!(names(format!("library://{id}/docs")), ["invoice-2026.pdf"]);
+    let docs = format!("library://{id}@{freeze}/docs");
+    assert_eq!(names(docs.clone()), ["invoice-2026.pdf", "notes.txt"]);
+    let listed = call(&f.ctx, "list", json!({ "path": docs })).unwrap();
+    assert_eq!(
+        listed["entries"][1]["path"],
+        format!("library://{id}@{freeze}/docs/notes.txt")
+    );
+    let all = call(&f.ctx, "freezes.list", json!({"id": id})).unwrap();
+    assert_eq!(all[0]["id"], freeze, "{all}");
+    apply(
+        &f.ctx,
+        "freezes.delete",
+        json!({"id": id, "freeze": freeze}),
+    );
+    assert_eq!(
+        call(&f.ctx, "freezes.list", json!({"id": id})).unwrap(),
+        json!([])
+    );
+    assert!(call(&f.ctx, "list", json!({ "path": docs })).is_err());
+    assert!(call(
+        &f.ctx,
+        "freezes.delete",
+        json!({"id": id, "freeze": freeze})
+    )
+    .is_err());
 }
 
 #[test]
