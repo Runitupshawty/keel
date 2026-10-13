@@ -140,6 +140,14 @@ pub fn delete_text(n: usize, kind: RemoveKind) -> String {
     }
 }
 
+/// The delete confirmation's button: a move to the Drive trash says so.
+pub fn delete_button(kind: RemoveKind) -> &'static str {
+    match kind {
+        RemoveKind::Trash => "Move to trash",
+        RemoveKind::RecoverableDelete | RemoveKind::Permanent => "Delete",
+    }
+}
+
 /// The provider's revoked / missing grant errors ("…; sign in again").
 pub fn needs_sign_in(detail: &str) -> bool {
     detail.contains("sign in again")
@@ -1789,6 +1797,7 @@ mod tests {
 
     #[test]
     fn delete_asks_with_the_service_wording() {
+        assert_eq!(delete_button(RemoveKind::Trash), "Move to trash");
         assert_eq!(
             delete_text(2, RemoveKind::Trash),
             "Move 2 items to the Drive trash?"
@@ -1818,8 +1827,9 @@ mod tests {
         state.run(0, Action::SelectAll);
         state.run(0, Action::Delete);
         match &state.dialog {
-            Some(crate::dialogs::Dialog::Confirm { text, on_yes }) => {
+            Some(crate::dialogs::Dialog::Confirm { text, yes, on_yes }) => {
                 assert_eq!(text, "Delete 1 item on Dropbox? (recoverable for 30 days)");
+                assert_eq!(*yes, "Delete");
                 assert!(matches!(on_yes, Action::DeleteRemote(p) if p.len() == 1));
             }
             _ => panic!("no confirm dialog"),

@@ -13,6 +13,8 @@ use std::path::PathBuf;
 pub enum Dialog {
     Confirm {
         text: String,
+        /// The button that answers yes ("Move to trash", "Remove", ...).
+        yes: &'static str,
         on_yes: Action,
     },
     /// Asked once per transfer; the answer applies to every clash (Phase 1).
@@ -82,23 +84,13 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
     let modal = Modal::new(Id::new("keel-dialog")).show(ctx, |ui| {
         ui.set_width(380.0);
         match d {
-            Dialog::Confirm { text, on_yes } => {
+            Dialog::Confirm { text, yes, on_yes } => {
                 ui.label(text.as_str());
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     // Enter / Space press the focused button (egui), which starts on "yes";
                     // Tab moves to Cancel. No window-wide Enter, so Enter on Cancel cancels.
-                    // Drive's delete is a move to its trash (the text says so).
-                    let yes = ui.button(match on_yes {
-                        Action::DeleteRemote(_) if !text.starts_with("Move ") => "Delete",
-                        Action::Cloud { .. } => "Remove",
-                        Action::ZipTo { .. } => "Add",
-                        Action::PurgeTrash(_) => "Delete permanently",
-                        Action::EmptyTrashNow => "Empty",
-                        Action::Mount(_) => "OK",
-                        Action::UndoRun(_) => "Undo",
-                        _ => "Move to trash",
-                    });
+                    let yes = ui.button(*yes);
                     let no = ui.button("Cancel");
                     crate::a11y::first_focus(&yes);
                     cancel |= no.clicked();

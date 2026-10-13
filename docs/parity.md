@@ -1,6 +1,6 @@
 # Feature parity with Spacedrive and Atlas
 
-Date: 2026-10-11. Keel: 0.18.0 (commit `171be99`). The design spec ([section 1](superpowers/specs/2026-10-08-keel-design.md#1-purpose)) names two references for feature parity: Atlas for how the window feels, and Spacedrive for the library across devices. This page lists every feature a user can reach in either app, says whether Keel has it, and ranks what Keel still lacks. The next cycle's plan is [Phase 13](superpowers/plans/2026-10-11-keel-phase13.md); earlier cycles: [Phase 12](superpowers/plans/2026-10-11-keel-phase12.md), [Phase 11](superpowers/plans/2026-10-11-keel-phase11.md), [Phase 10](superpowers/plans/2026-10-11-keel-phase10.md).
+Date: 2026-10-12. Keel: 0.23.0 plus what is unreleased on `main` (commit `dd06c7f`). The design spec ([section 1](superpowers/specs/2026-10-08-keel-design.md#1-purpose)) names two references for feature parity: Atlas for how the window feels, and Spacedrive for the library across devices. This page lists every feature a user can reach in either app, says whether Keel has it, and ranks what Keel still lacks. The next cycle's plan is [Phase 13](superpowers/plans/2026-10-11-keel-phase13.md); earlier cycles: [Phase 12](superpowers/plans/2026-10-11-keel-phase12.md), [Phase 11](superpowers/plans/2026-10-11-keel-phase11.md), [Phase 10](superpowers/plans/2026-10-11-keel-phase10.md).
 
 ## How to read this
 
@@ -33,16 +33,16 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | Grid, list, columns and media views | v1 | [SD-B23] | **Has**: Details, Grid, Columns, Media ([features.md](features.md), [files.md](files.md#columns-view-and-drop-zone), [library.md](library.md#media-view)) |
-| Size view (folders by size, kept per tab) | alpha (alpha.2) | [SD-REL] | **Lacks**: listings have no folder sizes; a selected folder counts as 0 B ([QA 2026-10-10](qa/2026-10-10-walkthrough.md)) |
+| Size view (folders by size, kept per tab) | alpha (alpha.2) | [SD-REL] | **Has** (0.19.0): folder totals in the Size column, sorted by size and added up for a selection in the status bar, and a Sizes view with share bars ([files.md](files.md#folder-sizes-and-the-sizes-view)); not kept per tab |
 | Tabs | v1 (0.2) | [SD-B02] | **Has** |
 | Dual pane | planned (2023 list) | [SD-B23] | **Has**: two panes, one with Ctrl+Shift+D |
-| Quick Preview of images, video, audio and PDF, with pinch to zoom | v1 | [SD-B23], [SD-REL] | **Part**: preview panel (F3) and full-window media viewer; no audio preview |
-| Inspector (identity, location, availability, provenance, actions) | described | [SD-DIR] | **Yes** (unreleased): the preview panel's Inspector tab (Ctrl+I) with source, volume, content id, first seen, last hashed, copies, history and tags ([files.md](files.md#inspector)) |
+| Quick Preview of images, video, audio and PDF, with pinch to zoom | v1 | [SD-B23], [SD-REL] | **Has**: preview panel (F3), full-window media viewer, and audio with tags, cover, waveform and Play/Pause (0.19.0, needs `ffmpeg`; [features.md](features.md)); Quick Look on Space (0.23.0, [files.md](files.md#quick-look)); pinch zoom in the web client's phone layout |
+| Inspector (identity, location, availability, provenance, actions) | described | [SD-DIR] | **Has**: the preview panel's Inspector tab (Ctrl+I) with source, volume, content id, first seen, last hashed, copies, history and tags ([files.md](files.md#inspector)) |
 | Overview statistics | v1 (0.4.0) | [SD-REL] | **Has**: library Overview ([library.md](library.md#library)) |
-| Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has** (unreleased): drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
-| Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (unreleased): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
+| Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has**: drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
+| Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (0.23.0): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
 | 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
-| Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Has** (unreleased): a user-arranged Favorites section (drag folders in, drag to reorder, remove), kept per profile, beside library saved views; no Spaces ([files.md](files.md#sidebar)) |
+| Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Has** (0.23.0): a user-arranged Favorites section (drag folders in or **Add to Sidebar** from a folder's context menu, drag to reorder, remove), kept per profile, beside library saved views; no Spaces ([files.md](files.md#sidebar)) |
 | Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Part**: tags and saved views; no hand-ordered collection |
 | Mobile explorer | alpha (alpha.2); v1 mobile alpha | [SD-REL] | **Part**: the installable web app (PWA) with a phone layout ([devices.md](devices.md#phones)); no native app |
 
@@ -51,8 +51,8 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | Search across every source, offline ones too | described | [SD-README] | **Has**: library search ([library.md](library.md#library)) |
-| Filter UI with date range and kind | v1 (0.4.3) | [SD-REL] | **Part**: the same filters as query syntax (`ext:`, `dm:`, `size:`, `kind:`, `tag:`), but no filter chips |
-| Text inside documents, OCR | alpha (alpha.1 notes claim OCR); sidecars doc says only thumbnails exist | [SD-REL], [SD-SIDECARS] | **Has** (unreleased) for the text inside documents (text, PDF, Office, OpenDocument; [library.md](library.md#searching)); **Lacks** OCR of images and scans |
+| Filter UI with date range and kind | v1 (0.4.3) | [SD-REL] | **Has**: filter chips (Kind, Type, Tag, Source, Size, Modified, Favorites, Contents) that edit the query syntax (`ext:`, `dm:`, `size:`, `kind:`, `tag:`), in the window and the web client ([library.md](library.md#searching)) |
+| Text inside documents, OCR | alpha (alpha.1 notes claim OCR); sidecars doc says only thumbnails exist | [SD-REL], [SD-SIDECARS] | **Has** for the text inside documents (text, PDF, Office, OpenDocument; [library.md](library.md#searching)); **Lacks** OCR of images and scans |
 | On-device AI image labels | v1 (0.2, YOLO model) | [SD-B02] | **Lacks** |
 | File System Intelligence (folder summaries, user context) | planned ("flagship direction") | [SD-DIR] | **Lacks** (not planned) |
 | Transcripts, faces, embeddings | planned | [SD-SIDECARS], [SD-B23] | **Lacks** |
@@ -64,7 +64,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | Nested, colored tags that follow the content to every copy | described; v1 tags | [SD-TAGS], [SD-B23] | **Has** ([library.md](library.md#library)) |
-| Tag assign mode (number keys) | v1 (0.4.0) | [SD-REL] | **Has** (unreleased): Ctrl+Shift+A, then 1–9 (Shift: 10–18) toggle tags on the selection ([library.md](library.md#library)) |
+| Tag assign mode (number keys) | v1 (0.4.0) | [SD-REL] | **Has**: Ctrl+Shift+A, then 1–9 (Shift: 10–18) toggle tags on the selection ([library.md](library.md#library)) |
 | Favorites, recents | mockup; described | [SD-WEB] | **Has** |
 | Saved views | described | [SD-LIB] | **Has** |
 
@@ -90,10 +90,10 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | --- | --- | --- | --- |
 | Copy, move, delete, rename with previews | described | [SD-OPS] | **Has** |
 | Batch rename | described (`files.rename_batch`) | [SD-OPS] | **Has**: Ctrl+F2 with a live preview |
-| Undo | described (`files.undo`) | [SD-OPS] | **Part**: undo bulk rename only; deletes can be restored from the Recycle Bin or Trash by hand |
-| Folder merge, organize, flatten | described; merge landed | [SD-OPS], [SD-STATUS] | **Has** (unreleased): previewed plans with undo ([files.md](files.md#folder-operations)) |
+| Undo | described (`files.undo`) | [SD-OPS] | **Has**: Ctrl+Z undoes the last 20 renames, moves, copies, new items, deletes to the Recycle Bin or Trash and folder operations ([getting-started.md](getting-started.md#copy-move-and-delete)); permanent deletes and remote changes are not undoable, and there is no redo |
+| Folder merge, organize, flatten | described; merge landed | [SD-OPS], [SD-STATUS] | **Has**: previewed plans with undo ([files.md](files.md#folder-operations)) |
 | Create and extract archives | described | [SD-OPS] | **Has**, plus archives open as folders ([files.md](files.md#archives)) |
-| Set attributes, create links | described | [SD-OPS] | **Has** (unreleased): hidden, read-only, Unix mode; symbolic links, junctions, hard links ([files.md](files.md#folder-operations)) |
+| Set attributes, create links | described | [SD-OPS] | **Has**: hidden, read-only, Unix mode; symbolic links, junctions, hard links ([files.md](files.md#folder-operations)) |
 | Trash list and empty | described | [SD-OPS] | **Has** ([files.md](files.md#recycle-bin-and-trash)) |
 | Durable jobs: progress, cancel, restart recovery, logs | described; ETA in v1 (0.4.0), live copy speed in alpha.2 | [SD-README], [SD-REL] | **Has**: resume after restart ([library.md](library.md#library)); time left is not documented |
 | File sync relationships: copy, mirror, two-way, archive, on-demand cache | described (no status) | [SD-SYNC] | **Lacks** |
@@ -134,10 +134,10 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Feature | Spacedrive | Source | Keel |
 | --- | --- | --- | --- |
 | CLI and daemon | nightly | [SD-REL], [SD-CLI] | **Has**: `keel`, `keel-daemon` ([daemon.md](daemon.md)) |
-| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Has** (unreleased): `keel op <name> --params <json>`, preview first, `--execute` to apply ([api.md](api.md#keel-op-any-operation-by-name)) |
+| Call any registered operation by name (`sd op`) | described | [SD-CLI] | **Has**: `keel op <name> --params <json>`, preview first, `--execute` to apply ([api.md](api.md#keel-op-any-operation-by-name)) |
 | MCP server | in progress (PR open) | [SD-STATUS] | **Has**, preview first |
-| Agent skill | landed | [SD-STATUS] | **Has** (unreleased): [agent-skill.md](agent-skill.md), installable from `skills/keel` |
-| Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)); no generated SDK |
+| Agent skill | landed | [SD-STATUS] | **Has**: [agent-skill.md](agent-skill.md), installable from `skills/keel` |
+| Generated TypeScript and Swift clients | described | [SD-README] | **Part**: JSON-RPC documented ([api.md](api.md)) and a C SDK, `keel-sdk` (0.23.0, [api.md](api.md#sdk-c-abi-keel-sdk)); no generated TypeScript or Swift client |
 | Self-update and a nightly channel | nightly | [SD-REL] | **Part**: opt-in update check and Windows self-install; no nightly channel |
 | Headless server with a web interface; Docker | described; v1 Docker | [SD-README], [SD-B23] | **Part**: `keel-daemon --web`; no container image |
 | Extensions (WASM, SDK) | in progress | [SD-STATUS] | **Lacks** (spec 2.10 Extensions) |
@@ -156,12 +156,12 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Drop zone | yes | [AT] | **Has** ([files.md](files.md#columns-view-and-drop-zone)) |
 | Drag and drop | yes | [AT] | **Has** (Atlas is Windows-only, where Keel's drag-out works) |
 | Cloud integration | yes | [AT] | **Has** |
-| Custom folder and file icons | "change folder and file icons" | [AT] | **Part** (unreleased): a color and an emoji or icon-theme icon per folder in a library source; file icons come from the icon theme |
+| Custom folder and file icons | "change folder and file icons" | [AT] | **Part**: a color and an emoji or icon-theme icon per folder in a library source; file icons come from the icon theme |
 | Filter by typing | yes | [AT] | **Has** |
 | Multiple profiles and sessions | yes | [AT] | **Part**: profiles, each with a restored session; no named sessions within a profile |
-| Rich color themes | yes | [AT] | **Part**: dark and light, each overridable in a TOML file ([features.md](features.md)) |
+| Rich color themes | yes | [AT] | **Has**: six built-in themes, your own TOML files and VS Code color themes from the Marketplace ([files.md](files.md#color-themes)) |
 | Smooth animations | yes | [AT] | **Has**, with Reduce motion |
-| Searchable context menus | yes | [AT] | **Part**: every context action is in the searchable command palette; the native Windows shell menu is missing (README roadmap) |
+| Searchable context menus | yes | [AT] | **Has**: every context action is in the searchable command palette, and on Windows the native shell menu (0.19.0), whose commands the palette also searches as `Shell: …` ([files.md](files.md#windows-shell-menu)) |
 | Cloud drives: SFTP | yes | [AT] | **Has** ([remotes.md](remotes.md)) |
 | Cloud drives: FTP | yes | [AT] | **Has**: FTP and FTPS remotes ([remotes.md](remotes.md#ftp-and-ftps)) |
 | Cloud drives: Google Drive | yes | [AT] | **Has** |
@@ -173,7 +173,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Media playback and galleries | yes | [AT] | **Has**: media view and viewer with playback |
 | A 5,000-file folder opens in 100 ms | benchmark claim | [AT] | **Has**: 100,000 files in 0.24 s warm ([performance.md](performance.md)) |
 | 128 MiB copy in 39 ms (CopyFile2) | benchmark claim | [AT] | **Part**: copies use CopyFileExW; not measured |
-| Small files: 2,000 x 4 KiB in 525 ms with 4 workers (3,800 files/s) | benchmark claim | [AT] | **Has** (unreleased): a pool of up to eight workers copies 2,000 x 4 KiB in 0.62-0.74 s (2,700-3,250 files/s) and 3,000 one-byte files in 0.87-1.02 s; through a library plan 2.9 s ([performance.md](performance.md)) |
+| Small files: 2,000 x 4 KiB in 525 ms with 4 workers (3,800 files/s) | benchmark claim | [AT] | **Has**: a pool of up to eight workers copies 2,000 x 4 KiB in 0.62-0.74 s (2,700-3,250 files/s) and 3,000 one-byte files in 0.87-1.02 s; through a library plan 2.9 s ([performance.md](performance.md)) |
 | Startup in 300 ms | claim | [AT] | **Part**: first frame in 0.62 s in the test harness; not compared like for like |
 | Local-first, no telemetry | yes | [AT] | **Has** |
 | Keyboard-friendly workflow | yes | [AT-W11] | **Has**, including screen readers ([README](../README.md#accessibility)) |
@@ -195,25 +195,25 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 
 ## voidtools Everything and WinDirStat
 
-Added 2026-10-12 at the owner's request: every feature of voidtools Everything (1.4.1 and the 1.5 alpha) and WinDirStat (up to 2.9.3) is planned. The full checklist, verified against each project's own pages, and Keel's state for every item with file and line, are in [the audit](superpowers/plans/2026-10-12-everything-windirstat-audit.md). In short, at 0.22.0 (rows 29 to 32 of the table above were completed in 0.23.0; the areas below are not updated):
+Added 2026-10-12 at the owner's request: every feature of voidtools Everything (1.4.1 and the 1.5 alpha) and WinDirStat (up to 2.9.3) is planned. The full checklist, verified against each project's own pages, and Keel's state for every item with file and line, are in [the audit](superpowers/plans/2026-10-12-everything-windirstat-audit.md). In short, at 0.23.0 (rows 29 to 32 of the ranked gaps):
 
 | Area | Keel today | Plan |
 | --- | --- | --- |
-| Everything: index | **Part**: NTFS file table and USN journal, names only (no size, dates or attributes in the index), library sources for other volumes | [Phase 15](superpowers/plans/2026-10-12-keel-phase15.md) Task 70: full-metadata index, folder sizes, fast sort, ReFS/FAT/exFAT/network/folder indexes, an index service |
-| Everything: search language | **Part**: AND, quotes, globs, `regex:`, `folder:`, `in:` in the pane; `ext:`, `size:`, `dm:`, `kind:`, `content:`, `tag:` and media terms in the library; no OR, NOT, grouping, modifiers or most functions | Phase 15 Tasks 71 to 74: one parser with every operator, all 49 modifiers and every search function, constants, macros, the journal |
-| Everything: search window | **Part**: search tabs with the five search toggles (Match case, whole words, path, diacritics, regex, with Everything's keys), search as you type options, highlighted matches, Load more up to 10,000 results (configurable), totals in the status bar; fixed columns, library chips and saved views (no UI to create them) | [Phase 16](superpowers/plans/2026-10-12-keel-phase16.md) Task 76: toggles, no cap, column chooser, filters, bookmarks, history, omissions, configurable keys, Quick Search window, tray, localization |
+| Everything: index | **Has** (0.23.0): the NTFS file table read directly (**Index all drives**, or the Keel index service without an administrator prompt) with sizes, dates, attributes and folder totals kept current from the USN journal; FAT, exFAT, ReFS, removable and network drives and added folders walked; an index journal ([files.md](files.md#search-without-everything)) | [Phase 15](superpowers/plans/2026-10-12-keel-phase15.md) Task 70: full-metadata index, folder sizes, fast sort, ReFS/FAT/exFAT/network/folder indexes, an index service |
+| Everything: search language | **Part**: the `keel-query` crate reads the whole language (every operator, the modifiers, constants, macros and the functions over names, paths, sizes, dates, attributes, trees and duplicates; [search.md](search.md)), but the window's and the library's search still use their own simpler parsers | Phase 15 Tasks 71 to 74: one parser with every operator, all 49 modifiers and every search function, constants, macros, the journal |
+| Everything: search window | **Has** (0.23.0): the five search toggles with Everything's keys, search as you type, highlighted matches, Load more (no 500 cap), filters, bookmarks, search history, result omissions, configurable keys, a Quick Search window, a notification-area icon and Always on top; no localization | [Phase 16](superpowers/plans/2026-10-12-keel-phase16.md) Task 76: toggles, no cap, column chooser, filters, bookmarks, history, omissions, configurable keys, Quick Search window, tray, localization |
 | Everything: file lists | **Part**: open EFU, TXT, CSV, TSV, M3U as a searchable tab; export results as EFU, CSV, TSV, TXT, M3U, M3U8, JSON; `keel filelist create` and `export` ([File lists](files.md#file-lists)). No File List Editor, file lists in the index, `filelist:` functions or `.metadata.efu` | Phase 16 Task 77 |
 | Everything: HTTP and ETP servers, network indexes | **Part**: `keel-daemon --web` answers Everything's HTTP search over all files; `keel-daemon --etp` is an ETP/FTP server for Everything clients, and `keel search --etp` searches one; network indexes are not done | Phase 16 Task 78 |
-| Everything: `es.exe`, command line, SDK, URL protocol | **Part**: `keel search` (library only), `--search` | Phase 16 Task 79 |
+| Everything: `es.exe`, command line, SDK, URL protocol | **Has** (0.23.0): `keel es` with `es.exe`'s switches, `keel:` links (`--register-url-protocol` on Windows) and `keel-sdk`, a C library with the call shape of Everything's SDK ([api.md](api.md#sdk-c-abi-keel-sdk)) | Phase 16 Task 79 |
 | WinDirStat: scanning | **Part**: the scan engine (`keel du --scan`): several roots and all local drives in parallel, size on disk, hard links once, links followed only on request, filters, free and unknown space, scan files; phones and cameras on Windows (WPD, read-only); the Disk Usage window (files.md); no MFT path, no file watcher, no MTP elsewhere than Windows | [Phase 17](superpowers/plans/2026-10-12-keel-phase17.md) Tasks 81 and 82 |
 | WinDirStat: tree, file types, treemap, sunburst, flame graph | **Part**: the Disk Usage window has the tree (every column, subtree bars, logical or on-disk sizes) and the file types list, selection-linked; the treemap, sunburst and flame graph of the whole scan above them | Phase 17 Task 83 |
 | WinDirStat: largest files, duplicates, search, storage analytics, permissions | **Part**: the five tabs over a scan ([files.md](files.md#disk-usage-analysis-tabs)): largest files, duplicates (BLAKE3 / xxHash3 / SHA-256, sparse hashing, keep one or hard-link through the plan preview, CSV/JSON), search with owners and totals, storage tiers by age with costs, permissions with CSV | Phase 17 Task 84 |
-| WinDirStat: cleanups, compression, recovery | **Part**: open, delete to Recycle Bin, terminal, properties | Phase 17 Task 85 |
+| WinDirStat: cleanups, compression, recovery | **Has** (0.23.0): Delete permanently, Replace with hard links, Windows system cleanups, your own Cleanups, Compress (NTFS), Remove empty folders, folder dates, an Explorer menu, and `keel recover` for deleted files on NTFS, exFAT and FAT ([files.md](files.md#delete-permanently-hard-links-and-system-cleanups)) | Phase 17 Task 85 |
 | WinDirStat: export and command line | **Part**: `keel du` exports the tree, file types and largest files as CSV (BOM option) or JSON, writes an HTML report (with a mail draft), loads JSON scans back, takes every scan filter and link option as a flag, exits with codes for unattended runs; API `du.scan`, `du.result`, `du.export` (MCP tools); no exports of duplicates or permissions yet (Task 84 has no lists to export), no export or report from a window, no clipboard copy, no Settings page | Phase 17 Task 86 |
 
 The owner also asked for a macOS Finder-style interface: [Phase 14](superpowers/plans/2026-10-12-keel-phase14.md), planned first so the surfaces of Phases 15 to 17 are built in it.
 
-Two rows above were found out of date by the audit and are corrected in Phase 16: the Windows shell menu exists (Atlas table, "Searchable context menus"), and keyboard shortcuts were not configurable beyond the global hotkey (Spacedrive table, "Keybinds"; configurable since Phase 16 Task 76).
+Two rows above were found out of date by the audit and are now corrected: the Windows shell menu exists since 0.19.0 (Atlas table, "Searchable context menus"), and keyboard shortcuts are configurable since 0.23.0 (Spacedrive table, "Keybinds").
 
 ## Ranked gaps
 
@@ -221,32 +221,32 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 
 | # | Gap | Reference | Why | Effort |
 | --- | --- | --- | --- | --- |
-| 1 | Native Windows shell context menu (installed handlers, Send to, Open with), searchable | Atlas; README roadmap | D: the main thing still sending a user back to Explorer | M |
-| 2 | Undo for file operations (Ctrl+Z) | Spacedrive `files.undo` | D: open since the 0.1.0 known gaps | M |
-| 3 | Previews of HEIC and AVIF photos, camera RAW, audio and fonts | Spacedrive Quick Preview; spec 2.3 | R: previews; iPhone photos are HEIC. Spec 2.3 lists HEIC, audio and fonts, none built | M |
-| 4 | Folder sizes and a Sizes view | Spacedrive Size view | D: there is no way to see what fills a disk | M |
-| 5 | Color themes beyond dark and light (built-ins plus VS Code color themes) | Atlas | R: section 1 asks for color themes | S-M |
+| 1 | Native Windows shell context menu (installed handlers, Send to, Open with), searchable (**done**, 0.19.0: [files.md](files.md#windows-shell-menu)) | Atlas; README roadmap | D: the main thing still sending a user back to Explorer | M |
+| 2 | Undo for file operations (Ctrl+Z) (**done**, 0.19.0: [Copy, move and delete](getting-started.md#copy-move-and-delete)) | Spacedrive `files.undo` | D: open since the 0.1.0 known gaps | M |
+| 3 | Previews of HEIC and AVIF photos, camera RAW, audio and fonts (**done**, 0.19.0: [features.md](features.md); not CR3, RAF or woff) | Spacedrive Quick Preview; spec 2.3 | R: previews; iPhone photos are HEIC | M |
+| 4 | Folder sizes and a Sizes view (**done**, 0.19.0: [files.md](files.md#folder-sizes-and-the-sizes-view)) | Spacedrive Size view | D: there was no way to see what fills a disk | M |
+| 5 | Color themes beyond dark and light (built-ins plus VS Code color themes) (**done**, 0.19.0: [files.md](files.md#color-themes)) | Atlas | R: section 1 asks for color themes | S-M |
 | 6 | FTP and FTPS remotes (**done**, Phase 11: [remotes.md](remotes.md#ftp-and-ftps); browsing and copies, not mounts) | Atlas | R: section 1 asks for "cloud and FTP mounts" | S |
-| 7 | Faster copying of many small files (a parallel queue) | Atlas | **Done** (unreleased): about 3,000 files/s, was 860, against a claimed 3,800 | S-M |
-| 8 | **Done** (unreleased; not yet checked on a machine with WSL, see [Checking](wsl.md#checking)): WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window ([wsl.md](wsl.md)) | spec section 1 | R: CLI and WSL | S |
+| 7 | Faster copying of many small files (a parallel queue) | Atlas | **Done**: about 3,000 files/s, was 860, against a claimed 3,800 | S-M |
+| 8 | **Done** (not yet checked on a machine with WSL, see [Checking](wsl.md#checking)): WSL: distributions' files in the sidebar; `keel` from inside WSL opens the window ([wsl.md](wsl.md)) | spec section 1 | R: CLI and WSL | S |
 | 9 | Mounts in the Windows and macOS release builds | Spacedrive | R: cloud as folders for every program. Needs the owner (licensing, see the plan) | M |
 | 10 | Signed builds and package channels (winget, Scoop, Homebrew, Flatpak or AppImage) | both are commercial | F. Needs the owner (certificates, account submissions) | M |
-| 11 | Text inside documents in library search (OCR later) (**done** (unreleased): [library.md](library.md#searching); text, PDF, Office and OpenDocument files; no OCR) | Spacedrive; spec 2.10 Search | D | M-L |
+| 11 | Text inside documents in library search (OCR later) (**done**: [library.md](library.md#searching); text, PDF, Office and OpenDocument files; no OCR) | Spacedrive; spec 2.10 Search | D | M-L |
 | 12 | Fuzzy finder over files, not only folders (**done**: Ctrl+P finds files, [files.md](files.md#finding-folders-and-files-ctrlp)) | Atlas | D | S |
 | 13 | Folder sync or mirror between sources | Spacedrive File Sync | R: the owner's other machines | L |
-| 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** (unreleased, [library.md](library.md#backup-and-restore)) | S |
-| 15 | Drag-out on macOS and Linux (**done** (unreleased): [files.md](files.md#dragging-files-to-other-apps); Linux through X11 or XWayland) | Spacedrive v1; README roadmap | F | M |
+| 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** ([library.md](library.md#backup-and-restore)) | S |
+| 15 | Drag-out on macOS and Linux (**done**: [files.md](files.md#dragging-files-to-other-apps); Linux through X11 or XWayland) | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
-| 17 | An icon or color per folder (**done**, unreleased: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
+| 17 | An icon or color per folder (**done**: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
 | 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
-| 19 | Tag assign mode with number keys (**done**, unreleased: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
+| 19 | Tag assign mode with number keys (**done**: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
-| 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D. **Done** (unreleased, [files.md](files.md#inspector)) | S-M |
+| 21 | Inspector panel (copies, provenance, history in one place) | Spacedrive | D. **Done** ([files.md](files.md#inspector)) | S-M |
 | 22 | Dated freezes and browsing a past state | Spacedrive | — | L |
 | 23 | Index replication between devices, proxy pairing | Spacedrive alpha | — | L |
 | 24 | Extensions and source adapters (Gmail, Obsidian, GitHub) | Spacedrive (in progress, mockup) | spec Phase 9 stretch | L |
-| 25 | Agent skill, `keel op <name>`, generated SDK (**done**, unreleased: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); no generated SDK) | Spacedrive | — | S |
-| 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | **Done** (unreleased, [files.md](files.md#folder-operations)) | S each |
+| 25 | Agent skill, `keel op <name>`, generated SDK (**done**: [agent-skill.md](agent-skill.md) and [`keel op`](api.md#keel-op-any-operation-by-name); no generated SDK) | Spacedrive | — | S |
+| 26 | Folder merge, organize, flatten, set attributes, create links | Spacedrive operations | **Done** ([files.md](files.md#folder-operations)) | S each |
 | 27 | Docker image for `keel-daemon`; native phone apps | Spacedrive | the PWA covers phones | S; L |
 | 28 | AI labels, folder summaries, transcription | Spacedrive (v1 labels; the rest planned) | out of scope for now | L |
 | 29 | Finder-style interface (unified toolbar, sidebar sections, list with disclosure triangles, Gallery, Quick Look, Get Info, tag colors) | owner request | D, F | L (Phase 14). **Done** (0.23.0); the Windows title bar buttons and Mica backdrop are untested on real hardware |

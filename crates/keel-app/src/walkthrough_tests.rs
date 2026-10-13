@@ -1020,6 +1020,24 @@ fn move_and_delete_confirmation() {
     assert!(a.join("notes.md").exists(), "still there");
 }
 
+/// Each confirmation's yes button says what it does: Remove source is not "Move to trash".
+#[test]
+fn confirm_buttons_name_their_action() {
+    let root = demo();
+    let (mut h, base, _lib) = with_library("confirm", &root.join("Documents"), root);
+    let id = keel_core::SourceId("walk-src".into());
+    sm(&mut h).run(0, Action::Library(crate::library::LibCmd::RemoveSource(id)));
+    h.run_steps(2);
+    assert!(has_contains(&h, "from the library?"));
+    assert!(has(&h, "Remove"));
+    assert!(!has(&h, "Move to trash"));
+    click(&mut h, "Cancel");
+    assert!(s(&h).dialog.is_none());
+    close_library(&mut h);
+    drop(h);
+    let _ = std::fs::remove_dir_all(base);
+}
+
 // ---------------------------------------------------------------------------------------
 // Rename, bulk rename, new items
 
@@ -1198,6 +1216,54 @@ fn new_folder_and_new_file() {
     assert_eq!(read(&a.join("New file.txt")), "keep");
 }
 
+/// Resting the pointer on a file shows its preview floating after the delay (a text file,
+/// then a photo); a key hides it; Quick Look and the setting keep it off.
+#[test]
+fn hover_preview_after_a_rest() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let settings = crate::settings::Settings {
+        hover_preview_ms: 200,
+        ..Default::default()
+    };
+    let mut h = app_with(boot(&docs, &root.join("Pictures"), settings), SIZE);
+    let shown = |name: &'static str| {
+        move |s: &AppState| s.hover.shown.as_ref().is_some_and(|p| p.name() == name)
+    };
+    let rest_on = |h: &mut H, name: &str| {
+        let at = row(h, name, 0);
+        h.input_mut().events.push(Event::PointerMoved(at));
+        h.run_steps(2);
+    };
+    rest_on(&mut h, "notes.md");
+    assert!(s(&h).hover.shown.is_none(), "not before the delay");
+    assert!(wait(&mut h, 20, &shown("notes.md")), "text preview");
+    shot(&mut h, "hover-preview");
+
+    key(&mut h, NONE, Key::Escape);
+    assert!(s(&h).hover.shown.is_none(), "a key hides it");
+    h.run_steps(20);
+    assert!(
+        s(&h).hover.shown.is_none(),
+        "until the pointer rests on another file"
+    );
+
+    rest_on(&mut h, "lake.jpg");
+    assert!(wait(&mut h, 20, &shown("lake.jpg")), "image preview");
+
+    // Never over Quick Look, which shows the file large already.
+    sm(&mut h).finder.quicklook.open = true;
+    rest_on(&mut h, "notes.md");
+    h.run_steps(20);
+    assert!(s(&h).hover.shown.is_none(), "not over Quick Look");
+    let ctx = s(&h).ctx.clone();
+    sm(&mut h).finder.quicklook.close(&ctx);
+
+    sm(&mut h).settings.hover_preview = false;
+    h.run_steps(2);
+    assert!(s(&h).hover.shown.is_none(), "off in Settings");
+}
+
 /// Ctrl+Shift+O lists apps for the file (nothing is launched); Properties shows the facts.
 #[test]
 fn open_with_and_properties() {
@@ -1263,6 +1329,52 @@ fn open_with_and_properties() {
     assert!(!s(&h).info.windows.iter().any(|w| w.follow));
     sm(&mut h).info.windows.clear();
     h.run_steps(2);
+}
+
+/// A folder's context menu adds it to the sidebar's Favorites, where a click opens it and
+/// a right-click removes it; adding it again changes nothing.
+#[test]
+fn add_folders_to_the_sidebar_from_their_menu() {
+    use crate::sidebar_prefs::{Favorite, SidebarCmd};
+    let root = demo();
+    let docs = root.join("Documents");
+    let mut h = app(&docs, &root.join("Pictures"));
+    let projects = VPath::local(docs.join("Projects"));
+    let pinned = |s: &AppState| {
+        (s.settings.sidebar.favorites.iter())
+            .filter(|f| matches!(f, Favorite::Folder { folder, .. } if *folder == projects))
+            .count()
+    };
+    assert_eq!(pinned(s(&h)), 0);
+    right_click_row(&mut h, "Projects");
+    click(&mut h, "Add to Sidebar");
+    assert_eq!(pinned(s(&h)), 1);
+    assert_eq!(
+        s(&h).settings.sidebar.favorites.last().map(Favorite::label),
+        Some("Projects".into()),
+        "added at the end"
+    );
+    h.run_steps(2);
+
+    // The sidebar's row (left of the panes) opens the folder.
+    let in_sidebar = |h: &H| {
+        h.query_all_by_label("Projects")
+            .map(|n| center_of(&n))
+            .find(|p| p.x < 150.0)
+            .expect("sidebar row")
+    };
+    let at = in_sidebar(&h);
+    click_at(&mut h, at, NONE, PointerButton::Primary);
+    assert!(wait(&mut h, 20, &|s| dir_is(s, 0, &docs.join("Projects"))));
+
+    // Adding it again changes nothing.
+    sm(&mut h).run(0, Action::Sidebar(SidebarCmd::PinFolder(projects.clone())));
+    assert_eq!(pinned(s(&h)), 1);
+
+    let at = in_sidebar(&h);
+    click_at(&mut h, at, NONE, PointerButton::Secondary);
+    click(&mut h, "Remove from Sidebar");
+    assert_eq!(pinned(s(&h)), 0);
 }
 
 // ---------------------------------------------------------------------------------------

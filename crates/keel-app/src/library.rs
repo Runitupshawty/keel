@@ -2351,6 +2351,7 @@ impl AppState {
                         "Remove {label} from the library? Its index (tags included) is deleted; \
                          the files themselves are not touched."
                     ),
+                    yes: "Remove",
                     on_yes: Action::Library(LibCmd::RemoveConfirmed(id)),
                 });
             }

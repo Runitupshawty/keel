@@ -770,6 +770,10 @@ pub fn context_menu(
     }
     if on_item {
         ui.separator();
+        if let Some(e) = entry.filter(|e| e.kind == keel_vfs::Kind::Dir) {
+            let pin = crate::sidebar_prefs::SidebarCmd::PinFolder(e.path.clone());
+            item(ui, "Add to Sidebar", "", Action::Sidebar(pin));
+        }
         item(ui, "Rename", "F2", Action::Rename);
         item(ui, "Bulk rename…", "Ctrl+F2", Action::BulkRename);
         item(ui, "Delete", "Del", Action::Delete);
@@ -935,6 +939,9 @@ pub fn handle_click(
     out: &mut Vec<Action>,
 ) {
     let mods = r.ctx.input(|i| i.modifiers);
+    if r.hovered() {
+        crate::hover::stash(&r.ctx, entry);
+    }
     if r.double_clicked() {
         tab.click(&entry.name, false, false);
         out.push(Action::Enter);

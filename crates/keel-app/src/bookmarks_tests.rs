@@ -231,9 +231,10 @@ fn profile_bookmarks_round_trip() {
 
     // Delete asks first.
     s.run(0, Action::Find(FindCmd::AskDelete(Store::Profile, 1)));
-    let Some(crate::dialogs::Dialog::Confirm { on_yes, .. }) = s.dialog.take() else {
+    let Some(crate::dialogs::Dialog::Confirm { yes, on_yes, .. }) = s.dialog.take() else {
         panic!("asks first");
     };
+    assert_eq!(yes, "Delete");
     assert_eq!(s.settings.bookmarks.len(), 2);
     s.run(0, on_yes);
     assert_eq!(names(&s), ["Receipts"]);

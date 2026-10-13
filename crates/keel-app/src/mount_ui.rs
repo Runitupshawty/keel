@@ -390,6 +390,11 @@ impl AppState {
                 }
                 self.dialog = Some(crate::dialogs::Dialog::Confirm {
                     text,
+                    yes: if method == "mounts.remove" {
+                        "Unmount"
+                    } else {
+                        "Mount"
+                    },
                     on_yes: Action::Mount(MountCmd::Execute {
                         plan_id: plan.plan_id,
                         input_hash: plan.input_hash,
