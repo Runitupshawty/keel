@@ -709,7 +709,7 @@ A theme with `uiTheme: "vs"` is light, any other dark; a missing key takes the b
 
 ## Folder colors and icons
 
-A folder in a library source can have a color and an icon of its own. Right-click it (in any view, a `library://` tab included) and choose:
+A folder in a library source can have a color and an icon of its own, and a file an icon. Right-click it (in any view, a `library://` tab included) and choose:
 
 - **Folder color**: one of the tag palette's colors (Red, Orange, Yellow, Green, Teal, Blue, Purple, Pink, Gray), or **Clear**.
 - **Folder icon**: one of 40 common emoji, **Type an emoji…** for any other (one emoji: Win+. on Windows or Ctrl+Cmd+Space on macOS opens the system's emoji panel; `theme:<name>` also works there), **Icon theme** (when an [icon theme](#icon-themes) is installed: its own icons for folders named `src`, `docs`, `music` and so on, for any folder), or **Clear**.
@@ -717,6 +717,8 @@ A folder in a library source can have a color and an icon of its own. Right-clic
 The color tints the folder's icon in every view (Details, Grid, Columns, the media view) and puts a dot after its name in Details; an emoji takes the place of the folder icon, drawn in the folder's color when it has one. The sidebar's library section shows a styled source's icon next to its name, and Ctrl+P shows a styled folder's icon in its results. Screen readers hear "Folder color: Red" and "Folder icon: 📷".
 
 Styles are kept in the library, never in the folder itself: the folder is not touched, and another program or file manager does not see them. They follow the folder when it is renamed or moved within its source (the library index records the move), they go when the folder is deleted or its source is removed from the library, and they are in a [library backup](library.md#backup-and-restore). With library sync on, they reach your other devices like tags kept by place: on the other device the style shows on this folder in its `node://` source of this device's folder ([Devices](devices.md)).
+
+A file's menu has **File icon** (no color): the same emoji and **Type an emoji…**, and **Icon theme** (when an icon theme is installed) lists the theme's icons by file name and extension (`package.json`, `.rs`, …), so a file can take another type's icon; `theme:.rs` typed in the dialog works too. The icon replaces the file's own in Details, Columns, Gallery, the path bar, Ctrl+P, and in Grid and the media view when the file has no thumbnail (a picture's thumbnail still shows). Screen readers hear "File icon: 📌". It is kept, follows the file and syncs like a folder's style.
 
 A folder outside every library source cannot be styled: its menu says **Add the folder's drive to the library to style it** (Library → **Add source…**). With the library off it says how to turn it on. `library.folder_style` and `library.set_folder_style` read and set styles through the API ([api.md](api.md)).
 

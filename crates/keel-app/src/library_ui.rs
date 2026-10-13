@@ -173,7 +173,7 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
             }
             // Task 56: a styled source root shows its folder icon.
             if let Some(style) = style {
-                crate::folder_style::slot(ui, crate::icons::folder(), Some(style));
+                crate::folder_style::slot(ui, crate::icons::folder(), Some(style), true);
             }
         })
         .on_hover_text(&s.detail);

@@ -759,11 +759,12 @@ pub fn context_menu(
             Action::CopyLink(e.path.clone()),
         );
     }
-    // Task 56: Folder color, Folder icon.
+    // Task 56: Folder color, Folder icon (a file: File icon).
     let mut styled = Vec::new();
-    if let Some(e) = entry.filter(|e| e.kind == keel_vfs::Kind::Dir) {
+    if let Some(e) = entry {
         ui.separator();
-        crate::folder_style::menu(ui, &e.path, &mut styled);
+        let dir = e.kind == keel_vfs::Kind::Dir;
+        crate::folder_style::menu(ui, &e.path, dir, &mut styled);
     }
     if on_item {
         ui.separator();

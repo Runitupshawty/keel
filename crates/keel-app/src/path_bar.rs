@@ -131,7 +131,7 @@ fn crumb(ui: &mut egui::Ui, p: usize, c: &Crumb, out: &mut Vec<(usize, Action)>)
     } else {
         crate::icons::file_icon(&c.label)
     };
-    crate::folder_style::paint(ui, icon_rect, base, style.as_ref(), false);
+    crate::folder_style::paint(ui, icon_rect, base, style.as_ref(), c.dir, false);
     let text_at = egui::pos2(
         icon_rect.right() + 4.0,
         rect.center().y - galley.size().y / 2.0,

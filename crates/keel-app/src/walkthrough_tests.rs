@@ -2852,7 +2852,7 @@ fn inspector_copies_and_folder_totals() {
 
 /// Task 56: right-click a folder → Folder color → Red: the dot shows after its name;
 /// Folder icon → 📷: the row shows the emoji; Clear both. Outside the library the menu
-/// says why it cannot style.
+/// says why it cannot style. A file has File icon only: 📌, then Clear.
 #[test]
 #[ignore]
 fn library_folder_color_and_icon() {
@@ -2935,6 +2935,23 @@ fn library_folder_color_and_icon() {
     );
     h.run_steps(3);
     assert!(!has_contains(&h, "Folder color:") && !has_contains(&h, "Folder icon:"));
+    // A file: File icon only (no color); the row shows the emoji, then it is cleared.
+    let todo = VPath::local(docs.join("todo.txt"));
+    let pinned = |s: &AppState| s.library.style_of(&todo).and_then(|t| t.emoji()) == Some("📌");
+    right_click_row(&mut h, "todo.txt");
+    assert!(!has(&h, "Folder color") && !has(&h, "Folder icon"));
+    click(&mut h, "File icon");
+    click_last(&mut h, "📌");
+    assert!(wait(&mut h, 10, &pinned), "the file's icon");
+    h.run_steps(3);
+    assert!(has(&h, "File icon: 📌"), "{}", dump(&h, "File"));
+    right_click_row(&mut h, "todo.txt");
+    click(&mut h, "File icon");
+    click_last(&mut h, "Clear icon");
+    assert!(
+        wait(&mut h, 10, &|s| s.library.style_of(&todo).is_none()),
+        "the file's icon cleared"
+    );
     close_library(&mut h);
 }
 

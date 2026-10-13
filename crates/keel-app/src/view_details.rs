@@ -390,10 +390,8 @@ pub fn ui(
                     .map(|(s, _)| s);
                 let offline =
                     source.filter(|s| matches!(s.status, keel_core::SourceStatus::Offline { .. }));
-                // Task 56: a folder's color and icon.
-                let style = (e.kind == Kind::Dir)
-                    .then(|| real.as_ref().and_then(|r| lib.style_of(r)))
-                    .flatten();
+                // Task 56: a folder's color and icon, a file's icon.
+                let style = real.as_ref().and_then(|r| lib.style_of(r));
                 // Task 67: tag color dots after the name.
                 let dots = lib.dots(&e.path);
                 for &c in &cols {
@@ -423,7 +421,12 @@ pub fn ui(
                                             ui.add_space(TRIANGLE_W);
                                         }
                                     }
-                                    crate::folder_style::slot(ui, crate::icons::icon_for(e), style);
+                                    crate::folder_style::slot(
+                                        ui,
+                                        crate::icons::icon_for(e),
+                                        style,
+                                        e.kind == Kind::Dir,
+                                    );
                                     if e.encrypted {
                                         ui.add(
                                             egui::Image::new(crate::icons::lock())

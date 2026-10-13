@@ -98,6 +98,13 @@ pub fn theme_folder_names() -> Vec<String> {
     }
 }
 
+/// The file names and `.ext` extensions the icon theme has an icon for (empty without a
+/// theme): a file's `theme:<name>` icons.
+pub fn theme_file_names() -> Vec<String> {
+    let theme = THEME.read().unwrap_or_else(|e| e.into_inner());
+    (theme.as_deref()).map_or_else(Vec::new, |t| t.file_names(LIGHT.load(Ordering::Relaxed)))
+}
+
 pub fn folder_open() -> ImageSource<'static> {
     themed(|t, light| t.folder(None, true, light))
         .or_else(|| {

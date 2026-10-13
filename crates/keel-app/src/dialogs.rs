@@ -55,6 +55,8 @@ pub enum Dialog {
     /// Task 56: Folder icon → Type an emoji…: one emoji (or `theme:<name>`) for `path`.
     FolderIcon {
         path: VPath,
+        /// A folder (else a file).
+        dir: bool,
         text: String,
         error: Option<String>,
         focus: bool,
@@ -243,11 +245,13 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             }
             Dialog::FolderIcon {
                 path,
+                dir,
                 text,
                 error,
                 focus,
             } => {
-                ui.strong(format!("Folder icon for {}", path.name()));
+                let what = if *dir { "Folder" } else { "File" };
+                ui.strong(format!("{what} icon for {}", path.name()));
                 ui.label("Type or paste one emoji (Win+. or Ctrl+Cmd+Space opens the emoji panel)");
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
                 let r = crate::a11y::Named::named(r, "Emoji");
@@ -265,8 +269,8 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.horizontal(|ui| {
                     if ui.button("Set icon").clicked() || enter {
                         let icon = text.trim();
-                        let names = crate::icons::theme_folder_names();
-                        *error = crate::folder_style::icon_error(icon, &names);
+                        let names = crate::folder_style::theme_names(*dir);
+                        *error = crate::folder_style::icon_error(icon, &names, *dir);
                         if error.is_none() {
                             out = Some(Action::Library(crate::library::LibCmd::FolderStyle {
                                 path: path.clone(),

@@ -156,7 +156,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Drop zone | yes | [AT] | **Has** ([files.md](files.md#columns-view-and-drop-zone)) |
 | Drag and drop | yes | [AT] | **Has** (Atlas is Windows-only, where Keel's drag-out works) |
 | Cloud integration | yes | [AT] | **Has** |
-| Custom folder and file icons | "change folder and file icons" | [AT] | **Part**: a color and an emoji or icon-theme icon per folder in a library source; file icons come from the icon theme |
+| Custom folder and file icons | "change folder and file icons" | [AT] | **Has** (unreleased, [files.md](files.md#folder-colors-and-icons)): a color and an emoji or icon-theme icon per folder, and an emoji or icon-theme icon per file, in a library source |
 | Filter by typing | yes | [AT] | **Has** |
 | Multiple profiles and sessions | yes | [AT] | **Has** (unreleased): profiles, each with a restored session and named sessions ([files.md](files.md#profiles)) |
 | Rich color themes | yes | [AT] | **Has**: six built-in themes, your own TOML files and VS Code color themes from the Marketplace ([files.md](files.md#color-themes)) |
@@ -237,7 +237,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** ([library.md](library.md#backup-and-restore)) | S |
 | 15 | Drag-out on macOS and Linux (**done**: [files.md](files.md#dragging-files-to-other-apps); Linux through X11 or XWayland) | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
-| 17 | An icon or color per folder (**done**: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
+| 17 | An icon or color per folder, an icon per file (**done**, file icons unreleased: [files.md](files.md#folder-colors-and-icons); folders and files in library sources) | Atlas | D | S-M |
 | 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
 | 19 | Tag assign mode with number keys (**done**: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |
