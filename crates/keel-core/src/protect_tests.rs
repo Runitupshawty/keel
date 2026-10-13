@@ -858,3 +858,28 @@ fn bughunt_drifted_record_does_not_inherit_old_content_copies() {
     assert_eq!(lib.redundancy_bounded(&changed, 50).unwrap().0.copies, 1);
     assert_eq!(lib.redundancy(&rec(&s[0], "copy1.txt")).unwrap().copies, 2);
 }
+
+#[test]
+fn bounded_redundancy_counts_source_aliases_once() {
+    let (data, files) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (a, b) = (files.path().join("a"), files.path().join("b"));
+    write(&a.join("x.txt"), "same content");
+    std::fs::create_dir(&b).unwrap();
+    std::fs::hard_link(a.join("x.txt"), b.join("x.txt")).unwrap();
+    let (lib, sources) = library(data.path(), &[&a, &b]);
+    assert_eq!(
+        lib.redundancy(&rec(&sources[0], "x.txt")).unwrap().copies,
+        1
+    );
+    bounded_matches(&lib, &rec(&sources[0], "x.txt"));
+    let volume = lib.volumes().unwrap().remove(0).id;
+    lib.set_volume_state(&volume, VolumeState::Archived)
+        .unwrap();
+    assert_eq!(
+        lib.redundancy(&rec(&sources[0], "x.txt"))
+            .unwrap()
+            .offline_copies,
+        1
+    );
+    bounded_matches(&lib, &rec(&sources[0], "x.txt"));
+}
