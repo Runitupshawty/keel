@@ -2785,6 +2785,29 @@ impl AppState {
                 }
                 self.plan_extract(src, dst);
             }
+            Action::ConvertImage => {
+                let paths = self.target_paths(p);
+                if paths.is_empty()
+                    || self
+                        .tab(p)
+                        .targets()
+                        .iter()
+                        .any(|e| e.kind == keel_vfs::Kind::Dir)
+                    || !paths.iter().all(crate::image_convert::supported)
+                {
+                    return self
+                        .toasts
+                        .error("Select local images supported by the image decoder");
+                }
+                let src = paths.iter().filter_map(VPath::to_local_path).collect();
+                self.dialog = Some(Dialog::ConvertImage(
+                    crate::image_convert::ConvertDialog::new(src),
+                ));
+            }
+            Action::ConvertImages { src, format, max } => {
+                self.undo.refuse("image conversion");
+                self.jobs.convert_images(src, format, max, self.tx.clone());
+            }
             Action::AddToZip | Action::CompressToZip => {
                 let Some(dir) = self.tab(p).dir.to_local_path() else {
                     return self.toasts.error("Zips can only be made in local folders");

@@ -16,6 +16,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - A generated Swift JSON-RPC client from the same Rust API registry as TypeScript, with Codable parameter/result types, exact 64-bit integers, preview-first methods, a registry drift test and Swift compile/runtime checks ([Swift client](docs/api.md#generated-swift-client)).
 - **Collections**: named, hand-ordered lists of files and folders from any sources. Right-click → **Add to collection** (a collection, or **New collection…**), or the command palette's **Add to collection: <name>**; the sidebar's **Collections** section (between Library and Bookmarks, hidden like the others from its header) opens one in a tab in its own order, where dragging a row onto another moves it before it (below the last row: to the end). **Remove from collection**, **Rename…** and **Delete…** never touch the files. See [Library](docs/library.md#library).
 - The API's `collections.list` and `collections.items`, and previewed `collections.create`, `collections.rename`, `collections.delete`, `collections.add`, `collections.remove` and `collections.move`. See [api.md](docs/api.md).
+- **Convert image…** in the file context menu and command palette: convert local images to PNG, JPEG or lossless WebP, with an optional maximum dimension that keeps proportions and never enlarges. Runs as a cancellable job with progress, writes beside the originals and never replaces an existing file. Animation and metadata are not retained; JPEG removes transparency.
 
 ### Changed
 

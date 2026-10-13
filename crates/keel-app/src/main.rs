@@ -37,6 +37,7 @@ mod hardlink_dedup; // Task 85: replace duplicates with hard links
 mod hover; // hover previews
 mod icon_theme;
 mod icons;
+mod image_convert;
 mod inspector;
 mod jobs;
 mod journal_ui; // Phase 15: the index journal tab

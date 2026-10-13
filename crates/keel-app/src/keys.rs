@@ -236,6 +236,12 @@ pub enum Action {
     AddToZip,
     /// Targets: ask for a zip name, then `ZipTo`.
     CompressToZip,
+    ConvertImage,
+    ConvertImages {
+        src: Vec<PathBuf>,
+        format: crate::image_convert::Format,
+        max: Option<u32>,
+    },
     ZipTo {
         zip: PathBuf,
         src: Vec<PathBuf>,

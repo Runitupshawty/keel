@@ -75,6 +75,7 @@ pub enum Dialog {
         text: String,
         focus: bool,
     },
+    ConvertImage(crate::image_convert::ConvertDialog),
     /// Task 53: Restore library…: what the backup holds and the new library's name.
     RestoreLibrary {
         file: PathBuf,
@@ -312,6 +313,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
             Dialog::ExportList(d) => out = crate::filelist_ui::dialog_ui(ui, d, &mut cancel),
+            Dialog::ConvertImage(d) => out = crate::image_convert::ui(ui, d, &mut cancel),
             Dialog::FolderOp(d) => out = crate::folder_ops::ui(ui, d, &mut cancel),
             Dialog::System(d) => out = crate::system_cleanup::dialog_ui(ui, d, &mut cancel),
             Dialog::Compress(d) => out = crate::compress_ui::ui(ui, d, &mut cancel),

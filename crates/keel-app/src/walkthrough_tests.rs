@@ -4009,3 +4009,34 @@ fn header_right_click_chooses_columns() {
     assert!(has(&h, "Modified"), "the others stay");
     let _ = std::fs::remove_dir_all(&cfg);
 }
+
+/// Convert from the context menu, then open the same dialog from the palette.
+#[test]
+fn convert_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("photo.png");
+    image::RgbaImage::new(12, 6).save(&src).unwrap();
+    let original = std::fs::read(&src).unwrap();
+    let mut h = app(dir.path(), dir.path());
+    right_click_row(&mut h, "photo.png");
+    click(&mut h, "Convert image…");
+    assert!(has(&h, "Maximum dimension (pixels, blank keeps size)"));
+    click(&mut h, "WebP");
+    click(&mut h, "Maximum dimension");
+    type_text(&mut h, "8");
+    click(&mut h, "Convert");
+    assert!(wait(&mut h, 20, &job_done));
+    let output = image::open(dir.path().join("photo.webp")).unwrap();
+    assert_eq!((output.width(), output.height()), (8, 4));
+    assert_eq!(std::fs::read(src).unwrap(), original);
+    sm(&mut h).tab_mut(0).click("photo.png", false, false);
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "Convert image");
+    click(&mut h, "Convert image…");
+    assert!(matches!(
+        s(&h).dialog,
+        Some(crate::dialogs::Dialog::ConvertImage(_))
+    ));
+    click(&mut h, "Cancel");
+    assert!(s(&h).dialog.is_none());
+}

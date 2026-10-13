@@ -168,7 +168,7 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Cloud drives: OneDrive | yes | [AT] | **No (decision)** |
 | Cloud drives "without syncing everything" | yes | [AT] | **Has** inside Keel; as an OS drive only in the Linux release |
 | Document preview: PDF, CSV, Word, PowerPoint | yes | [AT] | **Has**, plus xlsx, OpenDocument and code |
-| File tools: convert, compress and edit PDFs, videos and images | yes | [AT] | **Part**: compress means archives only; no conversion or editing |
+| File tools: convert, compress and edit PDFs, videos and images | yes | [AT] | **Part** (unreleased): image conversion to PNG/JPEG/WebP and resizing; archive compression; no PDF editing or video conversion |
 | Icon theme manager (VS Code themes) | yes | [AT] | **Has** ([files.md](files.md#icon-themes)) |
 | Media playback and galleries | yes | [AT] | **Has**: media view and viewer with playback |
 | A 5,000-file folder opens in 100 ms | benchmark claim | [AT] | **Has**: 100,000 files in 0.24 s warm ([performance.md](performance.md)) |
@@ -236,7 +236,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 13 | Folder sync or mirror between sources | Spacedrive File Sync | R: the owner's other machines | L |
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** ([library.md](library.md#backup-and-restore)) | S |
 | 15 | Drag-out on macOS and Linux (**done**: [files.md](files.md#dragging-files-to-other-apps); Linux through X11 or XWayland) | Spacedrive v1; README roadmap | F | M |
-| 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
+| 16 | File tools: merge and split PDFs, transcode video (image conversion and resizing done, unreleased) | Atlas | D | M |
 | 17 | An icon or color per folder (**done**: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
 | 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
 | 19 | Tag assign mode with number keys (**done**: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |

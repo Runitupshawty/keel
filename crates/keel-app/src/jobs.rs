@@ -510,6 +510,20 @@ impl Jobs {
         id
     }
 
+    pub fn convert_images(
+        &mut self,
+        src: Vec<PathBuf>,
+        format: crate::image_convert::Format,
+        max: Option<u32>,
+        tx: Sender<Msg>,
+    ) -> u64 {
+        self.spawn(
+            format!("Converting {}", items(src.len())),
+            tx,
+            move |report, cancel| crate::image_convert::run(&src, format, max, report, cancel),
+        )
+    }
+
     pub(crate) fn spawn(
         &mut self,
         title: String,

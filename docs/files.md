@@ -109,7 +109,7 @@ The options are kept per folder, like in Finder: changing them changes only the 
 
 A big preview of the selected item (pictures, PDF pages, video frames, audio, text, documents: what the [preview panel](getting-started.md) shows) with a strip of thumbnails under it and the item's details on the right: name, kind, size, modified date, where it is, and what the preview found (video and audio details, page count, lines of text). A folder shows a big folder icon. The arrow keys (all four), Home, End, PageUp and PageDown move through the items, and the preview follows; double-click the preview or press Enter to open the item.
 
-**Quick Actions** under the details run Keel's own commands on the selection: Open, Open with… (files), Extract here (archives), Compress… (local folders), Show in system file manager and Properties. Actions Keel does not have (rotating or marking up a picture, trimming a video) are not shown. Media view stays the photo and video grid.
+**Quick Actions** under the details run Keel's own commands on the selection: Open, Open with… (files), Convert image… (pictures Keel can decode, in local folders), Extract here (archives), Compress… (local folders), Show in system file manager and Properties. Actions Keel does not have (rotating or marking up a picture, trimming a video) are not shown. Media view stays the photo and video grid.
 
 ### Always open in
 
