@@ -305,6 +305,19 @@ fn has_contains(h: &H, part: &str) -> bool {
     h.query_all_by_label_contains(part).next().is_some()
 }
 
+/// Steps frames until a label containing `part` shows, for up to `secs` (like `wait`).
+fn shows(h: &mut H, secs: u64, part: &str) -> bool {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while !has_contains(h, part) {
+        if std::time::Instant::now() > end {
+            return false;
+        }
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    true
+}
+
 /// Drags with the primary button from `from` to `to`, a few frames per leg.
 fn drag(h: &mut H, from: Pos2, to: Pos2) {
     h.input_mut().events.push(Event::PointerMoved(from));
@@ -649,42 +662,39 @@ fn sizes_view_and_calculate_sizes() {
     let mut h = app(&dir, &demo().join("Documents"));
     click_nth(&mut h, "Sizes", 0);
     assert_eq!(s(&h).panes[0].view, ViewMode::Sizes);
+    let biggest_first = |s: &AppState| names(s, 0) == ["big", "mid.bin", "small"];
+    let walked = |s: &AppState| job_done(s) && s.sizes.gen > 1 && biggest_first(s);
     assert!(
-        wait(&mut h, 20, &|s| job_done(s) && s.sizes.gen > 1),
-        "walked"
+        wait(&mut h, 20, &walked),
+        "walked, biggest first: {:?}",
+        names(s(&h), 0)
     );
-    h.run_steps(3);
-    assert_eq!(
-        names(s(&h), 0),
-        ["big", "mid.bin", "small"],
-        "biggest first"
-    );
+    assert!(shows(&mut h, 10, "3 kB"), "big's total in the Size column");
     assert!(has(&h, "Share") && has(&h, "Of used"), "the Sizes columns");
-    assert!(has_contains(&h, "3 kB"), "big's total in the Size column");
     shot(&mut h, "sizes-view");
     sm(&mut h).tab_mut(0).click("big", false, false);
     key(&mut h, NONE, Key::Enter);
-    assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &dir.join("big")) && listed(s)));
-    h.run_steps(3);
-    assert_eq!(names(s(&h), 0), ["one.bin", "inner"]);
-    let inner = s(&h)
-        .tab(0)
-        .entries()
-        .iter()
-        .find(|e| e.name == "inner")
-        .unwrap()
-        .clone();
+    let inner_known = |s: &AppState| {
+        let inner = s.tab(0).entries().iter().find(|e| e.name == "inner");
+        matches!(inner.and_then(|e| s.sizes.get(e)), Some(crate::sizes::Size::Known(t)) if t.bytes == 1_000)
+    };
+    let down = |s: &AppState| {
+        dir_is(s, 0, &dir.join("big"))
+            && listed(s)
+            && names(s, 0) == ["one.bin", "inner"]
+            && inner_known(s)
+    };
     assert!(
-        matches!(s(&h).sizes.get(&inner), Some(crate::sizes::Size::Known(t)) if t.bytes == 1_000),
-        "known from the walk above"
+        wait(&mut h, 10, &down),
+        "big, inner known from the walk above: {:?}",
+        names(s(&h), 0)
     );
     key(&mut h, NONE, Key::Backspace);
     assert!(wait(&mut h, 10, &|s| dir_is(s, 0, &dir) && listed(s)));
     // Back in Details, the status bar counts a selected folder's total.
     click_nth(&mut h, "Details", 0);
     sm(&mut h).tab_mut(0).click("big", false, false);
-    h.run_steps(3);
-    assert!(has_contains(&h, "3 kB"), "the selected folder's total");
+    assert!(shows(&mut h, 10, "3 kB"), "the selected folder's total");
 
     // Calculate sizes over many folders, cancelled at once.
     for i in 0..400 {
