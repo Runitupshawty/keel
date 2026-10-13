@@ -2368,6 +2368,7 @@ pub fn extract_under(
                 ready.insert(parent.to_path_buf());
             }
             // The usual umask-filtered mode, not the temp file's private 0600.
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut staging = tempfile::Builder::new();
             #[cfg(unix)]
             staging.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
