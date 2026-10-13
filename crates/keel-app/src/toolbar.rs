@@ -64,16 +64,16 @@ impl Item {
     /// The label under the icon (Icon and Text) and in Customize Toolbar.
     pub fn label(self) -> &'static str {
         match self {
-            Item::Sidebar => "Sidebar",
-            Item::Navigation => "Back/Forward",
-            Item::Title => "Folder",
-            Item::Space => "Flexible Space",
-            Item::Views => "View",
-            Item::Group => "Group",
-            Item::Share => "Share",
-            Item::Tags => "Tags",
-            Item::Actions => "Action",
-            Item::Search => "Search",
+            Item::Sidebar => crate::i18n::tr("toolbar.item_sidebar"),
+            Item::Navigation => crate::i18n::tr("toolbar.item_navigation"),
+            Item::Title => crate::i18n::tr("toolbar.item_title"),
+            Item::Space => crate::i18n::tr("toolbar.item_space"),
+            Item::Views => crate::i18n::tr("toolbar.item_views"),
+            Item::Group => crate::i18n::tr("toolbar.item_group"),
+            Item::Share => crate::i18n::tr("toolbar.item_share"),
+            Item::Tags => crate::i18n::tr("toolbar.item_tags"),
+            Item::Actions => crate::i18n::tr("toolbar.item_actions"),
+            Item::Search => crate::i18n::tr("toolbar.item_search"),
         }
     }
 

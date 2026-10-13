@@ -53,9 +53,9 @@ pub fn drag_verb(ctx: &egui::Context) -> Option<&'static str> {
     let over = ctx.data(|d| d.get_temp::<bool>(hover_id()).unwrap_or(false));
     over.then(|| {
         if ctx.input(|i| i.modifiers.alt) {
-            "Copy"
+            crate::i18n::tr("path_bar.copy")
         } else {
-            "Move"
+            crate::i18n::tr("path_bar.move")
         }
     })
 }
@@ -170,16 +170,22 @@ fn crumb(ui: &mut egui::Ui, p: usize, c: &Crumb, out: &mut Vec<(usize, Action)>)
         }
     }
     r.context_menu(|ui| {
-        if ui.button("Copy as Pathname").clicked() {
+        if ui
+            .button(crate::i18n::tr("path_bar.copy_as_pathname"))
+            .clicked()
+        {
             out.push((p, Action::Finder(FinderCmd::CopyPathname(c.path.clone()))));
             ui.close_menu();
         }
         if c.dir {
-            if ui.button("Open").clicked() {
+            if ui.button(crate::i18n::tr("path_bar.open")).clicked() {
                 out.push((p, Action::Navigate(c.path.clone())));
                 ui.close_menu();
             }
-            if ui.button("Open in New Tab").clicked() {
+            if ui
+                .button(crate::i18n::tr("path_bar.open_in_new_tab"))
+                .clicked()
+            {
                 out.push((p, Action::NewTabAt(c.path.clone())));
                 ui.close_menu();
             }

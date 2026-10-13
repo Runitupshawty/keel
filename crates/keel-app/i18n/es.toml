@@ -334,3 +334,24 @@ settings = "Ajustes"
 "sidebar.pin" = "Añadir a la barra lateral"
 "filelist.open" = "Abrir lista de archivos…"
 "filelist.export" = "Exportar resultados…"
+
+# Los nombres de los elementos de la barra de herramientas (Item::label en toolbar.rs).
+[toolbar]
+item_sidebar = "Barra lateral"
+item_navigation = "Atrás/Adelante"
+item_title = "Carpeta"
+item_space = "Espacio flexible"
+item_views = "Visualización"
+item_group = "Grupo"
+item_share = "Compartir"
+item_tags = "Etiquetas"
+item_actions = "Acción"
+item_search = "Buscar"
+
+# La barra de ruta (path_bar.rs).
+[path_bar]
+copy_as_pathname = "Copiar como nombre de ruta"
+open = "Abrir"
+open_in_new_tab = "Abrir en una pestaña nueva"
+copy = "Copiar"
+move = "Mover"

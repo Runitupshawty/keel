@@ -234,3 +234,24 @@ index_service = "Index service"
 index_privacy = "Index privacy"
 hide_unlistable = "Hide files in folders you cannot open"
 hide_unlistable_tip = "Search results leave out files in other users' folders and system folders that Explorer would not show you"
+
+# The toolbar's item names (Item::label in toolbar.rs).
+[toolbar]
+item_sidebar = "Sidebar"
+item_navigation = "Back/Forward"
+item_title = "Folder"
+item_space = "Flexible Space"
+item_views = "View"
+item_group = "Group"
+item_share = "Share"
+item_tags = "Tags"
+item_actions = "Action"
+item_search = "Search"
+
+# The path bar (path_bar.rs).
+[path_bar]
+copy_as_pathname = "Copy as Pathname"
+open = "Open"
+open_in_new_tab = "Open in New Tab"
+copy = "Copy"
+move = "Move"
