@@ -1,4 +1,4 @@
-//! Cloud storage as folders: Google Drive, Dropbox, S3-compatible buckets and WebDAV over `opendal`,
+//! Cloud storage as folders: Google Drive, Dropbox, S3-compatible buckets, WebDAV and Azure Blob over `opendal`,
 //! addressed as `cloud://<account id>/path`. Synchronous like the SFTP provider: call on a
 //! worker thread. Tokens and keys live in a `SecretStore` (the OS keychain in the app),
 //! never in config, logs or error messages: errors carry only the opendal error kind and
@@ -52,6 +52,9 @@ pub struct CloudAccount {
     /// Required for `CloudKind::WebDav`; its password is the secret `<id>/password`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webdav: Option<WebDavConfig>,
+    /// Azure Blob metadata; the account key is stored as `<id>/account_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azure: Option<AzureBlobConfig>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CloudKind {
@@ -60,6 +63,7 @@ pub enum CloudKind {
     S3,
     /// Nextcloud, ownCloud, Synology, Apache mod_dav: any WebDAV collection URL.
     WebDav,
+    AzureBlob,
 }
 /// A WebDAV account (basic auth; the password or app password is in the secret store as
 /// `<id>/password`). The account's `root` is a folder below `url`.
@@ -113,6 +117,46 @@ pub struct S3Config {
     pub bucket: String,
 }
 
+/// Azure Blob storage with an account key (never kept in config).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AzureBlobConfig {
+    pub endpoint: String,
+    pub account_name: String,
+    pub container: String,
+}
+impl AzureBlobConfig {
+    pub fn validate(&self) -> Result<()> {
+        let url = url::Url::parse(self.endpoint.trim())
+            .map_err(|_| anyhow::anyhow!("enter the Azure Blob https:// endpoint"))?;
+        anyhow::ensure!(
+            url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && matches!(url.path(), "" | "/"),
+            "use an https:// endpoint without credentials, path, query or fragment"
+        );
+        anyhow::ensure!(
+            !self.account_name.trim().is_empty(),
+            "enter the account name"
+        );
+        let container = self.container.trim();
+        anyhow::ensure!(
+            (3..=63).contains(&container.len())
+                && container
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                && !container.starts_with('-')
+                && !container.ends_with('-')
+                && !container.contains("--"),
+            "enter a container name (3 to 63 lowercase letters, digits or single hyphens)"
+        );
+        Ok(())
+    }
+}
+
 pub use crate::provider::RemoveKind;
 
 /// Cloud failures a caller may want to tell apart (`anyhow::Error::downcast_ref`).
@@ -130,9 +174,10 @@ pub enum CloudError {
     Unavailable(String),
 }
 
-/// WebDAV uploads are one request with the whole file in memory (opendal's WebDAV writer
-/// does not stream), so they are capped. ponytail: chunked upload is server-specific.
-const WEBDAV_UPLOAD_LIMIT: u64 = 1024 * 1024 * 1024;
+/// WebDAV and Azure Blob use Keel's buffered upload path, with the whole file in memory,
+/// so they are capped. ponytail: use Azure's block uploads for bigger files; WebDAV
+/// chunked upload is server-specific.
+const BUFFERED_UPLOAD_LIMIT: u64 = 1024 * 1024 * 1024;
 /// Entries shown per folder. ponytail: a bigger folder is cut off here (and a warning
 /// logged); page it in the UI if anyone keeps that many files in one folder.
 const LIST_CAP: usize = 50_000;
@@ -142,7 +187,7 @@ impl CloudKind {
         match self {
             CloudKind::GoogleDrive => RemoveKind::Trash,
             CloudKind::Dropbox => RemoveKind::RecoverableDelete,
-            CloudKind::S3 | CloudKind::WebDav => RemoveKind::Permanent,
+            CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => RemoveKind::Permanent,
         }
     }
     fn name(self) -> &'static str {
@@ -151,12 +196,13 @@ impl CloudKind {
             CloudKind::Dropbox => "Dropbox",
             CloudKind::S3 => "S3",
             CloudKind::WebDav => "WebDAV",
+            CloudKind::AzureBlob => "Azure Blob",
         }
     }
     /// Largest file an upload may carry (Drive, Dropbox and S3 take bigger ones in chunks).
     fn upload_limit(self) -> Option<u64> {
         match self {
-            CloudKind::WebDav => Some(WEBDAV_UPLOAD_LIMIT),
+            CloudKind::WebDav | CloudKind::AzureBlob => Some(BUFFERED_UPLOAD_LIMIT),
             CloudKind::GoogleDrive | CloudKind::Dropbox | CloudKind::S3 => None,
         }
     }
@@ -174,7 +220,7 @@ impl CloudKind {
         let entry = table.get(match self {
             CloudKind::GoogleDrive => "google_drive",
             CloudKind::Dropbox => "dropbox",
-            CloudKind::S3 | CloudKind::WebDav => return None,
+            CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => return None,
         })?;
         let placeholder = |s: &str| s.trim().is_empty() || s.contains("YOUR_");
         (!placeholder(&entry.client_id)).then(|| OAuthClient {
@@ -299,7 +345,12 @@ pub fn sign_out_with(
     });
     forget_account(secrets, &account.id);
     match tokens {
-        Some(tokens) if !matches!(account.kind, CloudKind::S3 | CloudKind::WebDav) => {
+        Some(tokens)
+            if !matches!(
+                account.kind,
+                CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob
+            ) =>
+        {
             revoke(&tokens, &client)
         }
         _ => Ok(()),
@@ -722,7 +773,9 @@ fn oauth_op(kind: CloudKind, root: Option<&str>, access: &str) -> Result<opendal
                 .root(root)
                 .access_token(access),
         )?,
-        CloudKind::S3 | CloudKind::WebDav => anyhow::bail!("this account kind does not use OAuth"),
+        CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob => {
+            anyhow::bail!("this account kind does not use OAuth")
+        }
     })
 }
 
@@ -790,6 +843,28 @@ fn webdav_op(account: &CloudAccount, password: &str) -> Result<opendal::Operator
         .with_context(opendal::OperationContext::new().with_http_transport(transport)))
 }
 
+fn azure_op(account: &CloudAccount, account_key: &str) -> Result<opendal::Operator> {
+    let cfg = account
+        .azure
+        .as_ref()
+        .context("Azure Blob account without endpoint, account name and container")?;
+    cfg.validate()?;
+    let builder = opendal::services::Azblob::default()
+        .endpoint(cfg.endpoint.trim())
+        .account_name(cfg.account_name.trim())
+        .account_key(account_key)
+        // Only the explicitly entered key; never environment or instance credentials.
+        .credential_provider_chain(reqsign_core::ProvideCredentialChain::new().push(
+            reqsign_azure_storage::StaticCredentialProvider::new_shared_key(
+                cfg.account_name.trim(),
+                account_key,
+            ),
+        ))
+        .container(cfg.container.trim())
+        .root(account.root.as_deref().unwrap_or("/"));
+    Ok(opendal::Operator::new(builder)?)
+}
+
 impl CloudProvider {
     /// Builds the account's operator from the secret store. Reads the keychain but makes no
     /// network request: an expired access token is refreshed by the first operation.
@@ -819,6 +894,12 @@ impl CloudProvider {
                     .ok_or_else(missing)?;
                 s3 = Some(S3Api::new(account, &id, &secret)?);
                 (s3_op(account, &id, &secret)?, None)
+            }
+            CloudKind::AzureBlob => {
+                let account_key = secrets
+                    .get(&key("account_key"))?
+                    .context("Azure Blob account key missing from the keychain")?;
+                (azure_op(account, &account_key)?, None)
             }
             CloudKind::WebDav => {
                 let password = secrets
@@ -1422,8 +1503,31 @@ impl Core {
         let entry = self.stat_remote(p, &NEVER)?;
         let k = key(p, entry.kind == Kind::Dir);
         // Drive trashes and Dropbox deletes a folder with its contents in one request;
-        // S3 has no folders, so every key under the prefix goes.
-        let result = if entry.kind == Kind::Dir && self.account.kind == CloudKind::S3 {
+        // Object stores have no folders, so every key under the prefix goes.
+        let gcs = self.account.kind == CloudKind::S3
+            && self.account.s3.as_ref().is_some_and(|cfg| {
+                url::Url::parse(&cfg.endpoint)
+                    .ok()
+                    .is_some_and(|u| u.host_str() == Some("storage.googleapis.com"))
+            });
+        let result = if entry.kind == Kind::Dir && gcs {
+            // Google's XML API has no S3 DeleteObjects batch request.
+            self.call(p, |op| {
+                let entries = op.lister_options(
+                    &k,
+                    options::ListOptions {
+                        recursive: true,
+                        ..Default::default()
+                    },
+                )?;
+                for entry in entries {
+                    op.delete(entry?.path())?;
+                }
+                op.delete(&k)
+            })
+        } else if entry.kind == Kind::Dir
+            && matches!(self.account.kind, CloudKind::S3 | CloudKind::AzureBlob)
+        {
             self.call(p, |op| {
                 op.delete_options(
                     &k,
@@ -1620,7 +1724,7 @@ impl Provider for CloudProvider {
     fn local_copy(&self, p: &VPath) -> Result<PathBuf> {
         self.local_copy_cancellable(p, &|_| {}, &AtomicBool::new(false))
     }
-    /// Drive and Dropbox; None for S3 and WebDAV, and when the request fails.
+    /// Drive and Dropbox; None for S3, Azure Blob and WebDAV, or a failed request.
     fn quota(&self) -> Option<crate::Quota> {
         self.core
             .quota()

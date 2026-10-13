@@ -20,7 +20,7 @@ rar = ["dep:unrar_sys"]
 test-util = []
 # `fuzz::*`, the entry points of the libFuzzer targets in `fuzz/`.
 fuzzing = []
-# Google Drive, Dropbox and S3 (`cloud::`): opendal, reqwest, rustls + graviola, the OAuth
+# Google Drive, Dropbox, S3, WebDAV and Azure Blob (`cloud::`): opendal, reqwest, rustls + graviola, the OAuth
 # loopback listener and the browser hand-off.
 cloud = [
     "dep:opendal",
@@ -28,6 +28,7 @@ cloud = [
     "dep:reqwest",
     "dep:reqsign-core",
     "dep:reqsign-aws-v4",
+    "dep:reqsign-azure-storage",
     "dep:tiny_http",
     "dep:open",
     "dep:base64",
@@ -75,6 +76,7 @@ opendal-http-transport-reqwest = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 reqsign-core = { workspace = true, optional = true }
 reqsign-aws-v4 = { workspace = true, optional = true }
+reqsign-azure-storage = { version = "3", optional = true }
 tiny_http = { workspace = true, optional = true }
 # TLS for the cloud services and FTPS: rustls with graviola's pure-Rust crypto.
 rustls.workspace = true

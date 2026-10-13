@@ -55,7 +55,8 @@ pub use volume::{volume_info, VolumeInfo, VolumeType};
 // --- end Task 33 ---
 #[cfg(feature = "cloud")]
 pub use cloud::{
-    CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore, WebDavConfig,
+    AzureBlobConfig, CloudAccount, CloudError, CloudKind, CloudProvider, S3Config, SecretStore,
+    WebDavConfig,
 };
 pub use entry::{Entry, Kind};
 pub use ftp::FtpProvider;
@@ -221,6 +222,7 @@ mod tests {
                 client_id_override: None,
                 s3: None,
                 webdav: None,
+                azure: None,
             };
             let cloud =
                 crate::CloudProvider::with_operator(account, op, crossbeam_channel::unbounded().0)

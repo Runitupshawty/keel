@@ -4040,3 +4040,52 @@ fn convert_image() {
     click(&mut h, "Cancel");
     assert!(s(&h).dialog.is_none());
 }
+
+/// The Azure account form is reachable through the cloud wizard and names each field.
+#[test]
+fn cloud_wizard_offers_azure_blob_and_its_key_fields() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    sm(&mut h).clouds.wizard = Some(crate::clouds::Wizard::default());
+    h.run();
+    click(&mut h, "Azure Blob");
+    assert_eq!(
+        s(&h).clouds.wizard.as_ref().unwrap().kind,
+        keel_vfs::CloudKind::AzureBlob
+    );
+    for label in [
+        "Endpoint",
+        "Account name",
+        "Container",
+        "Key prefix",
+        "Account key",
+        "Save",
+    ] {
+        assert!(has(&h, label), "{label}");
+    }
+    assert!(!has(&h, "Client id"));
+    click(&mut h, "Save");
+    assert!(
+        s(&h).clouds.wizard.as_ref().unwrap().error.is_some(),
+        "incomplete fields are refused"
+    );
+    click(&mut h, "Cancel");
+    assert!(s(&h).clouds.wizard.is_none());
+}
+
+#[test]
+fn cloud_wizard_gcs_preset_prefills_the_s3_form() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    sm(&mut h).clouds.wizard = Some(crate::clouds::Wizard::default());
+    h.run();
+    click(&mut h, "Google Cloud Storage (HMAC)");
+    let wizard = s(&h).clouds.wizard.as_ref().unwrap();
+    assert_eq!(wizard.kind, keel_vfs::CloudKind::S3);
+    assert_eq!(wizard.endpoint, "https://storage.googleapis.com");
+    assert_eq!(wizard.region, "auto");
+    assert!(has(&h, "Access key id") && has(&h, "Secret key"));
+    assert!(!has(&h, "Client id"));
+    click(&mut h, "Cancel");
+    assert!(s(&h).clouds.wizard.is_none());
+}

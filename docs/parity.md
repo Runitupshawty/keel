@@ -116,7 +116,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | --- | --- | --- | --- |
 | S3, Google Drive, Dropbox as sources | alpha | [SD-REL] | **Has**, plus WebDAV ([README](../README.md#cloud-accounts-bring-your-own-client-id)) |
 | OneDrive | alpha | [SD-REL] | **No (decision)**: the spec says never OneDrive |
-| "12+ services" through OpenDAL | alpha | [SD-REL] | **Part**: S3, Drive, Dropbox, WebDAV and SFTP |
+| "12+ services" through OpenDAL | alpha | [SD-REL] | **Part** (unreleased): S3 (including Backblaze B2 and Google Cloud Storage via HMAC), Drive, Dropbox, WebDAV, Azure Blob and SFTP; fewer than 12 backends |
 | Optional encrypted cloud backup, a paid cloud service | planned; 2023 announcement | [SD-DIR], [SD-B23] | **No (decision)**: no accounts or hosted service |
 | Cloud jobs (OCR, transcription) with spending limits | planned | [SD-DIR] | **Lacks** |
 

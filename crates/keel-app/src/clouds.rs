@@ -16,8 +16,9 @@ use keel_vfs::cloud::{
     AUTH_TIMEOUT,
 };
 use keel_vfs::{
-    Caps, CloudAccount, CloudKind, CloudProvider, ConnStatus, Entry, Kind, Progress, Provider,
-    Quota, RemoteEvent, RemoveKind, Router, S3Config, SecretStore, ShareLink, VPath, WebDavConfig,
+    AzureBlobConfig, Caps, CloudAccount, CloudKind, CloudProvider, ConnStatus, Entry, Kind,
+    Progress, Provider, Quota, RemoteEvent, RemoveKind, Router, S3Config, SecretStore, ShareLink,
+    VPath, WebDavConfig,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -99,7 +100,7 @@ pub fn can_link(ctx: &egui::Context, e: &Entry) -> bool {
             && match kind {
                 CloudKind::GoogleDrive | CloudKind::Dropbox => true,
                 CloudKind::S3 => e.kind == Kind::File,
-                CloudKind::WebDav => false,
+                CloudKind::WebDav | CloudKind::AzureBlob => false,
             }
     })
 }
@@ -111,12 +112,16 @@ pub fn kind_name(kind: CloudKind) -> &'static str {
         CloudKind::Dropbox => "Dropbox",
         CloudKind::S3 => "S3",
         CloudKind::WebDav => "WebDAV",
+        CloudKind::AzureBlob => "Azure Blob",
     }
 }
 
-/// Drive and Dropbox sign in with OAuth; S3 and WebDAV use keys typed into the form.
+/// Drive and Dropbox sign in with OAuth; the other services use typed keys or passwords.
 fn uses_oauth(kind: CloudKind) -> bool {
-    !matches!(kind, CloudKind::S3 | CloudKind::WebDav)
+    !matches!(
+        kind,
+        CloudKind::S3 | CloudKind::WebDav | CloudKind::AzureBlob
+    )
 }
 
 /// `cloud://<id>/`: the account's root (its `root` folder is applied by the provider).
@@ -589,9 +594,9 @@ fn sign_out(
 pub fn remove_text(a: &CloudAccount) -> String {
     let label = &a.label;
     match a.kind {
-        CloudKind::S3 => format!(
+        CloudKind::S3 | CloudKind::AzureBlob => format!(
             "Remove {label}? Keel deletes its keys from this PC (revoke them in the \
-             provider's console); the files in the bucket stay."
+             provider's console); the files in storage stay."
         ),
         CloudKind::WebDav => format!(
             "Remove {label}? Keel deletes its password from this PC (change it on the server \
@@ -750,7 +755,7 @@ impl Wizard {
             region: String::new(),
             bucket: String::new(),
         });
-        Self {
+        let mut wizard = Self {
             step: Step::Fields,
             id: Some(a.id.clone()),
             kind: a.kind,
@@ -768,7 +773,13 @@ impl Wizard {
                 .unwrap_or_default(),
             insecure: a.webdav.as_ref().is_some_and(|d| d.insecure),
             ..Self::default()
+        };
+        if let Some(cfg) = &a.azure {
+            wizard.endpoint = cfg.endpoint.clone();
+            wizard.username = cfg.account_name.clone();
+            wizard.bucket = cfg.container.clone();
         }
+        wizard
     }
 
     pub fn choose(&mut self, kind: CloudKind) {
@@ -778,6 +789,14 @@ impl Wizard {
         }
         self.error = None;
         self.step = Step::Fields;
+    }
+
+    /// Google Cloud Storage's XML API uses the existing S3 backend with HMAC keys.
+    fn choose_gcs(&mut self) {
+        self.choose(CloudKind::S3);
+        self.label = "Google Cloud Storage".into();
+        self.endpoint = "https://storage.googleapis.com".into();
+        self.region = "auto".into();
     }
 
     /// The account to save and the secrets for the keychain, or why the form is not complete.
@@ -808,6 +827,7 @@ impl Wizard {
         let mut secrets = Secrets::new();
         let client_id = self.client_id.trim();
         let mut webdav = None;
+        let mut azure = None;
         let s3 = if self.kind == CloudKind::S3 {
             let (endpoint, region, bucket) =
                 (self.endpoint.trim(), self.region.trim(), self.bucket.trim());
@@ -834,6 +854,20 @@ impl Wizard {
                 region: region.to_owned(),
                 bucket: bucket.to_owned(),
             })
+        } else if self.kind == CloudKind::AzureBlob {
+            let cfg = AzureBlobConfig {
+                endpoint: self.endpoint.trim().to_owned(),
+                account_name: self.username.trim().to_owned(),
+                container: self.bucket.trim().to_owned(),
+            };
+            cfg.validate().map_err(|e| format!("{e:#}"))?;
+            if !self.secret_key.trim().is_empty() {
+                secrets.push((key("account_key"), self.secret_key.trim().to_owned().into()));
+            } else if new {
+                return Err("Enter the account key".into());
+            }
+            azure = Some(cfg);
+            None
         } else if self.kind == CloudKind::WebDav {
             let url = WebDavConfig::normalize_url(&self.dav_url, self.insecure)
                 .map_err(|e| format!("{e:#}"))?;
@@ -872,6 +906,7 @@ impl Wizard {
                     .then(|| client_id.to_owned()),
                 s3,
                 webdav,
+                azure,
             },
             secrets,
         ))
@@ -1014,12 +1049,13 @@ impl Wizard {
                 Step::Kind => {
                     ui.label("Which service?");
                     ui.add_space(4.0);
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for kind in [
                             CloudKind::GoogleDrive,
                             CloudKind::Dropbox,
                             CloudKind::S3,
                             CloudKind::WebDav,
+                            CloudKind::AzureBlob,
                         ] {
                             let text = match kind {
                                 CloudKind::S3 => "S3-compatible (B2, AWS, MinIO)",
@@ -1029,6 +1065,9 @@ impl Wizard {
                             if ui.button(text).clicked() {
                                 self.choose(kind);
                             }
+                        }
+                        if ui.button("Google Cloud Storage (HMAC)").clicked() {
+                            self.choose_gcs();
                         }
                     });
                     ui.add_space(8.0);
@@ -1188,6 +1227,22 @@ impl Wizard {
                     };
                     secret(ui, "Password", &mut self.password, hint);
                     field(ui, "Root folder", &mut self.root, "/ (optional)");
+                } else if self.kind == CloudKind::AzureBlob {
+                    field(
+                        ui,
+                        "Endpoint",
+                        &mut self.endpoint,
+                        "https://account.blob.core.windows.net",
+                    );
+                    field(ui, "Account name", &mut self.username, "");
+                    field(ui, "Container", &mut self.bucket, "");
+                    field(ui, "Key prefix", &mut self.root, "(optional)");
+                    let hint = if editing {
+                        "leave empty to keep the stored one"
+                    } else {
+                        "kept in the OS keychain"
+                    };
+                    secret(ui, "Account key", &mut self.secret_key, hint);
                 } else {
                     field(
                         ui,
@@ -1588,6 +1643,7 @@ mod tests {
             client_id_override: None,
             s3: None,
             webdav: None,
+            azure: None,
         }
     }
 
@@ -1718,6 +1774,75 @@ mod tests {
         assert!(secrets.is_empty());
         edit.password = Zeroizing::new("new".into());
         assert_eq!(edit.build(&[a]).unwrap().1.len(), 1);
+    }
+
+    #[test]
+    fn gcs_preset_uses_s3_config_and_keychain_credentials() {
+        let mut w = Wizard::default();
+        w.choose_gcs();
+        assert_eq!(w.label, "Google Cloud Storage");
+        assert!(!uses_oauth(w.kind));
+        assert!(w.build(&[]).is_err());
+        w.bucket = "photos".into();
+        w.access_key = Zeroizing::new("gcs-hmac-id".into());
+        w.secret_key = Zeroizing::new("gcs-hmac-secret".into());
+        let (a, secrets) = w.build(&[]).unwrap();
+        assert_eq!(a.kind, CloudKind::S3);
+        let cfg = a.s3.as_ref().unwrap();
+        assert_eq!(cfg.endpoint, "https://storage.googleapis.com");
+        assert_eq!(cfg.region, "auto");
+        assert_eq!(cfg.bucket, "photos");
+        assert_eq!(secrets.len(), 2);
+        let text = toml::to_string(&a).unwrap();
+        assert!(!text.contains("gcs-hmac-id") && !text.contains("gcs-hmac-secret"));
+        assert_eq!(
+            Wizard::edit(&a).build(std::slice::from_ref(&a)).unwrap().0,
+            a
+        );
+        let store = Arc::new(cloud::MemoryStore::default());
+        for (key, value) in secrets {
+            store.set(&key, &value).unwrap();
+        }
+        // Real OpenDAL S3 operator, constructed offline with the preset's config.
+        CloudProvider::connect(&a, store, crossbeam_channel::unbounded().0).unwrap();
+    }
+
+    #[test]
+    fn azure_form_validates_saves_and_edits_without_exposing_the_key() {
+        let mut w = Wizard::default();
+        w.choose(CloudKind::AzureBlob);
+        assert_eq!(w.label, "Azure Blob");
+        assert!(!uses_oauth(w.kind));
+        assert!(w.build(&[]).is_err());
+        w.endpoint = "https://keeltest.blob.core.windows.net".into();
+        w.username = "keeltest".into();
+        w.bucket = "photos".into();
+        assert!(w.build(&[]).unwrap_err().contains("account key"));
+        w.secret_key = Zeroizing::new("ZmFrZS1hY2NvdW50LWtleQ==".into());
+        w.root = "/Albums/".into();
+        let (a, secrets) = w.build(&[]).unwrap();
+        assert_eq!(a.root.as_deref(), Some("/Albums"));
+        assert!(a.client_id_override.is_none() && a.s3.is_none() && a.webdav.is_none());
+        assert_eq!(secrets[0].0, "azure-blob/account_key");
+        assert!(!toml::to_string(&a).unwrap().contains(w.secret_key.as_str()));
+        let edit = Wizard::edit(&a);
+        let (edited, secrets) = edit.build(std::slice::from_ref(&a)).unwrap();
+        assert_eq!(edited, a);
+        assert!(secrets.is_empty());
+        let ctx = egui::Context::default();
+        let store = Arc::new(cloud::MemoryStore::default());
+        w.submit(
+            &[],
+            false,
+            store.clone(),
+            crossbeam_channel::unbounded().0,
+            &ctx,
+        );
+        assert!(w.secret_key.is_empty());
+        assert!(matches!(settle(&mut w), Outcome::Done(_)));
+        assert!(store.get("azure-blob/account_key").unwrap().is_some());
+        cloud::forget_account(&*store, "azure-blob");
+        assert!(store.keys().is_empty());
     }
 
     #[test]
