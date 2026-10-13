@@ -356,10 +356,9 @@ impl Updates {
                 Some(reg) => {
                     // A console window shows the installer's progress; it stops Keel before
                     // it copies, so the window closes first (settings are saved on close).
-                    let started = std::process::Command::new("powershell.exe")
-                        .args(install_args(&script, &dir, &reg))
-                        .spawn();
-                    match started {
+                    let mut cmd = std::process::Command::new("powershell.exe");
+                    cmd.args(install_args(&script, &dir, &reg));
+                    match crate::platform::run(cmd) {
                         Ok(_) => return ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                         Err(e) => tracing::warn!("run {}: {e}", script.display()),
                     }
@@ -373,7 +372,7 @@ impl Updates {
 }
 
 fn open_page(url: &str) {
-    if let Err(e) = open::that_detached(url) {
+    if let Err(e) = crate::platform::open_target(url) {
         tracing::warn!("open {url}: {e}");
     }
 }

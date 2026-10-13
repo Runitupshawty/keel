@@ -2068,13 +2068,15 @@ impl AppState {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 // The OS dialog blocks: never on the UI thread.
                 worker::spawn("keel-pick", move || {
-                    let mut dialog = rfd::FileDialog::new().set_title("Open with");
-                    if cfg!(windows) {
-                        dialog = dialog.add_filter("Programs", &["exe", "bat", "cmd", "com"]);
-                    } else if cfg!(target_os = "macos") {
-                        dialog = dialog.set_directory("/Applications");
-                    }
-                    if let Some(app) = dialog.pick_file() {
+                    let picked = platform::file_dialog("Open with", |mut dialog| {
+                        if cfg!(windows) {
+                            dialog = dialog.add_filter("Programs", &["exe", "bat", "cmd", "com"]);
+                        } else if cfg!(target_os = "macos") {
+                            dialog = dialog.set_directory("/Applications");
+                        }
+                        dialog.pick_file()
+                    });
+                    if let Some(app) = picked {
                         let app = app.to_string_lossy().into_owned();
                         let msg = Msg::OpenWithChosen {
                             paths,
@@ -2424,11 +2426,13 @@ impl AppState {
                     let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                     let home = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf());
                     worker::spawn("keel-pick", move || {
-                        let mut dialog = rfd::FileDialog::new().set_title("Restore to");
-                        if let Some(home) = &home {
-                            dialog = dialog.set_directory(home);
-                        }
-                        if let Some(dst) = dialog.pick_folder() {
+                        let picked = platform::file_dialog("Restore to", |mut dialog| {
+                            if let Some(home) = &home {
+                                dialog = dialog.set_directory(home);
+                            }
+                            dialog.pick_folder()
+                        });
+                        if let Some(dst) = picked {
                             worker::send(&tx, &ctx, Msg::RestoreTrashTo(paths, dst));
                         }
                     });
@@ -2973,11 +2977,13 @@ impl AppState {
                 .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()));
             // The OS dialog blocks: never on the UI thread.
             worker::spawn("keel-pick", move || {
-                let mut dialog = rfd::FileDialog::new().set_title("Extract to");
-                if let Some(start) = &start {
-                    dialog = dialog.set_directory(start);
-                }
-                let Some(dst) = dialog.pick_folder() else {
+                let picked = platform::file_dialog("Extract to", |mut dialog| {
+                    if let Some(start) = &start {
+                        dialog = dialog.set_directory(start);
+                    }
+                    dialog.pick_folder()
+                });
+                let Some(dst) = picked else {
                     return;
                 };
                 for archive in archives {

@@ -1109,6 +1109,8 @@ pub fn prepare(index: usize, c: &UserCleanup, picked: &[Picked]) -> Result<Prepa
 
 /// The process for one run (not started).
 pub fn command(e: &Expanded, console: bool) -> std::process::Command {
+    // No console window under tests.
+    let console = console && !keel_vfs::headless::on();
     let mut c = std::process::Command::new(&e.argv[0]);
     #[cfg(windows)]
     {

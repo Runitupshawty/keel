@@ -104,7 +104,12 @@ pub fn oauth_authorize(
             client,
             cancel,
             AUTH_TIMEOUT,
-            &|url| open::that_detached(url).context("could not open the browser"),
+            &|url| {
+                if crate::headless::skip(format_args!("open {url}")) {
+                    return Ok(());
+                }
+                open::that_detached(url).context("could not open the browser")
+            },
         )
     });
     match &result {

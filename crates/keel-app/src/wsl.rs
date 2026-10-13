@@ -246,13 +246,12 @@ mod tests {
     /// the window now) is left running and counts as success.
     #[test]
     fn exit_code_or_left_running() {
+        use keel_vfs::headless::hidden;
         use std::process::Command;
         let (quick, slow) = if cfg!(windows) {
             (
-                Command::new("cmd").args(["/c", "exit 3"]).spawn(),
-                Command::new("cmd")
-                    .args(["/c", "ping -n 4 127.0.0.1 >nul"])
-                    .spawn(),
+                hidden(Command::new("cmd").args(["/c", "exit 3"])).spawn(),
+                hidden(Command::new("cmd").args(["/c", "ping -n 4 127.0.0.1 >nul"])).spawn(),
             )
         } else {
             (

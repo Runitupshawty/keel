@@ -648,6 +648,9 @@ pub fn is_elevated() -> bool {
 /// Runs `exe args` through the UAC prompt ("runas"), waits, returns its exit code.
 /// Also Keel's one-shot elevated system cleanups (`keel --system-cleanup`).
 pub fn run_elevated(exe: &Path, args: &str) -> io::Result<u32> {
+    if keel_vfs::headless::skip(format_args!("runas {} {args}", exe.display())) {
+        return Err(io::Error::other("no UAC prompt while headless"));
+    }
     let verb = HSTRING::from("runas");
     let file = HSTRING::from(exe.as_os_str());
     let params = HSTRING::from(args);

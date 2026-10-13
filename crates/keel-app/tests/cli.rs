@@ -14,6 +14,13 @@ struct Env {
     profile: String,
 }
 
+/// The real binary with `KEEL_HEADLESS=1`: it opens no window, app or browser.
+fn keel_exe() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_keel"));
+    c.env("KEEL_HEADLESS", "1");
+    c
+}
+
 fn env() -> Env {
     let (config, data, files) = (
         tempfile::tempdir().unwrap(),
@@ -36,7 +43,7 @@ fn env() -> Env {
 
 impl Env {
     fn keel(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_keel"));
+        let mut c = keel_exe();
         c.env("KEEL_CONFIG_DIR", self.config.path())
             .env("KEEL_DATA_DIR", self.data.path())
             .args(["--profile", &self.profile])
@@ -553,7 +560,7 @@ fn mcp_without_elicitation() {
 /// not), for bug reports.
 #[test]
 fn version_says_whether_signed() {
-    let out = Command::new(env!("CARGO_BIN_EXE_keel"))
+    let out = keel_exe()
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -623,7 +630,7 @@ fn perf_version_startup() {
     let mut runs: Vec<std::time::Duration> = (0..20)
         .map(|_| {
             let t = std::time::Instant::now();
-            let out = Command::new(env!("CARGO_BIN_EXE_keel"))
+            let out = keel_exe()
                 .arg("--version")
                 .stdin(Stdio::null())
                 .output()
@@ -1137,7 +1144,7 @@ fn a_keel_link_with_quotes_cannot_run_a_subcommand() {
     let victim = env.files.path().join("notes.txt");
     let shown = victim.display().to_string();
     assert!(!shown.contains(' ') && !shown.contains('"'), "{shown}");
-    let mut c = Command::new(env!("CARGO_BIN_EXE_keel"));
+    let mut c = keel_exe();
     c.env("KEEL_CONFIG_DIR", env.config.path())
         .env("KEEL_DATA_DIR", env.data.path())
         .stdin(Stdio::null())

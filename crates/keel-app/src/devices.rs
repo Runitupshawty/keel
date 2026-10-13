@@ -1289,9 +1289,8 @@ impl AppState {
             DevCmd::SendFiles(peer) => {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-drop-pick", move || {
-                    let picked = rfd::FileDialog::new()
-                        .set_title("Send with Spacedrop")
-                        .pick_files();
+                    let picked =
+                        crate::platform::file_dialog("Send with Spacedrop", |d| d.pick_files());
                     if let Some(paths) = picked.filter(|p| !p.is_empty()) {
                         worker::send(&tx, &ctx, Msg::Devices(DevMsg::Picked { peer, paths }));
                     }

@@ -143,11 +143,11 @@ impl AppState {
         match cmd {
             FileListCmd::Open(None) => {
                 worker::spawn("keel-filelist-pick", move || {
-                    let picked = rfd::FileDialog::new()
-                        .set_title("Open file list")
-                        .add_filter("File lists", OPEN_EXTENSIONS)
-                        .add_filter("All files", &["*"])
-                        .pick_file();
+                    let picked = crate::platform::file_dialog("Open file list", |d| {
+                        d.add_filter("File lists", OPEN_EXTENSIONS)
+                            .add_filter("All files", &["*"])
+                            .pick_file()
+                    });
                     if let Some(path) = picked {
                         load(p, path, &tx, &ctx);
                     }
@@ -177,14 +177,16 @@ impl AppState {
                 };
                 let dir = self.tab(p).dir.to_local_path();
                 worker::spawn("keel-filelist-export", move || {
-                    let mut dialog = rfd::FileDialog::new()
-                        .set_title("Export results")
-                        .set_file_name(name.to_string_lossy())
-                        .add_filter(opts.format.label(), &[opts.format.extension()]);
-                    if let Some(dir) = dir {
-                        dialog = dialog.set_directory(dir);
-                    }
-                    let Some(path) = dialog.save_file() else {
+                    let picked = crate::platform::file_dialog("Export results", |mut dialog| {
+                        dialog = dialog
+                            .set_file_name(name.to_string_lossy())
+                            .add_filter(opts.format.label(), &[opts.format.extension()]);
+                        if let Some(dir) = dir {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        dialog.save_file()
+                    });
+                    let Some(path) = picked else {
                         return;
                     };
                     let result = write_list(&list, &opts, &path)

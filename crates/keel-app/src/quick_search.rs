@@ -238,5 +238,5 @@ pub fn new_window(folder: Option<&keel_vfs::VPath>, search: Option<&str>) -> std
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    cmd.spawn().map(|_| ())
+    crate::platform::run(cmd)
 }

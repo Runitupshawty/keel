@@ -256,12 +256,10 @@ pub fn bring_to_front(ctx: &egui::Context) {
 /// Starts another Keel window: this executable with `--new-window` and the current profile
 /// (the palette's New window, the New window hotkey). Callable from any thread.
 pub fn new_window() -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
-    std::process::Command::new(exe)
-        .args(new_window_args(&crate::profiles::current()))
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .map(drop)
+    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    cmd.args(new_window_args(&crate::profiles::current()))
+        .stdin(std::process::Stdio::null());
+    crate::platform::run(cmd)
 }
 
 fn new_window_args(profile: &str) -> [String; 3] {

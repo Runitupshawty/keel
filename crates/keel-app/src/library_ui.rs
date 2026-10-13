@@ -761,10 +761,9 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                             // The OS dialog blocks: a worker; the answer comes back as a toast-free Msg.
                             let start = add.root.clone();
                             crate::worker::spawn("keel-pick-source", move || {
-                                let picked = rfd::FileDialog::new()
-                                    .set_title("Library source")
-                                    .set_directory(&start)
-                                    .pick_folder();
+                                let picked = crate::platform::file_dialog("Library source", |d| {
+                                    d.set_directory(&start).pick_folder()
+                                });
                                 crate::worker::send(
                                     &tx,
                                     &ectx,

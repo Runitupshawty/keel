@@ -187,12 +187,11 @@ impl JournalView {
         let n = self.rows.len();
         let (notes, ctx) = (self.notes.clone(), ctx.clone());
         crate::worker::spawn("keel-journal-export", move || {
-            let Some(file) = rfd::FileDialog::new()
-                .set_title("Export journal")
-                .set_file_name("keel-journal.csv")
-                .add_filter("CSV", &["csv"])
-                .save_file()
-            else {
+            let Some(file) = crate::platform::file_dialog("Export journal", |d| {
+                d.set_file_name("keel-journal.csv")
+                    .add_filter("CSV", &["csv"])
+                    .save_file()
+            }) else {
                 return;
             };
             *notes.lock() = Some(match std::fs::write(&file, text) {

@@ -2753,12 +2753,11 @@ impl AppState {
                 self.library
                     .spawn_try("keel-library-backup", "Back up library", move |b| {
                         // The OS dialog blocks: on this worker, never the UI thread.
-                        let Some(file) = rfd::FileDialog::new()
-                            .set_title("Back up library")
-                            .set_file_name(name)
-                            .add_filter("Keel backup", &[keel_core::backup::EXTENSION])
-                            .save_file()
-                        else {
+                        let Some(file) = crate::platform::file_dialog("Back up library", |d| {
+                            d.set_file_name(name)
+                                .add_filter("Keel backup", &[keel_core::backup::EXTENSION])
+                                .save_file()
+                        }) else {
                             return Ok(None);
                         };
                         let note = |text: String| Msg::Library(LibMsg::Note(text));
@@ -2772,11 +2771,10 @@ impl AppState {
             LibCmd::Restore => {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-library-restore-pick", move || {
-                    let Some(file) = rfd::FileDialog::new()
-                        .set_title("Restore library")
-                        .add_filter("Keel backup", &[keel_core::backup::EXTENSION])
-                        .pick_file()
-                    else {
+                    let Some(file) = crate::platform::file_dialog("Restore library", |d| {
+                        d.add_filter("Keel backup", &[keel_core::backup::EXTENSION])
+                            .pick_file()
+                    }) else {
                         return;
                     };
                     let msg = match restore_offer(&file) {
