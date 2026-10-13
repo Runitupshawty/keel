@@ -108,7 +108,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     // Enter / Space press the focused button (egui), which starts on "yes";
                     // Tab moves to Cancel. No window-wide Enter, so Enter on Cancel cancels.
                     let yes = ui.button(*yes);
-                    let no = ui.button("Cancel");
+                    let no = ui.button(crate::i18n::tr("dialogs.cancel"));
                     crate::a11y::first_focus(&yes);
                     cancel |= no.clicked();
                     if !cancel && yes.clicked() {
@@ -122,24 +122,30 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 from_clipboard,
             } => {
                 ui.strong(match names.len() {
-                    1 => "An item with this name already exists:".to_owned(),
-                    n => format!("{n} items with these names already exist:"),
+                    1 => crate::i18n::tr("dialogs.exists_one").to_owned(),
+                    n => crate::i18n::tr("dialogs.exists_n").replace("{n}", &n.to_string()),
                 });
                 for name in names.iter().take(5) {
                     ui.label(format!("  {name}"));
                 }
                 if names.len() > 5 {
-                    ui.weak(format!("  and {} more", names.len() - 5));
+                    ui.weak(
+                        crate::i18n::tr("dialogs.and_more")
+                            .replace("{n}", &(names.len() - 5).to_string()),
+                    );
                 }
-                ui.label(format!("in {}", op.dst.display()));
+                ui.label(
+                    crate::i18n::tr("dialogs.in_path")
+                        .replace("{path}", &op.dst.display().to_string()),
+                );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    for (text, conflict) in [
-                        ("Skip", Conflict::Skip),
-                        ("Overwrite", Conflict::Overwrite),
-                        ("Keep both", Conflict::RenameNew),
+                    for (key, conflict) in [
+                        ("dialogs.skip", Conflict::Skip),
+                        ("dialogs.overwrite", Conflict::Overwrite),
+                        ("dialogs.keep_both", Conflict::RenameNew),
                     ] {
-                        let b = ui.button(text);
+                        let b = ui.button(crate::i18n::tr(key));
                         // Enter keeps both (nothing is lost), Tab reaches the others.
                         if conflict == Conflict::RenameNew {
                             crate::a11y::first_focus(&b);
@@ -152,7 +158,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             });
                         }
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::NewItem {
@@ -162,9 +168,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 focus,
             } => {
                 ui.label(if *folder {
-                    "New folder name"
+                    crate::i18n::tr("dialogs.new_folder_name")
                 } else {
-                    "New file name"
+                    crate::i18n::tr("dialogs.new_file_name")
                 });
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
                 if std::mem::take(focus) {
@@ -173,14 +179,16 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if (ui.button("Create").clicked() || enter) && !text.trim().is_empty() {
+                    if (ui.button(crate::i18n::tr("dialogs.create")).clicked() || enter)
+                        && !text.trim().is_empty()
+                    {
                         out = Some(Action::Create {
                             dir: dir.clone(),
                             name: text.trim().to_owned(),
                             folder: *folder,
                         });
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::ZipName {
@@ -191,7 +199,10 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 format,
                 edited,
             } => {
-                ui.label(format!("Compress {} to", crate::jobs::items(src.len())));
+                ui.label(
+                    crate::i18n::tr("dialogs.compress_to")
+                        .replace("{n}", &crate::jobs::items(src.len())),
+                );
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
                 *edited |= r.changed();
                 if std::mem::take(focus) {
@@ -207,7 +218,9 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if (ui.button("Compress").clicked() || enter) && !text.trim().is_empty() {
+                    if (ui.button(crate::i18n::tr("dialogs.compress")).clicked() || enter)
+                        && !text.trim().is_empty()
+                    {
                         let name = text.trim();
                         let (name, format) = match ArchiveFormat::of_name(name) {
                             Some(f) => (name.to_owned(), f),
@@ -219,7 +232,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             format,
                         });
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::CollectionName {
@@ -229,18 +242,22 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 focus,
             } => {
                 ui.label(match id {
-                    Some(_) => "Rename collection",
-                    None => "New collection name",
+                    Some(_) => crate::i18n::tr("dialogs.rename_collection"),
+                    None => crate::i18n::tr("dialogs.new_collection_name"),
                 });
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-                let r = crate::a11y::Named::named(r, "Collection name");
+                let r = crate::a11y::Named::named(r, crate::i18n::tr("dialogs.collection_name"));
                 if std::mem::take(focus) {
                     r.request_focus();
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let verb = if id.is_some() { "Rename" } else { "Create" };
+                    let verb = if id.is_some() {
+                        crate::i18n::tr("menu.rename")
+                    } else {
+                        crate::i18n::tr("dialogs.create")
+                    };
                     if (ui.button(verb).clicked() || enter) && !text.trim().is_empty() {
                         let name = text.trim().to_owned();
                         use crate::library::LibCmd;
@@ -249,7 +266,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             None => LibCmd::CreateCollection { name, add: *add },
                         }));
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::RestoreLibrary {
@@ -258,28 +275,28 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 name,
                 focus,
             } => {
-                ui.strong(format!(
-                    "Restore {}",
-                    file.file_name().unwrap_or_default().to_string_lossy()
-                ));
+                let backup = file.file_name().unwrap_or_default().to_string_lossy();
+                ui.strong(crate::i18n::tr("dialogs.restore_named").replace("{name}", &backup));
                 ui.label(about.as_str());
                 ui.add_space(6.0);
-                ui.label("New library name");
+                ui.label(crate::i18n::tr("dialogs.new_library_name"));
                 let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
-                let r = crate::a11y::Named::named(r, "New library name");
+                let r = crate::a11y::Named::named(r, crate::i18n::tr("dialogs.new_library_name"));
                 if std::mem::take(focus) {
                     r.request_focus();
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if (ui.button("Restore").clicked() || enter) && !name.trim().is_empty() {
+                    if (ui.button(crate::i18n::tr("dialogs.restore")).clicked() || enter)
+                        && !name.trim().is_empty()
+                    {
                         out = Some(Action::Library(crate::library::LibCmd::RestoreAs {
                             file: file.clone(),
                             name: name.trim().to_owned(),
                         }));
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::FolderIcon {
@@ -289,11 +306,14 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 error,
                 focus,
             } => {
-                let what = if *dir { "Folder" } else { "File" };
-                ui.strong(format!("{what} icon for {}", path.name()));
-                ui.label("Type or paste one emoji (Win+. or Ctrl+Cmd+Space opens the emoji panel)");
+                ui.strong(if *dir {
+                    crate::i18n::tr("dialogs.folder_icon_for").replace("{name}", path.name())
+                } else {
+                    crate::i18n::tr("dialogs.file_icon_for").replace("{name}", path.name())
+                });
+                ui.label(crate::i18n::tr("dialogs.emoji_hint"));
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-                let r = crate::a11y::Named::named(r, "Emoji");
+                let r = crate::a11y::Named::named(r, crate::i18n::tr("dialogs.emoji"));
                 if std::mem::take(focus) {
                     r.request_focus();
                 }
@@ -306,7 +326,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Set icon").clicked() || enter {
+                    if ui.button(crate::i18n::tr("dialogs.set_icon")).clicked() || enter {
                         let icon = text.trim();
                         let names = crate::folder_style::theme_names(*dir);
                         *error = crate::folder_style::icon_error(icon, &names, *dir);
@@ -318,13 +338,13 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             }));
                         }
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::SessionName { text, taken, focus } => {
-                ui.label("Save the open tabs and views as session");
+                ui.label(crate::i18n::tr("dialogs.save_session_label"));
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-                let r = crate::a11y::Named::named(r, "Session name");
+                let r = crate::a11y::Named::named(r, crate::i18n::tr("dialogs.session_name"));
                 if std::mem::take(focus) {
                     r.request_focus();
                 }
@@ -333,17 +353,22 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 if !name.is_empty() && !ok {
                     ui.weak(crate::profiles::NAME_RULE);
                 } else if taken.iter().any(|t| t == name) {
-                    ui.weak(format!("Replaces the session \"{name}\""));
+                    ui.weak(crate::i18n::tr("dialogs.replaces_session").replace("{name}", name));
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if (ui.add_enabled(ok, egui::Button::new("Save")).clicked() || enter) && ok {
+                    if (ui
+                        .add_enabled(ok, egui::Button::new(crate::i18n::tr("dialogs.save")))
+                        .clicked()
+                        || enter)
+                        && ok
+                    {
                         out = Some(Action::Session(crate::profiles::SessionCmd::Save(
                             name.to_owned(),
                         )));
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
             Dialog::Mount(m) => out = crate::mount_ui::dialog_ui(ui, m, &mut cancel),
@@ -366,8 +391,10 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             } => {
                 let name = paths[0].file_name().unwrap_or_default().to_string_lossy();
                 ui.label(match paths.len() {
-                    1 => format!("Open \"{name}\" with"),
-                    n => format!("Open {n} files with"),
+                    1 => crate::i18n::tr("dialogs.open_named_with").replace("{name}", &name),
+                    n => {
+                        crate::i18n::tr("dialogs.open_n_files_with").replace("{n}", &n.to_string())
+                    }
                 });
                 ui.add_space(4.0);
                 let ext = paths[0]
@@ -376,8 +403,8 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.checkbox(
                     remember,
                     match &ext {
-                        Some(e) => format!("Remember for .{e} files"),
-                        None => "Remember for files without an extension".to_owned(),
+                        Some(e) => crate::i18n::tr("dialogs.remember_for_ext").replace("{e}", e),
+                        None => crate::i18n::tr("dialogs.remember_no_ext").to_owned(),
                     },
                 );
                 ui.add_space(4.0);
@@ -386,7 +413,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     .chain(apps.iter().filter(|(_, a)| !recent.contains(a)).cloned())
                     .collect();
                 if shown.is_empty() {
-                    ui.weak("No applications are known for this file type");
+                    ui.weak(crate::i18n::tr("dialogs.no_apps"));
                 }
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
@@ -407,7 +434,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                     });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let browse = ui.button("Browse…");
+                    let browse = ui.button(crate::i18n::tr("dialogs.browse"));
                     crate::a11y::first_focus(&browse);
                     if browse.clicked() {
                         out = Some(Action::OpenWithBrowse {
@@ -415,10 +442,14 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                             remember: *remember,
                         });
                     }
-                    if cfg!(windows) && ui.button("System chooser…").clicked() {
+                    if cfg!(windows)
+                        && ui
+                            .button(crate::i18n::tr("dialogs.system_chooser"))
+                            .clicked()
+                    {
                         out = Some(Action::OpenWithSystem(paths[0].clone()));
                     }
-                    cancel |= ui.button("Cancel").clicked();
+                    cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
                 });
             }
         }
@@ -449,7 +480,7 @@ pub fn invalid_name(name: &str) -> Option<String> {
 
 pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
-        return Some(format!("\"{name}\" is not a valid name"));
+        return Some(crate::i18n::tr("dialogs.not_valid_name").replace("{name}", name));
     }
     let bad: &[char] = if windows {
         &['<', '>', ':', '"', '/', '\\', '|', '?', '*']
@@ -457,19 +488,19 @@ pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
         &['/']
     };
     if let Some(c) = name.chars().find(|c| bad.contains(c) || *c == '\0') {
-        return Some(format!("A name cannot contain {c:?}"));
+        return Some(crate::i18n::tr("dialogs.cannot_contain").replace("{c}", &format!("{c:?}")));
     }
     if windows {
         if name.chars().any(char::is_control) {
-            return Some("A name cannot contain control characters".into());
+            return Some(crate::i18n::tr("dialogs.no_control_chars").to_owned());
         }
         if name.ends_with(['.', ' ']) {
-            return Some("A name cannot end with a dot or a space".into());
+            return Some(crate::i18n::tr("dialogs.no_end_dot_space").to_owned());
         }
         let stem = name.split('.').next().unwrap_or(name).trim_end();
         let reserved = keel_vfs::path::is_windows_device(name);
         if reserved {
-            return Some(format!("\"{stem}\" is a reserved name on Windows"));
+            return Some(crate::i18n::tr("dialogs.reserved_name").replace("{stem}", stem));
         }
     }
     None
