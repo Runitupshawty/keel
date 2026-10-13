@@ -103,21 +103,22 @@ pub fn assign_bar(
         false => 0,
     };
     ui.horizontal_wrapped(|ui| {
-        ui.strong(format!(
-            "Assign tags to {}:",
-            crate::jobs::items(targets.len())
-        ));
+        ui.strong(
+            crate::i18n::tr("library_ui.assign_tags_to")
+                .replace("{items}", &crate::jobs::items(targets.len())),
+        );
         for (i, label) in labels.iter().enumerate() {
             let tag = &l.tags[page + i];
-            let r = chip_text(ui, tag, label).on_hover_text(format!("Toggle {}", tag.name));
+            let r = chip_text(ui, tag, label)
+                .on_hover_text(crate::i18n::tr("library_ui.toggle").replace("{name}", &tag.name));
             if r.clicked() {
                 out.push(lib(LibCmd::AssignTag(page + i)));
             }
         }
         ui.weak(hint);
         if ui
-            .small_button("Leave")
-            .on_hover_text("Leave tag assign mode (0 or Esc)")
+            .small_button(crate::i18n::tr("library_ui.leave"))
+            .on_hover_text(crate::i18n::tr("library_ui.leave_tip"))
             .clicked()
         {
             out.push(lib(LibCmd::AssignMode));
@@ -137,14 +138,17 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
     if !l.is_open() {
         match (&l.error, l.opening) {
             (_, true) => {
-                ui.weak("Opening…");
+                ui.weak(crate::i18n::tr("library_ui.opening"));
             }
             (Some(e), _) => {
-                ui.colored_label(ui.visuals().error_fg_color, "Not available")
-                    .on_hover_text(e);
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    crate::i18n::tr("library_ui.not_available"),
+                )
+                .on_hover_text(e);
             }
             _ => {
-                ui.weak("Off (Settings → Library)");
+                ui.weak(crate::i18n::tr("library_ui.off_settings"));
             }
         }
         return;
@@ -155,9 +159,21 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
             out.push(lib(cmd));
         }
     };
-    entry(ui, Glyph::Overview, "Overview", LibCmd::Overview, out);
+    entry(
+        ui,
+        Glyph::Overview,
+        crate::i18n::tr("tab.overview"),
+        LibCmd::Overview,
+        out,
+    );
     let favorites = LibCmd::Query(FAVORITES_QUERY.into());
-    entry(ui, Glyph::Star, "★ Favorites", favorites, out);
+    entry(
+        ui,
+        Glyph::Star,
+        crate::i18n::tr("library_ui.favorites"),
+        favorites,
+        out,
+    );
     for s in source_rows(&l.sources) {
         let on = current.scheme == keel_vfs::library::SCHEME && current.authority == s.id.0;
         let style = l.style_of(&keel_vfs::library::path(&s.id.0, ""));
@@ -184,29 +200,49 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
         }
         r.context_menu(|ui| {
             let pause = if l.hash_paused {
-                ("Resume hashing", LibCmd::PauseHashing(false))
+                (
+                    crate::i18n::tr("library_ui.resume_hashing"),
+                    LibCmd::PauseHashing(false),
+                )
             } else {
-                ("Pause hashing", LibCmd::PauseHashing(true))
+                (
+                    crate::i18n::tr("library_ui.pause_hashing"),
+                    LibCmd::PauseHashing(true),
+                )
             };
-            let adopt = (s.adopt).then(|| ("Adopt new root", LibCmd::AdoptRoot(s.id.clone())));
+            let adopt = (s.adopt).then(|| {
+                (
+                    crate::i18n::tr("library_ui.adopt_new_root"),
+                    LibCmd::AdoptRoot(s.id.clone()),
+                )
+            });
             for (text, cmd) in adopt.into_iter().chain([
-                ("Index now", LibCmd::IndexNow(s.id.clone())),
+                (
+                    crate::i18n::tr("library_ui.index_now"),
+                    LibCmd::IndexNow(s.id.clone()),
+                ),
                 pause,
-                ("Remove…", LibCmd::RemoveSource(s.id.clone())),
+                (
+                    crate::i18n::tr("library_ui.remove_source"),
+                    LibCmd::RemoveSource(s.id.clone()),
+                ),
             ]) {
                 if ui.button(text).clicked() {
                     out.push(lib(cmd));
                     ui.close_menu();
                 }
             }
-            if ui.button("Freeze now").clicked() {
+            if ui
+                .button(crate::i18n::tr("library_ui.freeze_now"))
+                .clicked()
+            {
                 out.push(lib(LibCmd::Freeze(s.id.clone())));
                 ui.close_menu();
             }
             match l.freezes.get(&s.id) {
                 None => out.push(lib(LibCmd::LoadFreezes(s.id.clone()))),
                 Some(list) if !list.is_empty() => {
-                    ui.menu_button("Freezes", |ui| {
+                    ui.menu_button(crate::i18n::tr("library_ui.freezes"), |ui| {
                         for f in list {
                             let at = crate::library::when(Some(f.at));
                             // The date opens the freeze; Delete… asks first.
@@ -216,7 +252,10 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
                                     out.push(Action::Navigate(keel_vfs::library::path(&auth, "")));
                                     ui.close_menu();
                                 }
-                                if ui.small_button("Delete…").clicked() {
+                                if ui
+                                    .small_button(crate::i18n::tr("library_ui.delete"))
+                                    .clicked()
+                                {
                                     out.push(lib(LibCmd::DeleteFreeze(s.id.clone(), f.id)));
                                     ui.close_menu();
                                 }
@@ -230,7 +269,13 @@ pub fn sidebar(ui: &mut egui::Ui, l: &LibraryUi, current: &VPath, out: &mut Vec<
         });
     }
     // Saved views are listed with the bookmarks (`bookmarks::sidebar`).
-    entry(ui, Glyph::Plus, "Add source…", LibCmd::AddSource, out);
+    entry(
+        ui,
+        Glyph::Plus,
+        crate::i18n::tr("library_ui.add_source"),
+        LibCmd::AddSource,
+        out,
+    );
 }
 
 /// The sidebar's Tags section (Phase 14): the first tags with their color dots; "All
@@ -247,7 +292,7 @@ pub fn sidebar_tags(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
             out.push(query(tag));
         }
     }
-    crate::sidebar::menu_row(ui, "All Tags…", |ui| {
+    crate::sidebar::menu_row(ui, crate::i18n::tr("library_ui.all_tags"), |ui| {
         egui::ScrollArea::vertical()
             .max_height(320.0)
             .show(ui, |ui| {
@@ -284,8 +329,14 @@ pub fn sidebar_collections(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Actio
         }
         r.context_menu(|ui| {
             for (text, cmd) in [
-                ("Rename…", LibCmd::RenameCollection(c.id)),
-                ("Delete…", LibCmd::DeleteCollection(c.id)),
+                (
+                    crate::i18n::tr("library_ui.rename"),
+                    LibCmd::RenameCollection(c.id),
+                ),
+                (
+                    crate::i18n::tr("library_ui.delete"),
+                    LibCmd::DeleteCollection(c.id),
+                ),
             ] {
                 if ui.button(text).clicked() {
                     out.push(lib(cmd));
@@ -332,9 +383,9 @@ fn cards(ui: &mut egui::Ui, list: Vec<Card<'_>>) {
 /// The Overview's library sync line.
 pub fn synced_text(devices: usize) -> String {
     match devices {
-        0 => "Tags and favorites stay on this device (Settings → Devices syncs them)".into(),
-        1 => "Tags synced with 1 device".into(),
-        n => format!("Tags synced with {n} devices"),
+        0 => crate::i18n::tr("library_ui.synced_none").into(),
+        1 => crate::i18n::tr("library_ui.synced_one").into(),
+        n => crate::i18n::tr("library_ui.synced_n").replace("{n}", &n.to_string()),
     }
 }
 
@@ -342,12 +393,12 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
     let l = cx.library;
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_space(4.0);
-        ui.heading("Library overview");
+        ui.heading(crate::i18n::tr("library_ui.overview_title"));
         if !l.is_open() {
             ui.weak(if l.opening {
-                "The library is opening…"
+                crate::i18n::tr("library_ui.opening_long")
             } else {
-                "The library is off. Turn it on in Settings → Library."
+                crate::i18n::tr("library_ui.off_turn_on")
             });
             return;
         }
@@ -355,19 +406,20 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
             Some(r) if l.lost => {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    format!("keel-daemon (pid {}) stopped: read-only", r.version.pid),
+                    crate::i18n::tr("library_ui.daemon_stopped_readonly")
+                        .replace("{pid}", &r.version.pid.to_string()),
                 );
             }
             Some(r) => {
-                ui.weak(format!(
-                    "Connected to the daemon (keel-daemon, pid {}, library {}): the command \
-                     line and keel mcp share this library",
-                    r.version.pid, r.version.library
-                ));
+                ui.weak(
+                    crate::i18n::tr("library_ui.daemon_connected")
+                        .replace("{pid}", &r.version.pid.to_string())
+                        .replace("{library}", &r.version.library),
+                );
             }
             None => {
                 if let Some(note) = &l.note {
-                    ui.weak(format!("Open in this window: {note}"));
+                    ui.weak(crate::i18n::tr("library_ui.open_here_note").replace("{note}", note));
                 }
             }
         }
@@ -380,54 +432,63 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
             ui,
             vec![
                 (
-                    "Files indexed",
+                    crate::i18n::tr("library_ui.card_files"),
                     Box::new(|ui: &mut egui::Ui| {
                         ui.heading(count(st.files));
-                        ui.weak(format!(
-                            "{} records, {}",
-                            count(st.records),
-                            format_size(st.bytes, DECIMAL)
-                        ));
+                        ui.weak(
+                            crate::i18n::tr("library_ui.records_and_size")
+                                .replace("{records}", &count(st.records))
+                                .replace("{size}", &format_size(st.bytes, DECIMAL)),
+                        );
                     }),
                 ),
                 (
-                    "Unique contents",
+                    crate::i18n::tr("library_ui.card_unique"),
                     Box::new(|ui: &mut egui::Ui| {
                         ui.heading(count(st.unique_content));
-                        ui.weak("distinct content ids (hashed files)");
+                        ui.weak(crate::i18n::tr("library_ui.unique_hint"));
                     }),
                 ),
                 (
-                    "Duplicates",
+                    crate::i18n::tr("library_ui.card_duplicates"),
                     Box::new(|ui: &mut egui::Ui| {
                         match l.dup_summary {
                             Some((0, _)) => {
-                                ui.label("None found");
+                                ui.label(crate::i18n::tr("library_ui.none_found"));
                             }
                             Some((n, bytes)) => {
-                                ui.label(format!(
-                                    "{}, {} reclaimable",
-                                    crate::library::counted(n as u64, "group"),
-                                    format_size(bytes, DECIMAL)
-                                ));
+                                ui.label(
+                                    crate::i18n::tr("library_ui.groups_reclaimable")
+                                        .replace(
+                                            "{groups}",
+                                            &crate::library::counted(n as u64, "group"),
+                                        )
+                                        .replace("{size}", &format_size(bytes, DECIMAL)),
+                                );
                             }
                             None => {
-                                ui.weak("Counting…");
+                                ui.weak(crate::i18n::tr("library_ui.counting"));
                             }
                         }
-                        if ui.button("Open duplicate finder").clicked() {
+                        if ui
+                            .button(crate::i18n::tr("library_ui.open_dup_finder"))
+                            .clicked()
+                        {
                             push(lib(LibCmd::Duplicates));
                         }
                     }),
                 ),
                 (
-                    "Sources",
+                    crate::i18n::tr("library_ui.card_sources"),
                     Box::new(|ui: &mut egui::Ui| {
-                        ui.label(format!(
-                            "{}, {} offline",
-                            crate::library::counted(st.sources as u64, "source"),
-                            st.offline_sources
-                        ));
+                        ui.label(
+                            crate::i18n::tr("library_ui.sources_offline")
+                                .replace(
+                                    "{sources}",
+                                    &crate::library::counted(st.sources as u64, "source"),
+                                )
+                                .replace("{n}", &st.offline_sources.to_string()),
+                        );
                         for s in source_rows(&l.sources) {
                             ui.horizontal(|ui| {
                                 let (rect, _) = ui
@@ -446,17 +507,20 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                                 );
                             });
                         }
-                        if ui.small_button("Add source…").clicked() {
+                        if ui
+                            .small_button(crate::i18n::tr("library_ui.add_source"))
+                            .clicked()
+                        {
                             push(lib(LibCmd::AddSource));
                         }
                     }),
                 ),
                 // --- Task 33 ---
                 (
-                    "Protection",
+                    crate::i18n::tr("inspector.protection"),
                     Box::new(|ui: &mut egui::Ui| {
                         let Some(p) = &l.protection else {
-                            ui.weak("Counting…");
+                            ui.weak(crate::i18n::tr("library_ui.counting"));
                             return;
                         };
                         for line in protection_lines(p) {
@@ -468,8 +532,8 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                             ui.label(text).on_hover_text(line.how);
                         }
                         if ui
-                            .small_button("Check integrity now")
-                            .on_hover_text("Re-hash a sample of hashed files (Settings → Library)")
+                            .small_button(crate::i18n::tr("library_ui.check_integrity"))
+                            .on_hover_text(crate::i18n::tr("library_ui.check_integrity_tip"))
                             .clicked()
                         {
                             push(lib(LibCmd::CheckIntegrity));
@@ -480,7 +544,7 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
         );
         out.extend(acts.into_inner());
         ui.add_space(8.0);
-        ui.label(RichText::new("Storage").strong());
+        ui.label(RichText::new(crate::i18n::tr("library_ui.storage")).strong());
         for (name, label, free, total) in cx.drives {
             if *total == 0 {
                 continue;
@@ -496,11 +560,11 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
                 ui.add(
                     egui::ProgressBar::new(used as f32 / *total as f32)
                         .desired_width(240.0)
-                        .text(format!(
-                            "{} used of {}",
-                            format_size(used, DECIMAL),
-                            format_size(*total, DECIMAL)
-                        )),
+                        .text(
+                            crate::i18n::tr("library_ui.used_of")
+                                .replace("{used}", &format_size(used, DECIMAL))
+                                .replace("{total}", &format_size(*total, DECIMAL)),
+                        ),
                 );
             });
         }
@@ -510,10 +574,10 @@ pub fn overview(ui: &mut egui::Ui, cx: &mut ViewCx, out: &mut Vec<Action>) {
         ui.add_space(8.0);
         volume_table(ui, l, out);
         ui.add_space(8.0);
-        ui.label(RichText::new("Running jobs").strong());
+        ui.label(RichText::new(crate::i18n::tr("library_ui.running_jobs")).strong());
         let running: Vec<_> = l.jobs.iter().filter(|(_, j)| j.active()).collect();
         if running.is_empty() {
-            ui.weak("None");
+            ui.weak(crate::i18n::tr("toolbar.none"));
         }
         for (_, job) in running {
             ui.horizontal(|ui| {
@@ -534,27 +598,34 @@ fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
     if rows.is_empty() {
         return;
     }
-    ui.label(RichText::new("Per source").strong())
-        .on_hover_text("Counts from each source's index as last walked or changed.");
+    ui.label(RichText::new(crate::i18n::tr("library_ui.per_source")).strong())
+        .on_hover_text(crate::i18n::tr("library_ui.per_source_tip"));
     egui::Grid::new("keel-source-counts")
         .num_columns(7)
         .striped(true)
         .spacing([14.0, 6.0])
         .show(ui, |ui| {
-            for h in ["Source", "Files", "Folders", "Size", "Hashed", "Last walk"] {
+            for h in [
+                crate::i18n::tr("inspector.source"),
+                crate::i18n::tr("inspector.files"),
+                crate::i18n::tr("inspector.folders"),
+                crate::i18n::tr("toolbar.size"),
+                crate::i18n::tr("library_ui.col_hashed"),
+                crate::i18n::tr("library_ui.col_last_walk"),
+            ] {
                 ui.label(RichText::new(h).small().strong());
             }
-            ui.label(RichText::new("Contents").small().strong())
-                .on_hover_text(
-                    "Index file contents: search finds words inside its documents. Local folders \
-                 and drives are read by default; shares, SFTP, cloud and devices only when \
-                 turned on here (every document is downloaded once).",
-                );
+            ui.label(
+                RichText::new(crate::i18n::tr("library_ui.contents"))
+                    .small()
+                    .strong(),
+            )
+            .on_hover_text(crate::i18n::tr("library_ui.contents_tip"));
             ui.end_row();
             for r in rows {
                 let link = ui.link(&r.label);
                 let link = if r.offline {
-                    link.on_hover_text("Offline: the counts are from its last walk")
+                    link.on_hover_text(crate::i18n::tr("library_ui.offline_counts"))
                 } else {
                     link
                 };
@@ -565,9 +636,9 @@ fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                 ui.label(&r.folders);
                 ui.label(&r.size);
                 ui.label(&r.hashed)
-                    .on_hover_text("Files with a content hash: only those are checked for copies");
+                    .on_hover_text(crate::i18n::tr("library_ui.hashed_tip"));
                 let walk = RichText::new(if r.offline {
-                    format!("{} (offline)", r.last_walk)
+                    crate::i18n::tr("library_ui.offline_suffix").replace("{walk}", &r.last_walk)
                 } else {
                     r.last_walk.clone()
                 });
@@ -579,8 +650,9 @@ fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                 let mut on = r.contents;
                 let box_ = ui
                     .checkbox(&mut on, &r.documents)
-                    .on_hover_text("Documents whose text is indexed");
-                let name = format!("Index file contents of {}", r.label);
+                    .on_hover_text(crate::i18n::tr("library_ui.documents_tip"));
+                let name =
+                    crate::i18n::tr("library_ui.index_contents_of").replace("{name}", &r.label);
                 box_.widget_info(|| {
                     egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, &name)
                 });
@@ -598,13 +670,11 @@ fn source_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
 // --- Task 33 ---
 /// The drive inventory: one row per volume with its state menu and backup checkbox.
 fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
-    ui.label(RichText::new("Volumes").strong()).on_hover_text(
-        "Every drive, share, cloud account or host a source was seen on. Copies on one \
-             failure domain (one physical disk, account or host) count as one for protection.",
-    );
+    ui.label(RichText::new(crate::i18n::tr("search_settings.tab_volumes")).strong())
+        .on_hover_text(crate::i18n::tr("library_ui.volumes_tip"));
     let rows = volume_rows(&l.volumes);
     if rows.is_empty() {
-        ui.weak("None yet (sources are placed on their volume when indexed)");
+        ui.weak(crate::i18n::tr("library_ui.no_volumes_yet"));
         return;
     }
     egui::Grid::new("keel-volumes")
@@ -613,13 +683,13 @@ fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
         .spacing([14.0, 6.0])
         .show(ui, |ui| {
             for h in [
-                "Volume",
-                "Kind",
-                "State",
-                "Failure domain",
-                "Backup",
-                "Used / total",
-                "Last seen",
+                crate::i18n::tr("inspector.volume"),
+                crate::i18n::tr("toolbar.kind"),
+                crate::i18n::tr("library_ui.col_state"),
+                crate::i18n::tr("library_ui.failure_domain"),
+                crate::i18n::tr("library_ui.col_backup"),
+                crate::i18n::tr("library_ui.used_total"),
+                crate::i18n::tr("library_ui.last_seen"),
             ] {
                 ui.label(RichText::new(h).small().strong());
             }
@@ -636,10 +706,19 @@ fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                 };
                 ui.menu_button(text, |ui| {
                     for (state, what) in [
-                        (VolumeState::Online, "Automatic (online / offline)"),
-                        (VolumeState::Archived, "Archived (on a shelf; copies count)"),
-                        (VolumeState::Lost, "Lost (copies no longer count)"),
-                        (VolumeState::Retired, "Retired (copies no longer count)"),
+                        (
+                            VolumeState::Online,
+                            crate::i18n::tr("library_ui.state_automatic"),
+                        ),
+                        (
+                            VolumeState::Archived,
+                            crate::i18n::tr("library_ui.state_archived"),
+                        ),
+                        (VolumeState::Lost, crate::i18n::tr("library_ui.state_lost")),
+                        (
+                            VolumeState::Retired,
+                            crate::i18n::tr("library_ui.state_retired"),
+                        ),
                     ] {
                         if ui.button(what).clicked() {
                             out.push(lib(LibCmd::SetVolumeState {
@@ -663,12 +742,9 @@ fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                             .font(egui::TextStyle::Small),
                     )
                     .on_hover_text(if r.domain_set {
-                        "Set by you. Copies on volumes with the same failure domain count as \
-                         one. Clear the field to go back to the detected one."
+                        crate::i18n::tr("library_ui.domain_set_tip")
                     } else {
-                        "Detected. Copies on volumes with the same failure domain count as \
-                         one; type another name to merge volumes (two names of one server, \
-                         one disk the detection splits) or to split them."
+                        crate::i18n::tr("library_ui.domain_detected_tip")
                     });
                 if field.changed() {
                     ui.data_mut(|d| d.insert_temp(id, text.clone()));
@@ -685,7 +761,7 @@ fn volume_table(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                 let mut backup = r.backup;
                 if ui
                     .checkbox(&mut backup, "")
-                    .on_hover_text("Mark as backup")
+                    .on_hover_text(crate::i18n::tr("library_ui.mark_backup"))
                     .changed()
                 {
                     out.push(lib(LibCmd::SetBackup {
@@ -706,14 +782,14 @@ pub fn jobs(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if job.active() {
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                         out.push(lib(LibCmd::CancelJob(*id)));
                     }
                     if job.kind == "hash" {
                         let (text, on) = if l.hash_paused {
-                            ("Resume", false)
+                            (crate::i18n::tr("library_ui.resume"), false)
                         } else {
-                            ("Pause", true)
+                            (crate::i18n::tr("library_ui.pause"), true)
                         };
                         if ui.button(text).clicked() {
                             out.push(lib(LibCmd::PauseHashing(on)));
@@ -726,12 +802,14 @@ pub fn jobs(ui: &mut egui::Ui, l: &LibraryUi, out: &mut Vec<Action>) {
                         .show_percentage(),
                 );
                 let status = match job.status {
-                    JobStatus::Queued => "Queued",
-                    JobStatus::Running if job.kind == "hash" && l.hash_paused => "Paused",
-                    JobStatus::Running => "Running",
-                    JobStatus::Done => "Done",
-                    JobStatus::Failed => "Failed (see the log in Settings → Library)",
-                    JobStatus::Cancelled => "Cancelled",
+                    JobStatus::Queued => crate::i18n::tr("library_ui.job_queued"),
+                    JobStatus::Running if job.kind == "hash" && l.hash_paused => {
+                        crate::i18n::tr("library_ui.job_paused")
+                    }
+                    JobStatus::Running => crate::i18n::tr("library_ui.job_running"),
+                    JobStatus::Done => crate::i18n::tr("library_ui.job_done"),
+                    JobStatus::Failed => crate::i18n::tr("library_ui.job_failed"),
+                    JobStatus::Cancelled => crate::i18n::tr("library_ui.job_cancelled"),
                 };
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.strong(job.title());
@@ -765,19 +843,25 @@ fn lost_banner(ctx: &egui::Context, l: &LibraryUi, out: &mut Vec<Action>) {
                 ui.horizontal(|ui| {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
-                        "keel-daemon stopped: the library is read-only.",
+                        crate::i18n::tr("library_ui.daemon_stopped_banner"),
                     );
                     // While one runs (it waits for the stopping daemon to let go).
                     let idle = !l.opening;
                     if ui
-                        .add_enabled(idle, egui::Button::new("Reconnect"))
-                        .on_hover_text("Connect again, starting keel-daemon when it is not running")
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(crate::i18n::tr("library_ui.reconnect")),
+                        )
+                        .on_hover_text(crate::i18n::tr("library_ui.reconnect_tip"))
                         .clicked()
                     {
                         out.push(lib(LibCmd::Reconnect));
                     }
                     if ui
-                        .add_enabled(idle, egui::Button::new("Open in this window"))
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(crate::i18n::tr("library_ui.open_here")),
+                        )
                         .clicked()
                     {
                         out.push(lib(LibCmd::OpenHere));
@@ -804,8 +888,12 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let mut open = true;
     let mut close = false;
     // Esc closes it (a11y).
-    crate::a11y::esc_closes(ctx, "Add a library source", &mut open);
-    egui::Window::new("Add a library source")
+    crate::a11y::esc_closes(
+        ctx,
+        crate::i18n::tr("library_ui.add_source_title"),
+        &mut open,
+    );
+    egui::Window::new(crate::i18n::tr("library_ui.add_source_title"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
@@ -814,16 +902,21 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 .num_columns(2)
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label("Folder");
+                    ui.label(crate::i18n::tr("inspector.folder"));
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut add.root).desired_width(260.0));
-                        let pick = ui.add_enabled(!add.picking, egui::Button::new("Browse…"));
+                        let pick = ui.add_enabled(
+                            !add.picking,
+                            egui::Button::new(crate::i18n::tr("dialogs.browse")),
+                        );
                         if pick.clicked() {
                             add.picking = true;
                             // The OS dialog blocks: a worker; the answer comes back as a toast-free Msg.
                             let start = add.root.clone();
+                            // The language is per thread: look the title up here, not on the worker.
+                            let title = crate::i18n::tr("library_ui.pick_source_title").to_owned();
                             crate::worker::spawn("keel-pick-source", move || {
-                                let picked = crate::platform::file_dialog("Library source", |d| {
+                                let picked = crate::platform::file_dialog(&title, |d| {
                                     d.set_directory(&start).pick_folder()
                                 });
                                 crate::worker::send(
@@ -838,9 +931,9 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     });
                     ui.end_row();
                     if !remotes.is_empty() {
-                        ui.label("Or a remote");
+                        ui.label(crate::i18n::tr("library_ui.or_remote"));
                         let combo = egui::ComboBox::from_id_salt("add-source-remote")
-                            .selected_text("Pick a host or cloud account")
+                            .selected_text(crate::i18n::tr("library_ui.pick_remote_hint"))
                             .show_ui(ui, |ui| {
                                 for (label, root) in &remotes {
                                     if ui.selectable_label(false, label).clicked() {
@@ -852,20 +945,25 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                                     }
                                 }
                             });
-                        let _ = combo.response.named("Or a remote");
+                        let _ = combo
+                            .response
+                            .named(crate::i18n::tr("library_ui.or_remote"));
                         ui.end_row();
                     }
-                    ui.label("Label");
+                    ui.label(crate::i18n::tr("library_ui.label"));
                     ui.text_edit_singleline(&mut add.label);
                     ui.end_row();
-                    ui.label("Hidden files");
-                    ui.checkbox(&mut add.include_hidden, "Include");
+                    ui.label(crate::i18n::tr("settings.hidden_files"));
+                    ui.checkbox(
+                        &mut add.include_hidden,
+                        crate::i18n::tr("library_ui.include"),
+                    );
                     ui.end_row();
-                    ui.label("Ignore");
+                    ui.label(crate::i18n::tr("library_ui.ignore"));
                     ui.add(
                         egui::TextEdit::multiline(&mut add.ignore)
                             .desired_rows(3)
-                            .hint_text("gitignore patterns, one per line (node_modules/, *.tmp)"),
+                            .hint_text(crate::i18n::tr("library_ui.ignore_hint")),
                     );
                     ui.end_row();
                 });
@@ -873,7 +971,10 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             ui.horizontal(|ui| {
                 let ok = root.is_some() && !add.label.trim().is_empty();
                 if ui
-                    .add_enabled(ok, egui::Button::new("Add and index"))
+                    .add_enabled(
+                        ok,
+                        egui::Button::new(crate::i18n::tr("library_ui.add_and_index")),
+                    )
                     .clicked()
                 {
                     if let Some(root) = root {
@@ -898,7 +999,7 @@ fn add_source(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                         })));
                     }
                 }
-                close |= ui.button("Cancel").clicked();
+                close |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
             });
         });
     if !open || close {
@@ -930,7 +1031,7 @@ fn plan_dialog(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         if d.changed {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "The sources changed since the preview. Review the new one:",
+                crate::i18n::tr("library_ui.plan_changed"),
             );
         }
         ui.strong(d.plan.summary());
@@ -952,7 +1053,10 @@ fn plan_dialog(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let confirm = ui.add_enabled(!d.running, egui::Button::new("Confirm"));
+            let confirm = ui.add_enabled(
+                !d.running,
+                egui::Button::new(crate::i18n::tr("library_ui.confirm")),
+            );
             // Enter confirms (Esc cancels), as the button says: a fresh press only, never
             // the key repeat of an Enter held since the palette or the dialog before (a held
             // Enter would confirm a preview nobody read), and not on the frame it opened.
@@ -960,7 +1064,7 @@ fn plan_dialog(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             if confirm.clicked() || (enter && !d.running) {
                 out.push(lib(LibCmd::Execute));
             }
-            cancel |= ui.button("Cancel").clicked();
+            cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
         });
     });
     d.armed = true;
@@ -989,13 +1093,16 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let Some(picker) = &mut l.picker else { return };
     let mut open = true;
     // Esc closes it (a11y).
-    crate::a11y::esc_closes(ctx, "Tags", &mut open);
-    egui::Window::new("Tags")
+    crate::a11y::esc_closes(ctx, crate::i18n::tr("sidebar.tags"), &mut open);
+    egui::Window::new(crate::i18n::tr("sidebar.tags"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.weak(format!("For {}", crate::jobs::items(picker.targets.len())));
+            ui.weak(
+                crate::i18n::tr("library_ui.for_items")
+                    .replace("{items}", &crate::jobs::items(picker.targets.len())),
+            );
             let on_all = |tag| {
                 picker.targets.iter().all(|t| {
                     let real = crate::library::real_of(&l.sources, t);
@@ -1032,7 +1139,11 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                         let ring = egui::Stroke::new(1.5_f32, ui.visuals().text_color());
                         ui.painter().circle_stroke(center, 9.0, ring);
                     }
-                    if r.tip(&format!("New tag color: {}", c.name())).clicked() {
+                    if r.tip(
+                        &crate::i18n::tr("library_ui.new_tag_color").replace("{name}", c.name()),
+                    )
+                    .clicked()
+                    {
                         picker.new_color = c;
                     }
                 }
@@ -1040,11 +1151,13 @@ fn tag_picker(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             ui.horizontal(|ui| {
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut picker.new_name)
-                        .hint_text("New tag")
+                        .hint_text(crate::i18n::tr("library_ui.new_tag_hint"))
                         .desired_width(160.0),
                 );
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.button("Create").clicked() || enter) && !picker.new_name.trim().is_empty() {
+                if (ui.button(crate::i18n::tr("dialogs.create")).clicked() || enter)
+                    && !picker.new_name.trim().is_empty()
+                {
                     out.push(lib(LibCmd::CreateTag {
                         name: std::mem::take(&mut picker.new_name),
                         color: picker.new_color.hex().unwrap_or_default().to_owned(),
@@ -1063,59 +1176,74 @@ fn dup_finder(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     };
     let mut open = true;
     // Esc closes it (a11y).
-    crate::a11y::esc_closes(ctx, "Duplicate finder", &mut open);
-    egui::Window::new("Duplicate finder")
+    crate::a11y::esc_closes(
+        ctx,
+        crate::i18n::tr("library_ui.dup_finder_title"),
+        &mut open,
+    );
+    egui::Window::new(crate::i18n::tr("library_ui.dup_finder_title"))
         .open(&mut open)
         .default_size([620.0, 420.0])
         .show(ctx, |ui| match &finder.groups {
             None => {
                 crate::anim::spinner(ui);
-                ui.weak("Finding duplicates (only hashed files are compared)…");
+                ui.weak(crate::i18n::tr("library_ui.finding_dups"));
             }
             Some(Err(e)) => {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
             Some(Ok(groups)) if groups.is_empty() => {
-                ui.label("No duplicates among the hashed files.");
+                ui.label(crate::i18n::tr("library_ui.no_dups"));
             }
             Some(Ok(groups)) => {
-                ui.strong(format!(
-                    "{}, {} reclaimable",
-                    crate::library::counted(groups.len() as u64, "group"),
-                    format_size(reclaimable(groups), DECIMAL)
-                ));
-                // Task 85: local copies on one volume share their bytes (preview first).
-                let dedup = ui.button("Replace with hard links…").on_hover_text(
-                    "Copies on the same volume become hard links to one of them, after a \
-                     preview and a byte-by-byte check; Undo copies them back",
+                ui.strong(
+                    crate::i18n::tr("library_ui.groups_reclaimable")
+                        .replace(
+                            "{groups}",
+                            &crate::library::counted(groups.len() as u64, "group"),
+                        )
+                        .replace("{size}", &format_size(reclaimable(groups), DECIMAL)),
                 );
+                // Task 85: local copies on one volume share their bytes (preview first).
+                let dedup = ui
+                    .button(crate::i18n::tr("library_ui.replace_hard_links"))
+                    .on_hover_text(crate::i18n::tr("library_ui.replace_hard_links_tip"));
                 if dedup.clicked() {
                     out.push(Action::System(crate::system_cleanup::SysCmd::DedupPreview));
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (g, group) in groups.iter().enumerate() {
-                        let title = format!(
-                            "{} × {}  —  {}",
-                            group.records.len(),
-                            format_size(group.size, DECIMAL),
-                            group.records[0].path.name()
-                        );
+                        let title = crate::i18n::tr("library_ui.group_title")
+                            .replace("{count}", &group.records.len().to_string())
+                            .replace("{size}", &format_size(group.size, DECIMAL))
+                            .replace("{name}", group.records[0].path.name());
                         egui::CollapsingHeader::new(title)
                             .id_salt(("dup", g))
                             .show(ui, |ui| {
                                 for (i, r) in group.records.iter().enumerate() {
                                     ui.horizontal(|ui| {
-                                        if ui.small_button("Keep this one").clicked() {
+                                        if ui
+                                            .small_button(crate::i18n::tr(
+                                                "library_ui.keep_this_one",
+                                            ))
+                                            .clicked()
+                                        {
                                             out.push(lib(LibCmd::KeepOne { group: g, keep: i }));
                                         }
-                                        if ui.small_button("Open folder").clicked() {
+                                        if ui
+                                            .small_button(crate::i18n::tr("library_ui.open_folder"))
+                                            .clicked()
+                                        {
                                             if let Some(dir) = r.path.parent() {
                                                 out.push(Action::Navigate(dir));
                                             }
                                         }
                                         ui.weak(&r.source);
                                         if r.offline {
-                                            ui.colored_label(ui.visuals().warn_fg_color, "offline");
+                                            ui.colored_label(
+                                                ui.visuals().warn_fg_color,
+                                                crate::i18n::tr("library_ui.offline"),
+                                            );
                                         }
                                         ui.add(egui::Label::new(r.path.display()).truncate());
                                     });
@@ -1135,7 +1263,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
     let lib_settings = &mut s.library;
     let mut enabled = lib_settings.enabled;
     if ui
-        .checkbox(&mut enabled, "Library (index sources, tags, duplicates)")
+        .checkbox(&mut enabled, crate::i18n::tr("library_ui.enable"))
         .changed()
     {
         l.pending.push(LibCmd::Enable(enabled));
@@ -1145,7 +1273,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
         .num_columns(2)
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Library");
+            ui.label(crate::i18n::tr("settings.library"));
             let combo = egui::ComboBox::from_id_salt("settings-library-name")
                 .selected_text(lib_settings.name.as_str())
                 .show_ui(ui, |ui| {
@@ -1161,13 +1289,16 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                         }
                     }
                 });
-            let _ = combo.response.named("Library");
+            let _ = combo.response.named(crate::i18n::tr("settings.library"));
             ui.end_row();
-            ui.label("New library");
+            ui.label(crate::i18n::tr("library_ui.new_library"));
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut l.new_name).desired_width(140.0));
                 if ui
-                    .add_enabled(!l.new_name.trim().is_empty(), egui::Button::new("Create"))
+                    .add_enabled(
+                        !l.new_name.trim().is_empty(),
+                        egui::Button::new(crate::i18n::tr("dialogs.create")),
+                    )
                     .clicked()
                 {
                     l.pending
@@ -1175,23 +1306,23 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                 }
             });
             ui.end_row();
-            ui.label("Hashing");
+            ui.label(crate::i18n::tr("library_ui.hashing"));
             ui.vertical(|ui| {
                 for (value, text, tip) in [
                     (
                         Hashing::IdleOnly,
-                        "Only while idle",
-                        "Pauses while you use Keel and on battery",
+                        crate::i18n::tr("library_ui.hash_idle"),
+                        crate::i18n::tr("library_ui.hash_idle_tip"),
                     ),
                     (
                         Hashing::PauseOnBattery,
-                        "Pause on battery",
-                        "Runs while you work too",
+                        crate::i18n::tr("library_ui.hash_battery"),
+                        crate::i18n::tr("library_ui.hash_battery_tip"),
                     ),
                     (
                         Hashing::Off,
-                        "Off",
-                        "No content ids: no duplicate finder or last-copy warnings",
+                        crate::i18n::tr("library_ui.off"),
+                        crate::i18n::tr("library_ui.off_tip"),
                     ),
                 ] {
                     ui.radio_value(&mut lib_settings.hashing, value, text)
@@ -1199,19 +1330,22 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                 }
             });
             ui.end_row();
-            ui.label("Remote hashing");
+            ui.label(crate::i18n::tr("library_ui.remote_hashing"));
             ui.checkbox(
                 &mut lib_settings.hash_remote,
-                "Hash SFTP sources (each file is downloaded once)",
+                crate::i18n::tr("library_ui.hash_sftp"),
             );
             ui.end_row();
-            ui.label("Cloud hashing");
+            ui.label(crate::i18n::tr("library_ui.cloud_hashing"));
             ui.vertical(|ui| {
-                ui.checkbox(&mut lib_settings.hash_cloud, "Hash cloud sources");
-                ui.weak("Off by default: downloads can cost egress fees.");
+                ui.checkbox(
+                    &mut lib_settings.hash_cloud,
+                    crate::i18n::tr("library_ui.hash_cloud"),
+                );
+                ui.weak(crate::i18n::tr("library_ui.cloud_off_note"));
             });
             ui.end_row();
-            ui.label("Remote size cap");
+            ui.label(crate::i18n::tr("library_ui.remote_size_cap"));
             let mut mib = lib_settings.remote_hash_max_bytes >> 20;
             if ui
                 .add(
@@ -1219,13 +1353,13 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                         .range(1..=1 << 20)
                         .suffix(" MiB"),
                 )
-                .on_hover_text("Bigger remote and cloud files are not hashed (default 1024 MiB)")
+                .on_hover_text(crate::i18n::tr("library_ui.remote_size_cap_tip"))
                 .changed()
             {
                 lib_settings.remote_hash_max_bytes = mib << 20;
             }
             ui.end_row();
-            ui.label("Check remote sources every");
+            ui.label(crate::i18n::tr("library_ui.check_remotes_every"));
             let _ = ui
                 .add(
                     egui::Slider::new(
@@ -1235,105 +1369,106 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                     .logarithmic(true)
                     .suffix(" s"),
                 )
-                .on_hover_text(
-                    "Google Drive and Dropbox report their changes, SFTP folders are checked for \
-                 new and removed files, other sources are walked again (every 5 minutes or \
-                 this interval, whichever is longer); local sources are watched live. From the \
-                 next start for this value.",
-                )
-                .named("Check remote sources every");
+                .on_hover_text(crate::i18n::tr("library_ui.check_remotes_every_tip"))
+                .named(crate::i18n::tr("library_ui.check_remotes_every"));
             ui.end_row();
-            ui.label("Details view");
-            ui.checkbox(&mut lib_settings.tags_column, "Tags column");
+            ui.label(crate::i18n::tr("library_ui.details_view"));
+            ui.checkbox(
+                &mut lib_settings.tags_column,
+                crate::i18n::tr("library_ui.tags_column"),
+            );
             ui.end_row();
             // --- Task 62 ---
-            ui.label("Contents");
+            ui.label(crate::i18n::tr("library_ui.contents"));
             ui.vertical(|ui| {
                 let mut on = l.stats.index_contents;
-                if ui.checkbox(&mut on, "Index file contents").changed() {
+                if ui
+                    .checkbox(&mut on, crate::i18n::tr("library_ui.index_contents"))
+                    .changed()
+                {
                     l.stats.index_contents = on;
                     l.pending.push(LibCmd::Contents {
                         source: None,
                         on: Some(on),
                     });
                 }
-                ui.weak(
-                    "Library search finds words inside text, PDF, Word, spreadsheet and \
-                     presentation files (no OCR of images or scans). Read at idle priority from \
-                     local folders and drives; shares, SFTP, cloud and paired devices only when \
-                     turned on per source in the Overview: every document is downloaded once, \
-                     which takes time and can cost egress fees. Off deletes the text read so far.",
-                );
+                ui.weak(crate::i18n::tr("library_ui.index_contents_note"));
             });
             ui.end_row();
             // --- Task 53 ---
-            ui.label("Last backup");
+            ui.label(crate::i18n::tr("library_ui.last_backup"));
             ui.horizontal(|ui| {
                 ui.label(crate::library::when(l.stats.last_backup));
-                if ui.button("Back up…").clicked() {
+                if ui
+                    .button(crate::i18n::tr("library_ui.backup_btn"))
+                    .clicked()
+                {
                     l.pending.push(LibCmd::Backup);
                 }
-                if ui.button("Restore…").clicked() {
+                if ui
+                    .button(crate::i18n::tr("library_ui.restore_btn"))
+                    .clicked()
+                {
                     l.pending.push(LibCmd::Restore);
                 }
             });
             ui.end_row();
             // --- Task 33 ---
-            ui.label("Integrity check");
+            ui.label(crate::i18n::tr("library_ui.integrity_check"));
             ui.horizontal(|ui| {
                 let combo = egui::ComboBox::from_id_salt("settings-library-integrity")
                     .selected_text(match lib_settings.integrity_days {
-                        0 => "Off".to_owned(),
-                        1 => "Daily".to_owned(),
-                        7 => "Weekly".to_owned(),
-                        30 => "Monthly".to_owned(),
-                        d => format!("Every {d} days"),
+                        0 => crate::i18n::tr("library_ui.off").to_owned(),
+                        1 => crate::i18n::tr("library_ui.daily").to_owned(),
+                        7 => crate::i18n::tr("library_ui.weekly").to_owned(),
+                        30 => crate::i18n::tr("library_ui.monthly").to_owned(),
+                        d => crate::i18n::tr("library_ui.every_n_days")
+                            .replace("{d}", &d.to_string()),
                     })
                     .show_ui(ui, |ui| {
-                        for (days, text) in
-                            [(0, "Off"), (1, "Daily"), (7, "Weekly"), (30, "Monthly")]
-                        {
+                        for (days, text) in [
+                            (0, crate::i18n::tr("library_ui.off")),
+                            (1, crate::i18n::tr("library_ui.daily")),
+                            (7, crate::i18n::tr("library_ui.weekly")),
+                            (30, crate::i18n::tr("library_ui.monthly")),
+                        ] {
                             ui.selectable_value(&mut lib_settings.integrity_days, days, text);
                         }
                     });
-                let _ = combo.response.named("Integrity check");
+                let _ = combo
+                    .response
+                    .named(crate::i18n::tr("library_ui.integrity_check"));
                 let _ = ui
                     .add(
                         egui::Slider::new(&mut lib_settings.integrity_pct, 0.1..=10.0)
                             .logarithmic(true)
-                            .suffix(" % of files"),
+                            .suffix(crate::i18n::tr("library_ui.pct_of_files")),
                     )
-                    .on_hover_text(
-                        "Each check re-hashes this share of every source's hashed files, at idle \
-                     priority, and marks files whose bytes changed under the same size and times",
-                    )
-                    .named("Share of files the integrity check re-hashes");
+                    .on_hover_text(crate::i18n::tr("library_ui.integrity_pct_tip"))
+                    .named(crate::i18n::tr("library_ui.integrity_pct_name"));
             });
             ui.end_row();
-            ui.label("Index");
+            ui.label(crate::i18n::tr("library_ui.index"));
             if ui
-                .add_enabled(l.is_open(), egui::Button::new("Rebuild index"))
-                .on_hover_text("Walks every source again")
+                .add_enabled(
+                    l.is_open(),
+                    egui::Button::new(crate::i18n::tr("library_ui.rebuild_index")),
+                )
+                .on_hover_text(crate::i18n::tr("library_ui.rebuild_index_tip"))
                 .clicked()
             {
                 l.pending.push(LibCmd::RebuildIndex);
             }
             ui.end_row();
-            ui.label("Background");
+            ui.label(crate::i18n::tr("library_ui.background"));
             ui.vertical(|ui| {
                 let attached = l.remote().is_some();
                 if ui
                     .checkbox(
                         &mut lib_settings.daemon,
-                        "Run the library in a background daemon",
+                        crate::i18n::tr("library_ui.run_daemon"),
                     )
-                    .on_hover_text(
-                        "Keel starts keel-daemon for this profile and works through it, so \
-                         the keel command line, keel mcp and other windows can use the \
-                         library while this window is open. The daemon keeps running when \
-                         the window closes (keel daemon stop ends it). A running daemon is \
-                         always used, whatever this says.",
-                    )
+                    .on_hover_text(crate::i18n::tr("library_ui.run_daemon_tip"))
                     .changed()
                     && lib_settings.daemon
                     && l.is_open()
@@ -1343,23 +1478,26 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, l: &m
                     l.pending.push(LibCmd::Restart);
                 }
                 ui.weak(match l.remote() {
-                    Some(r) => format!(
-                        "Connected to keel-daemon (pid {}){}",
-                        r.version.pid,
-                        if l.spawned {
-                            ", started by this window"
-                        } else {
-                            ""
-                        }
-                    ),
-                    None if l.is_open() => "Open in this window".to_owned(),
+                    Some(r) => {
+                        crate::i18n::tr("library_ui.daemon_connected_short")
+                            .replace("{pid}", &r.version.pid.to_string())
+                            + if l.spawned {
+                                crate::i18n::tr("library_ui.started_here")
+                            } else {
+                                ""
+                            }
+                    }
+                    None if l.is_open() => crate::i18n::tr("library_ui.open_here").to_owned(),
                     None => String::new(),
                 });
             });
             ui.end_row();
         });
     if let Some(dir) = crate::settings::data_dir() {
-        ui.weak(format!("Stored in {}", dir.join("library").display()));
+        ui.weak(
+            crate::i18n::tr("library_ui.stored_in")
+                .replace("{path}", &dir.join("library").display().to_string()),
+        );
     }
 }
 
