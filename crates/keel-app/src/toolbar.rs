@@ -756,7 +756,7 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
                         .hint_text(crate::i18n::tr("toolbar.search_hint"))
                         .desired_width(ui.available_width()),
                 )
-                .named("Search");
+                .named(crate::i18n::tr("toolbar.search"));
             // Focused on the frame it first shows (a focus request for a widget not
             // drawn yet would be dropped).
             let just_opened = ui
@@ -779,10 +779,10 @@ fn item_ui(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>, ope
         Item::Space => {}
         Item::Group | Item::Share | Item::Tags | Item::Actions => {
             let name = match item {
-                Item::Group => "Group and Sort",
-                Item::Share => "Share",
-                Item::Tags => "Tags",
-                _ => "Action",
+                Item::Group => crate::i18n::tr("toolbar.group_and_sort"),
+                Item::Share => crate::i18n::tr("toolbar.item_share"),
+                Item::Tags => crate::i18n::tr("toolbar.item_tags"),
+                _ => crate::i18n::tr("toolbar.item_actions"),
             };
             menu(ui, name, item.icon(), open, |ui| {
                 item_menu(ui, item, s, out)
@@ -927,7 +927,7 @@ pub fn panel(
                     }
                 });
                 open |= r.inner.is_some();
-                r.response.tip("More toolbar items");
+                r.response.tip(crate::i18n::tr("toolbar.more_items_tip"));
                 layout.controls.push(child.min_rect());
             }
             if chrome.caption_buttons() {
@@ -953,8 +953,12 @@ pub fn panel(
 /// Right-click on the empty toolbar (Finder's menu).
 fn background_menu(ui: &mut Ui, s: &mut AppState, out: &mut Vec<Action>) {
     let labels = &mut s.settings.toolbar.labels;
-    if ui.radio_value(labels, true, "Icon and Text").clicked()
-        || ui.radio_value(labels, false, "Icon Only").clicked()
+    if ui
+        .radio_value(labels, true, crate::i18n::tr("toolbar.icon_and_text"))
+        .clicked()
+        || ui
+            .radio_value(labels, false, crate::i18n::tr("toolbar.icon_only"))
+            .clicked()
     {
         ui.close_menu();
     }
@@ -996,24 +1000,28 @@ fn caption_buttons(
     let text = ui.visuals().text_color();
     let buttons = [
         (
-            "Minimize",
+            crate::i18n::tr("toolbar.minimize"),
             Icon::Minimize,
             egui::ViewportCommand::Minimized(true),
         ),
         if maximized {
             (
-                "Restore",
+                crate::i18n::tr("toolbar.restore"),
                 Icon::Restore,
                 egui::ViewportCommand::Maximized(false),
             )
         } else {
             (
-                "Maximize",
+                crate::i18n::tr("toolbar.maximize"),
                 Icon::Maximize,
                 egui::ViewportCommand::Maximized(true),
             )
         },
-        ("Close", Icon::Close, egui::ViewportCommand::Close),
+        (
+            crate::i18n::tr("toolbar.close"),
+            Icon::Close,
+            egui::ViewportCommand::Close,
+        ),
     ];
     for (i, (name, glyph, cmd)) in buttons.into_iter().enumerate() {
         let x = full.right() - (3 - i) as f32 * w;
@@ -1084,14 +1092,14 @@ pub fn customize(ctx: &egui::Context, config: &mut Config) {
     let mut done = false;
     let modal = egui::Modal::new(id).show(ctx, |ui| {
         ui.set_width(440.0_f32.min(ctx.screen_rect().width() - 48.0));
-        ui.heading("Customize Toolbar");
-        ui.weak("Drag items to reorder them, or drag them in or out of the toolbar.");
+        ui.heading(crate::i18n::tr("toolbar.customize_title"));
+        ui.weak(crate::i18n::tr("toolbar.customize_hint"));
         ui.add_space(design::space::M);
         let mut place: Option<(Item, usize)> = None;
         let mut remove: Option<Item> = None;
         let max = (ctx.screen_rect().height() - 260.0).max(120.0);
         egui::ScrollArea::vertical().max_height(max).show(ui, |ui| {
-            ui.strong("In the toolbar");
+            ui.strong(crate::i18n::tr("toolbar.in_toolbar"));
             let items = config.items.clone();
             for (i, &item) in items.iter().enumerate() {
                 let row = ui.horizontal(|ui| {
@@ -1101,18 +1109,26 @@ pub fn customize(ctx: &egui::Context, config: &mut Config) {
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         let label = item.label();
                         if ui
-                            .small_button("Remove")
-                            .named(&format!("Remove {label}"))
+                            .small_button(crate::i18n::tr("toolbar.remove"))
+                            .named(
+                                &crate::i18n::tr("toolbar.remove_item").replace("{label}", label),
+                            )
                             .clicked()
                         {
                             remove = Some(item);
                         }
                         let later = ui.add_enabled(i + 1 < items.len(), egui::Button::new("⏷"));
-                        if later.tip(&format!("Move {label} right")).clicked() {
+                        if later
+                            .tip(&crate::i18n::tr("toolbar.move_right").replace("{label}", label))
+                            .clicked()
+                        {
                             place = Some((item, i + 2));
                         }
                         let earlier = ui.add_enabled(i > 0, egui::Button::new("⏶"));
-                        if earlier.tip(&format!("Move {label} left")).clicked() {
+                        if earlier
+                            .tip(&crate::i18n::tr("toolbar.move_left").replace("{label}", label))
+                            .clicked()
+                        {
                             place = Some((item, i - 1));
                         }
                     });
@@ -1122,7 +1138,7 @@ pub fn customize(ctx: &egui::Context, config: &mut Config) {
                 }
             }
             let end = ui.add(egui::Label::new(
-                egui::RichText::new("Drop here to add at the end").weak(),
+                egui::RichText::new(crate::i18n::tr("toolbar.drop_to_add_end")).weak(),
             ));
             if let Some(dropped) = end.dnd_release_payload::<Item>() {
                 place = Some((*dropped, items.len()));
@@ -1130,13 +1146,13 @@ pub fn customize(ctx: &egui::Context, config: &mut Config) {
             ui.add_space(design::space::M);
             let available = ui.group(|ui| {
                 ui.set_width(ui.available_width());
-                ui.strong("Available");
+                ui.strong(crate::i18n::tr("toolbar.available"));
                 let missing: Vec<Item> = Item::ALL
                     .into_iter()
                     .filter(|i| !items.contains(i))
                     .collect();
                 if missing.is_empty() {
-                    ui.weak("Every item is in the toolbar. Drop one here to remove it.");
+                    ui.weak(crate::i18n::tr("toolbar.all_in_toolbar"));
                 }
                 for item in missing {
                     ui.horizontal(|ui| {
@@ -1144,8 +1160,13 @@ pub fn customize(ctx: &egui::Context, config: &mut Config) {
                             chip(ui, item);
                         });
                         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            let name = format!("Add {}", item.label());
-                            if ui.small_button("Add").named(&name).clicked() {
+                            let name = crate::i18n::tr("toolbar.add_item")
+                                .replace("{label}", item.label());
+                            if ui
+                                .small_button(crate::i18n::tr("toolbar.add"))
+                                .named(&name)
+                                .clicked()
+                            {
                                 place = Some((item, items.len()));
                             }
                         });
@@ -1163,17 +1184,28 @@ pub fn customize(ctx: &egui::Context, config: &mut Config) {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Show");
-            ui.radio_value(&mut config.labels, false, "Icon Only");
-            ui.radio_value(&mut config.labels, true, "Icon and Text");
+            ui.label(crate::i18n::tr("toolbar.show"));
+            ui.radio_value(
+                &mut config.labels,
+                false,
+                crate::i18n::tr("toolbar.icon_only"),
+            );
+            ui.radio_value(
+                &mut config.labels,
+                true,
+                crate::i18n::tr("toolbar.icon_and_text"),
+            );
         });
         ui.add_space(design::space::M);
         ui.horizontal(|ui| {
-            if ui.button("Restore Default").clicked() {
+            if ui
+                .button(crate::i18n::tr("toolbar.restore_default"))
+                .clicked()
+            {
                 *config = Config::default();
             }
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Done").clicked() {
+                if ui.button(crate::i18n::tr("toolbar.done")).clicked() {
                     done = true;
                 }
             });
