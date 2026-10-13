@@ -38,7 +38,10 @@ pub fn uri_list(paths: &[PathBuf]) -> Result<String> {
 /// The local path of a `file://` URI (`file:///p` or `file://localhost/p`).
 pub fn uri_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.trim().strip_prefix("file://")?;
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let (host, rest) = rest.split_at(rest.find('/')?);
+    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
     if !rest.starts_with('/') {
         return None;
     }
@@ -83,6 +86,17 @@ fn bytes_path(b: Vec<u8>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localhost_is_case_insensitive() {
+        for host in ["localhost", "LOCALHOST", "LocalHost"] {
+            assert_eq!(
+                uri_path(&format!("file://{host}/tmp/a%20b")),
+                Some(PathBuf::from("/tmp/a b"))
+            );
+        }
+        assert_eq!(uri_path("file://localhost.example/tmp/a"), None);
+    }
 
     #[test]
     fn uri_list_escapes_and_round_trips() {
