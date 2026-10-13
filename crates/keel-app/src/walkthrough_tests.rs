@@ -1188,6 +1188,54 @@ fn new_folder_and_new_file() {
     assert_eq!(read(&a.join("New file.txt")), "keep");
 }
 
+/// Resting the pointer on a file shows its preview floating after the delay (a text file,
+/// then a photo); a key hides it; Quick Look and the setting keep it off.
+#[test]
+fn hover_preview_after_a_rest() {
+    let root = demo();
+    let docs = root.join("Documents");
+    let settings = crate::settings::Settings {
+        hover_preview_ms: 200,
+        ..Default::default()
+    };
+    let mut h = app_with(boot(&docs, &root.join("Pictures"), settings), SIZE);
+    let shown = |name: &'static str| {
+        move |s: &AppState| s.hover.shown.as_ref().is_some_and(|p| p.name() == name)
+    };
+    let rest_on = |h: &mut H, name: &str| {
+        let at = row(h, name, 0);
+        h.input_mut().events.push(Event::PointerMoved(at));
+        h.run_steps(2);
+    };
+    rest_on(&mut h, "notes.md");
+    assert!(s(&h).hover.shown.is_none(), "not before the delay");
+    assert!(wait(&mut h, 20, &shown("notes.md")), "text preview");
+    shot(&mut h, "hover-preview");
+
+    key(&mut h, NONE, Key::Escape);
+    assert!(s(&h).hover.shown.is_none(), "a key hides it");
+    h.run_steps(20);
+    assert!(
+        s(&h).hover.shown.is_none(),
+        "until the pointer rests on another file"
+    );
+
+    rest_on(&mut h, "lake.jpg");
+    assert!(wait(&mut h, 20, &shown("lake.jpg")), "image preview");
+
+    // Never over Quick Look, which shows the file large already.
+    sm(&mut h).finder.quicklook.open = true;
+    rest_on(&mut h, "notes.md");
+    h.run_steps(20);
+    assert!(s(&h).hover.shown.is_none(), "not over Quick Look");
+    let ctx = s(&h).ctx.clone();
+    sm(&mut h).finder.quicklook.close(&ctx);
+
+    sm(&mut h).settings.hover_preview = false;
+    h.run_steps(2);
+    assert!(s(&h).hover.shown.is_none(), "off in Settings");
+}
+
 /// Ctrl+Shift+O lists apps for the file (nothing is launched); Properties shows the facts.
 #[test]
 fn open_with_and_properties() {

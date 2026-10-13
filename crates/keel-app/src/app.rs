@@ -661,6 +661,10 @@ impl App {
         crate::folder_style::publish(ctx, &s.library);
         // Task 67: tags for the context menu's color dots.
         crate::tag_dots::publish(ctx, &s.library);
+        // Never over Quick Look or the media viewer, which already show the file large.
+        let delay = Duration::from_millis(s.settings.hover_preview_ms);
+        let on = s.settings.hover_preview && !s.finder.quicklook.open && s.viewer.is_none();
+        (s.hover).show(ctx, &s.preview, on, delay);
         s.viewer_ui(ctx); // Task 32
         crate::quicklook::ui(ctx, s, &mut out); // Phase 14 Task 67
         let router = s.router.clone();

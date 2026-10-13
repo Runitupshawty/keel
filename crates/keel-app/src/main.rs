@@ -34,6 +34,7 @@ mod fonts; // also the web client's (keel-web includes it by path)
 mod fuzz_tests;
 mod goto; // Phase 14 Task 67
 mod hardlink_dedup; // Task 85: replace duplicates with hard links
+mod hover; // hover previews
 mod icon_theme;
 mod icons;
 mod inspector;

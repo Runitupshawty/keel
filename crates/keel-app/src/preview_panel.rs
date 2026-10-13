@@ -226,6 +226,22 @@ impl PreviewPanel {
         false
     }
 
+    /// A cached preview (hover previews), without touching what the panel shows.
+    pub fn cached(&self, key: &PreviewKey) -> Option<&Preview> {
+        self.cache.get(key).map(|(p, ..)| p)
+    }
+
+    /// Asks the worker for `e`'s preview at `px` (hover previews; the answer lands in the
+    /// cache). False when `follow` would not read it either: too large for its kind.
+    pub fn request(&self, key: &PreviewKey, e: &Entry, px: u32) -> bool {
+        let streams = keel_preview::streams(&e.ext) && e.path.split_archive().is_none();
+        if e.size > self.max_bytes && !streams {
+            return false;
+        }
+        let _ = self.jobs.send((key.clone(), e.clone(), px.max(64)));
+        true
+    }
+
     /// A worker answer: cached, and shown if it is still the one wanted.
     pub fn insert(&mut self, ctx: &egui::Context, key: PreviewKey, preview: Preview) {
         if self.key.as_ref() == Some(&key) {
@@ -524,7 +540,7 @@ fn audio_controls(
     }
 }
 
-fn texture(ctx: &egui::Context, name: &str, r: &Rgba) -> Option<TextureHandle> {
+pub(crate) fn texture(ctx: &egui::Context, name: &str, r: &Rgba) -> Option<TextureHandle> {
     (r.w > 0 && r.h > 0 && r.data.len() == r.w as usize * r.h as usize * 4).then(|| {
         ctx.load_texture(
             name,

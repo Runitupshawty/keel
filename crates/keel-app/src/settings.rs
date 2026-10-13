@@ -51,6 +51,9 @@ pub struct Settings {
     pub one_transfer_per_drive: bool,
     /// Task 46: Calculate sizes starts on its own in local folders outside the library.
     pub folder_sizes_local: bool,
+    /// A large preview after the pointer rests on a file for `hover_preview_ms`.
+    pub hover_preview: bool,
+    pub hover_preview_ms: u64,
     /// `[[remotes]]`: SFTP hosts. Passwords and passphrases live in the OS keychain only.
     pub remotes: Vec<keel_vfs::RemoteHost>,
     /// `[[clouds]]`: cloud accounts, non-secret fields only. Tokens and keys live in the OS
@@ -253,6 +256,8 @@ impl Default for Settings {
             remote_thumbnails: false,
             one_transfer_per_drive: false,
             folder_sizes_local: false,
+            hover_preview: true,
+            hover_preview_ms: 500,
             remotes: Vec::new(),
             clouds: Vec::new(),
             hotkey: "Ctrl+Shift+Alt+K".into(),
@@ -916,6 +921,19 @@ pub fn window(
                         .suffix(" MB"),
                     );
                     let _ = slider.labelled_by(label.id);
+                    ui.end_row();
+                    ui.label("Hover preview");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut s.hover_preview, "When resting on a file")
+                            .on_hover_text("A large preview when the pointer rests on a file");
+                        let delay = ui.add_enabled(
+                            s.hover_preview,
+                            egui::Slider::new(&mut s.hover_preview_ms, 200..=2000)
+                                .step_by(100.0)
+                                .suffix(" ms"),
+                        );
+                        let _ = delay.named("Hover preview delay");
+                    });
                     ui.end_row();
                     ui.label("Transfers");
                     ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")

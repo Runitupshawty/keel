@@ -270,6 +270,8 @@ pub struct AppState {
     pub show_hidden: bool,
     pub sidebar: Sidebar,
     pub preview: PreviewPanel,
+    /// The floating preview of the file under the pointer.
+    pub hover: crate::hover::Hover,
     /// Loaded on a worker at startup (`load_searcher`); None until then.
     pub searcher: Option<Arc<dyn Searcher>>,
     /// Why search does not work (banner text), None when it does.
@@ -439,6 +441,7 @@ impl AppState {
             dual: settings.dual,
             show_hidden: settings.show_hidden,
             sidebar: Sidebar::default(),
+            hover: Default::default(),
             preview,
             searcher: None,
             search_reason: None,

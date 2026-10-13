@@ -925,6 +925,9 @@ pub fn handle_click(
     out: &mut Vec<Action>,
 ) {
     let mods = r.ctx.input(|i| i.modifiers);
+    if r.hovered() {
+        crate::hover::stash(&r.ctx, entry);
+    }
     if r.double_clicked() {
         tab.click(&entry.name, false, false);
         out.push(Action::Enter);
