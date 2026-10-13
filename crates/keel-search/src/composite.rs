@@ -196,7 +196,11 @@ impl Merge {
 
 impl Searcher for Merge {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
-        let main = self.main.query(query);
+        let main = match crate::pane_folder(query) {
+            // A pane's folder only the folder indexes hold: the main index would walk it.
+            Some(dir) if !self.main.covers(dir) && self.extra.covers(dir) => Ok(Vec::new()),
+            _ => self.main.query(query),
+        };
         let extra = if self.extra.available() {
             self.extra.query(query).ok().filter(|h| !h.is_empty())
         } else {
@@ -445,6 +449,8 @@ mod tests {
     struct Fixed {
         paths: Vec<&'static str>,
         fails: bool,
+        /// The folder it holds (`covers`); None: everything.
+        holds: Option<&'static str>,
         settings: Arc<Mutex<Vec<IndexSettings>>>,
     }
 
@@ -474,6 +480,10 @@ mod tests {
 
         fn set_index_settings(&self, settings: &IndexSettings) {
             self.settings.lock().unwrap().push(settings.clone());
+        }
+
+        fn covers(&self, dir: &std::path::Path) -> bool {
+            self.holds.is_none_or(|h| dir.starts_with(h))
         }
     }
 
@@ -517,6 +527,39 @@ mod tests {
         assert_eq!(hit_names(&building, "notes"), ["notes"]);
         assert_eq!(building.status().as_deref(), Some("indexing"));
         assert!(building.available());
+    }
+
+    /// A pane's folder only the folder indexes hold is not asked of the main index (which
+    /// would walk it).
+    #[test]
+    fn merge_leaves_a_folder_only_the_folder_indexes_hold_to_them() {
+        let merged = Merge::new(
+            Box::new(Fixed {
+                paths: vec!["/c/main.txt"],
+                holds: Some("/c"),
+                ..Fixed::default()
+            }),
+            Box::new(Fixed {
+                paths: vec!["/e/folder.txt"],
+                holds: Some("/e"),
+                ..Fixed::default()
+            }),
+        );
+        let names = |within: &str| {
+            let query = Query {
+                text: "txt".into(),
+                within: Some(within.into()),
+                ..Query::default()
+            };
+            let hits = merged.query(&query).unwrap();
+            let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names("/e/x"), ["folder.txt"]);
+        assert_eq!(names("/c/x"), ["folder.txt", "main.txt"]);
+        // Neither holds it: the main index answers (Keel's own walks it).
+        assert_eq!(names("/d"), ["folder.txt", "main.txt"]);
     }
 
     #[test]

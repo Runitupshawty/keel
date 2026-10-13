@@ -42,16 +42,16 @@ fn strip_ci<'a>(term: &'a str, prefix: &str) -> Option<&'a str> {
         .map(|_| &term[prefix.len()..])
 }
 
+/// A pane's folder as a typed `in:` with a trailing separator (no partial name).
+pub(crate) fn folder_prefix(dir: &std::path::Path) -> String {
+    let dir = dir.display().to_string();
+    format!("{}\\", dir.trim_end_matches(['\\', '/']))
+}
+
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
     let mut folders_only = query.folders_only;
-    // A pane's folder, as a typed `in:` with a trailing separator (no partial name); a
-    // typed `in:` takes its place.
-    let mut within = (query.within.as_ref()).map(|dir| {
-        format!(
-            "{}\\",
-            dir.display().to_string().trim_end_matches(['\\', '/'])
-        )
-    });
+    // A pane's folder; a typed `in:` takes its place.
+    let mut within = query.within.as_deref().map(folder_prefix);
     let mut terms = Vec::new();
     if query.regex {
         if !query.text.is_empty() {
@@ -319,6 +319,10 @@ mod tests {
             within(r"report.pdf in:C:\Windows", r"C:\Users", false),
             windows
         );
+        // What the index holds; NtfsSearcher walks any other folder.
+        let covers = |dir: &str| index().covers(&folder_prefix(std::path::Path::new(dir)));
+        assert!(covers(r"C:\Windows") && covers(r"c:\users\ann\") && covers(r"C:\"));
+        assert!(!covers(r"C:\Win") && !covers(r"D:\x") && !covers(r"\\server\share"));
     }
 
     /// Match Whole Words, Match Path, Match Diacritics and whole-filename wildcards.

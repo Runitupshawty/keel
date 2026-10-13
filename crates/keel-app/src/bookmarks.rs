@@ -362,6 +362,11 @@ impl AppState {
 
     pub fn find_cmd(&mut self, p: usize, cmd: FindCmd) {
         match cmd {
+            // ponytail: a bookmark has no folder to keep to; store one in View if wanted.
+            FindCmd::AddBookmark if self.tab(p).search_within().is_some() => self.toasts.info(
+                "A search in one folder cannot be bookmarked yet: Ctrl+F with in:<folder> can"
+                    .to_owned(),
+            ),
             FindCmd::AddBookmark => match self.bookmark_of_tab(p) {
                 Some((view, store)) => {
                     self.find.editor = Some(Editor {
@@ -539,7 +544,7 @@ impl AppState {
             ));
         }
         let p = if self.dual { p } else { 0 };
-        if !self.tab(p).is_search() {
+        if !self.tab(p).is_open_search() {
             let tab = crate::tab::Tab::search(self.tab(p).dir.clone());
             let pane = &mut self.panes[p];
             pane.tabs.push(tab);

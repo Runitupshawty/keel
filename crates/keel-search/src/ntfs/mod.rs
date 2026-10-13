@@ -518,6 +518,10 @@ impl NtfsSearcher {
 
 impl Searcher for NtfsSearcher {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
+        // A pane's folder no index holds (a share, a volume not indexed yet): walk it.
+        if let Some(dir) = crate::pane_folder(query).filter(|d| !self.covers(d)) {
+            return Ok(crate::walk(dir, query));
+        }
         let matcher = pattern::compile(query)?;
         let max = query.max as usize;
         // Hidden entries make room for the next ones: fetch more when filtering.
@@ -567,6 +571,12 @@ impl Searcher for NtfsSearcher {
 
     fn name(&self) -> &'static str {
         "Keel index"
+    }
+
+    fn covers(&self, dir: &Path) -> bool {
+        let prefix = pattern::folder_prefix(dir);
+        let parts = self.shared.parts.read();
+        parts.iter().any(|part| part.index().covers(&prefix))
     }
 
     /// Indexing (with the walk's count so far) until the first index is in.

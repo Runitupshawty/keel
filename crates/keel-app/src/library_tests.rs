@@ -109,6 +109,9 @@ fn library_search_keeps_to_a_pane_folder() {
         search(Some(tmp.join("doc"))).is_empty(),
         "whole folder names"
     );
+    // Windows paths ignore case.
+    #[cfg(windows)]
+    assert_eq!(search(Some(tmp.join("DOCS").join("Sub"))), ["b.txt"]);
 }
 
 #[test]

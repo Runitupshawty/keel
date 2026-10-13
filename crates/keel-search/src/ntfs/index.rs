@@ -1212,6 +1212,11 @@ impl Index {
             .is_some_and(|p| res.iter().all(|re| re.is_match(&p)))
     }
 
+    /// Whether the `in:` target `prefix` names a folder of this index.
+    pub fn covers(&self, prefix: &str) -> bool {
+        self.within(prefix).is_some()
+    }
+
     fn within(&self, prefix: &str) -> Option<Within> {
         let prefix = prefix.replace('/', "\\");
         let (folder, partial) = prefix.rsplit_once('\\').unwrap_or(("", &prefix));

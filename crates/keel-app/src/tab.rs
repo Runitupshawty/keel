@@ -357,6 +357,12 @@ impl Tab {
         matches!(self.kind, TabKind::Search { .. })
     }
 
+    /// A search tab Ctrl+F, the toolbar's search and a bookmark run in: not a pane's
+    /// search kept to a folder (they open a new tab instead).
+    pub fn is_open_search(&self) -> bool {
+        self.is_search() && self.search_within().is_none()
+    }
+
     /// The folder a pane's search box searches under (None: not such a search tab).
     pub fn search_within(&self) -> Option<&VPath> {
         match &self.kind {

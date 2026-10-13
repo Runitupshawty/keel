@@ -362,6 +362,7 @@ pub fn bar(
         "" => d.display(),
         name => name.to_owned(),
     });
+    let remote_scope = within.as_ref().is_some_and(|d| d.to_local_path().is_none());
     // Task 77: a file list tab searches its list: (shown, entries in the list).
     let list = (tab.filelist.as_ref()).map(|s| (s.label().to_owned(), s.len()));
     let shared = crate::bookmarks::published(ui.ctx()); // Task 76
@@ -384,9 +385,13 @@ pub fn bar(
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut tab.library_search, false, platform);
-                    ui.add_enabled_ui(library, |ui| {
+                    // The library keeps to local folders only (`LibSearch`).
+                    ui.add_enabled_ui(library && !remote_scope, |ui| {
                         ui.selectable_value(&mut tab.library_search, true, "Library")
-                            .on_disabled_hover_text("The library is off or still opening");
+                            .on_disabled_hover_text(match remote_scope {
+                                true => "The library cannot keep to a folder on a remote host",
+                                false => "The library is off or still opening",
+                            });
                     });
                 });
             let _ = crate::a11y::Named::named(combo.response, "Search with");
@@ -1081,5 +1086,58 @@ mod tests {
         assert_eq!(Some(other.dir.clone()), first.path.parent());
         assert_eq!(other.cursor.as_deref(), Some("Cargo.toml"));
         assert!(other.reveal);
+    }
+
+    /// A pane's search: Esc, Backspace to empty and the × go back to its folder tab, or show
+    /// the folder in the search tab when that tab is gone or moved; Ctrl+F, the toolbar's
+    /// search and a bookmark open their own tab; it is not bookmarked.
+    #[test]
+    fn a_pane_search_goes_back_to_its_folder_and_is_not_reused() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            dir.clone(),
+        );
+        let tabs = |s: &AppState| s.panes[0].tabs.len();
+        state.run(0, Action::SearchIn("ab".into()));
+        assert_eq!((tabs(&state), state.panes[0].active), (2, 1));
+        assert_eq!(state.tab(0).search_within(), Some(&dir));
+        // Ctrl+F, the toolbar and a bookmark each open a search of their own.
+        state.run(0, Action::Search);
+        assert_eq!(tabs(&state), 3);
+        assert!(state.tab(0).is_open_search());
+        state.panes[0].active = 1;
+        state.run(0, Action::ToolbarSearch("x".into()));
+        assert_eq!(tabs(&state), 4);
+        assert_eq!(state.tab(0).search_within(), None);
+        state.panes[0].active = 1;
+        let view = keel_core::View {
+            query: "y".into(),
+            backend: keel_core::ViewBackend::System,
+            ..keel_core::View::default()
+        };
+        state.open_bookmark(0, &view);
+        assert_eq!(tabs(&state), 5);
+        let scoped = &state.panes[0].tabs[1];
+        assert_eq!(scoped.search_within(), Some(&dir), "kept its folder");
+        // Not bookmarked.
+        state.panes[0].active = 1;
+        state.find_cmd(0, FindCmd::AddBookmark);
+        assert!(state.find.editor.is_none());
+        // Backspace to empty: back to the folder tab before it.
+        state.run(0, Action::Backspace);
+        assert!(state.tab(0).search_within().is_some(), "\"a\" is left");
+        state.run(0, Action::Backspace);
+        assert_eq!((tabs(&state), state.panes[0].active), (4, 0));
+        assert!(!state.tab(0).is_search());
+        // Its folder tab moved away: the search tab shows the folder.
+        state.run(0, Action::SearchIn("c".into()));
+        state.panes[0].move_tab(0, 4);
+        assert_eq!(state.panes[0].active, 0);
+        state.run(0, Action::CloseSearch);
+        assert_eq!(tabs(&state), 5);
+        assert!(!state.tab(0).is_search());
+        assert_eq!(state.tab(0).dir, dir);
     }
 }

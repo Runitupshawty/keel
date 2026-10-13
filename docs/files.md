@@ -263,7 +263,7 @@ The keys work in a search tab, also while typing in its query box (elsewhere Ctr
 
 The query box's hint names what the backend understands: Everything's syntax with Everything, names, `*` and `?` wildcards, `"exact phrase"`, `folder:`, `in:<folder>` and `regex:` with Keel's index (it has no `ext:` or `dm:` yet; those match as plain text), the library's terms with the library.
 
-A pane's **Search here** box (at the right end of its tab row, on local folders and remote hosts) opens a search tab next to the folder that keeps to it and its subfolders; the bar reads "in <folder>". Everything gets the folder as a path term, Keel's own indexes as `in:`, Spotlight as `-onlyin`; `locate` and the library keep the hits under it (the library from its first page of results, so a folder deep in a big library can show fewer). A typed `in:` searches its own folder instead. Esc, the **×** or an emptied box closes the tab and shows the folder again.
+A pane's **Search here** box (at the right end of its tab row, on local folders and remote hosts) opens a search tab next to the folder that keeps to it and its subfolders; the bar reads "in <folder>". Everything gets the folder as a path term, Keel's own indexes as `in:`, Spotlight as `-onlyin`; `locate` and the library keep the hits under it (the library from its first page of results, so a folder deep in a big library can show fewer, and only for local folders). Keel's own index walks a folder it does not hold (another drive, a network share). A typed `in:` searches its own folder instead. Ctrl+F, the toolbar's search and a bookmark open a search tab of their own, and a search in one folder cannot be bookmarked yet. Esc, the **×** or an emptied box closes the tab and shows the folder again.
 
 Results:
 
