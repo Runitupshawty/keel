@@ -223,18 +223,22 @@ pub fn shortcut_problem(
         return None;
     }
     let Some((mods, key)) = parse_shortcut(text) else {
-        return Some(format!("{text} is not a key"));
+        return Some(crate::i18n::tr("bookmarks.not_a_key").replace("{text}", text));
     };
     if !(mods.command || mods.alt || function_key(key)) {
-        return Some("Use Ctrl or Alt with the key (or a function key)".into());
+        return Some(crate::i18n::tr("bookmarks.use_ctrl_or_alt").to_owned());
     }
     if crate::keys::is_builtin(mods, key) || (mods == Modifiers::COMMAND && key == Key::D) {
-        return Some(format!("{text} is one of Keel's own shortcuts"));
+        return Some(crate::i18n::tr("bookmarks.keel_shortcut").replace("{text}", text));
     }
     let clash = all
         .iter()
         .find(|(s, v)| Some((*s, v.id)) != me && parse_shortcut(&v.shortcut) == Some((mods, key)));
-    clash.map(|(_, v)| format!("{text} opens the bookmark \"{}\" already", v.name))
+    clash.map(|(_, v)| {
+        crate::i18n::tr("bookmarks.opens_bookmark")
+            .replace("{text}", text)
+            .replace("{name}", &v.name)
+    })
 }
 
 impl Find {
@@ -335,7 +339,7 @@ impl AppState {
             return None;
         };
         let name: String = match query.trim() {
-            "" => "New bookmark".into(),
+            "" => crate::i18n::tr("bookmarks.new_bookmark").to_owned(),
             q => q.chars().take(60).collect(),
         };
         let backend = match tab.library_search {
@@ -363,10 +367,9 @@ impl AppState {
     pub fn find_cmd(&mut self, p: usize, cmd: FindCmd) {
         match cmd {
             // ponytail: a bookmark has no folder to keep to; store one in View if wanted.
-            FindCmd::AddBookmark if self.tab(p).search_within().is_some() => self.toasts.info(
-                "A search in one folder cannot be bookmarked yet: Ctrl+F with in:<folder> can"
-                    .to_owned(),
-            ),
+            FindCmd::AddBookmark if self.tab(p).search_within().is_some() => self
+                .toasts
+                .info(crate::i18n::tr("bookmarks.folder_search_not_yet").to_owned()),
             FindCmd::AddBookmark => match self.bookmark_of_tab(p) {
                 Some((view, store)) => {
                     self.find.editor = Some(Editor {
@@ -379,7 +382,7 @@ impl AppState {
                 }
                 None => self
                     .toasts
-                    .info("Open a search (Ctrl+F) to bookmark it".to_owned()),
+                    .info(crate::i18n::tr("bookmarks.open_search_to_bookmark").to_owned()),
             },
             FindCmd::Edit(store, id) => {
                 if let Some(view) = self.bookmark(store, id) {
@@ -400,11 +403,9 @@ impl AppState {
             FindCmd::AskDelete(store, id) => {
                 if let Some(v) = self.bookmark(store, id) {
                     self.dialog = Some(crate::dialogs::Dialog::Confirm {
-                        text: format!(
-                            "Delete the bookmark \"{}\"? The files it finds are not touched.",
-                            v.name
-                        ),
-                        yes: "Delete",
+                        text: crate::i18n::tr("bookmarks.delete_bookmark_confirm")
+                            .replace("{name}", &v.name),
+                        yes: crate::i18n::tr("menu.delete"),
                         on_yes: Action::Find(FindCmd::Delete(store, id)),
                     });
                 }
@@ -423,7 +424,9 @@ impl AppState {
             FindCmd::Move(store, id, by) => self.move_bookmark(store, id, by),
             FindCmd::Open(store, id) => match self.bookmark(store, id) {
                 Some(view) => self.open_bookmark(p, &view),
-                None => self.toasts.error("That bookmark is gone".to_owned()),
+                None => self
+                    .toasts
+                    .error(crate::i18n::tr("bookmarks.bookmark_gone").to_owned()),
             },
             FindCmd::Organize => self.find.organize = true,
             FindCmd::EditFilters => {
@@ -440,7 +443,8 @@ impl AppState {
             }
             FindCmd::ClearHistory => {
                 self.find.history.clear();
-                self.toasts.info("Search history cleared".to_owned());
+                self.toasts
+                    .info(crate::i18n::tr("bookmarks.history_cleared").to_owned());
             }
         }
     }
@@ -539,10 +543,9 @@ impl AppState {
     pub fn open_bookmark(&mut self, p: usize, view: &View) {
         let library = view.backend == ViewBackend::Library;
         if library && !self.library.is_open() {
-            return self.toasts.error(format!(
-                "\"{}\" searches the library, which is not open",
-                view.name
-            ));
+            return self.toasts.error(
+                crate::i18n::tr("bookmarks.library_not_open").replace("{name}", &view.name),
+            );
         }
         let p = if self.dual { p } else { 0 };
         if !self.tab(p).is_open_search() {
@@ -582,13 +585,16 @@ pub fn menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     ui.menu_button("☆", |ui| {
         let add = crate::keys::shortcut_label("Ctrl+D");
         if ui
-            .add(egui::Button::new("Add bookmark…").shortcut_text(add))
+            .add(egui::Button::new(crate::i18n::tr("bookmarks.add_bookmark")).shortcut_text(add))
             .clicked()
         {
             out.push(Action::Find(FindCmd::AddBookmark));
             ui.close_menu();
         }
-        if ui.button("Organize bookmarks…").clicked() {
+        if ui
+            .button(crate::i18n::tr("bookmarks.organize_bookmarks"))
+            .clicked()
+        {
             out.push(Action::Find(FindCmd::Organize));
             ui.close_menu();
         }
@@ -625,7 +631,7 @@ pub fn menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         }
     })
     .response
-    .on_hover_text("Bookmarks");
+    .on_hover_text(crate::i18n::tr("sidebar.bookmarks"));
 }
 
 /// The sidebar's Bookmarks section's rows (`sidebar::Sidebar::ui` draws the header and
@@ -659,10 +665,19 @@ pub fn sidebar(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         }
         r.context_menu(|ui| {
             for (text, cmd) in [
-                ("Open", FindCmd::Open(s, v.id)),
-                ("Edit…", FindCmd::Edit(s, v.id)),
-                ("Delete…", FindCmd::AskDelete(s, v.id)),
-                ("Organize bookmarks…", FindCmd::Organize),
+                (crate::i18n::tr("menu.open"), FindCmd::Open(s, v.id)),
+                (
+                    crate::i18n::tr("bookmarks.edit_bookmark"),
+                    FindCmd::Edit(s, v.id),
+                ),
+                (
+                    crate::i18n::tr("bookmarks.delete_bookmark"),
+                    FindCmd::AskDelete(s, v.id),
+                ),
+                (
+                    crate::i18n::tr("bookmarks.organize_bookmarks"),
+                    FindCmd::Organize,
+                ),
             ] {
                 if ui.button(text).clicked() {
                     out.push(Action::Find(cmd));
@@ -700,8 +715,8 @@ pub fn windows(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
 }
 
 fn toggles_ui(ui: &mut egui::Ui, m: &mut MatchToggles) {
-    ui.checkbox(&mut m.case, "Match case");
-    ui.checkbox(&mut m.regex, "Regular expression");
+    ui.checkbox(&mut m.case, crate::i18n::tr("bookmarks.match_case"));
+    ui.checkbox(&mut m.regex, crate::i18n::tr("bookmarks.regex"));
 }
 
 fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
@@ -733,8 +748,8 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     }
     let mut answer: Option<bool> = None;
     let title = match ed.replaces {
-        Some(_) => "Edit bookmark",
-        None => "Add bookmark",
+        Some(_) => crate::i18n::tr("bookmarks.edit_title"),
+        None => crate::i18n::tr("bookmarks.add_title"),
     };
     let folders: Vec<String> = {
         let mut f: Vec<String> = (all.iter())
@@ -752,28 +767,32 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             .num_columns(2)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
-                ui.label("Name");
+                ui.label(crate::i18n::tr("toolbar.name"));
                 ui.add(egui::TextEdit::singleline(&mut ed.view.name).desired_width(300.0));
                 ui.end_row();
-                ui.label("Search");
+                ui.label(crate::i18n::tr("tab.search"));
                 ui.add(egui::TextEdit::singleline(&mut ed.view.query).desired_width(300.0));
                 ui.end_row();
-                ui.label("Search with");
+                ui.label(crate::i18n::tr("bookmarks.search_with"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut ed.view.backend, ViewBackend::System, "System");
+                    ui.selectable_value(
+                        &mut ed.view.backend,
+                        ViewBackend::System,
+                        crate::i18n::tr("bookmarks.system"),
+                    );
                     ui.add_enabled_ui(
                         library_open || ed.view.backend == ViewBackend::Library,
                         |ui| {
                             ui.selectable_value(
                                 &mut ed.view.backend,
                                 ViewBackend::Library,
-                                "Library",
+                                crate::i18n::tr("tab.library"),
                             );
                         },
                     );
                 });
                 ui.end_row();
-                ui.label("Filter");
+                ui.label(crate::i18n::tr("pane.filter"));
                 egui::ComboBox::from_id_salt("bookmark-filter")
                     .selected_text(crate::search_filters::shown(&ed.view.filter))
                     .show_ui(ui, |ui| {
@@ -786,45 +805,48 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                         }
                     });
                 ui.end_row();
-                ui.label("Match");
+                ui.label(crate::i18n::tr("bookmarks.match"));
                 ui.horizontal(|ui| toggles_ui(ui, &mut ed.view.matching));
                 ui.end_row();
-                ui.label("Sort");
+                ui.label(crate::i18n::tr("bookmarks.sort"));
                 let mut sort = parse_sort(&ed.view.sort).unwrap_or((SortKey::Name, true));
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("bookmark-sort")
                         .selected_text(match sort.0 {
-                            SortKey::Name => "Name",
-                            SortKey::Size => "Size",
-                            SortKey::Modified => "Date modified",
-                            SortKey::Ext => "Extension",
+                            SortKey::Name => crate::i18n::tr("toolbar.name"),
+                            SortKey::Size => crate::i18n::tr("toolbar.size"),
+                            SortKey::Modified => crate::i18n::tr("bookmarks.date_modified"),
+                            SortKey::Ext => crate::i18n::tr("bookmarks.extension"),
                         })
                         .show_ui(ui, |ui| {
                             for (key, label) in [
-                                (SortKey::Name, "Name"),
-                                (SortKey::Size, "Size"),
-                                (SortKey::Modified, "Date modified"),
-                                (SortKey::Ext, "Extension"),
+                                (SortKey::Name, crate::i18n::tr("toolbar.name")),
+                                (SortKey::Size, crate::i18n::tr("toolbar.size")),
+                                (
+                                    SortKey::Modified,
+                                    crate::i18n::tr("bookmarks.date_modified"),
+                                ),
+                                (SortKey::Ext, crate::i18n::tr("bookmarks.extension")),
                             ] {
                                 ui.selectable_value(&mut sort.0, key, label);
                             }
                         });
                     let mut desc = !sort.1;
-                    ui.checkbox(&mut desc, "Descending");
+                    ui.checkbox(&mut desc, crate::i18n::tr("toolbar.descending"));
                     sort.1 = !desc;
                 });
                 ed.view.sort = sort_text(sort);
                 ui.end_row();
-                ui.label("Folder");
+                ui.label(crate::i18n::tr("inspector.folder"));
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut ed.view.folder)
-                            .hint_text("Top level (or Work/Reports)")
+                            .hint_text(crate::i18n::tr("bookmarks.folder_hint"))
                             .desired_width(240.0),
                     );
                     if !folders.is_empty() {
                         ui.menu_button("▾", |ui| {
-                            if ui.button("Top level").clicked() {
+                            if ui.button(crate::i18n::tr("bookmarks.top_level")).clicked() {
                                 ed.view.folder.clear();
                                 ui.close_menu();
                             }
@@ -838,33 +860,41 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     }
                 });
                 ui.end_row();
-                ui.label("Shortcut");
+                ui.label(crate::i18n::tr("bookmarks.shortcut"));
                 ui.horizontal(|ui| {
                     let shown = match (ed.recording, ed.view.shortcut.as_str()) {
-                        (true, _) => "Press a key…".to_owned(),
-                        (false, "") => "None".to_owned(),
+                        (true, _) => crate::i18n::tr("bookmarks.press_key").to_owned(),
+                        (false, "") => crate::i18n::tr("toolbar.none").to_owned(),
                         (false, k) => crate::keys::shortcut_label(k),
                     };
                     ui.label(RichText::new(shown).monospace());
-                    if ui.button("Record…").clicked() {
+                    if ui.button(crate::i18n::tr("bookmarks.record")).clicked() {
                         ed.recording = true;
                     }
-                    if !ed.view.shortcut.is_empty() && ui.button("Clear").clicked() {
+                    if !ed.view.shortcut.is_empty()
+                        && ui.button(crate::i18n::tr("bookmarks.clear")).clicked()
+                    {
                         ed.view.shortcut.clear();
                     }
                 });
                 ui.end_row();
                 if ed.replaces.is_none() && ed.view.backend == ViewBackend::System {
-                    ui.label("Keep in");
+                    ui.label(crate::i18n::tr("bookmarks.keep_in"));
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut ed.store, Store::Profile, "This profile");
+                        ui.selectable_value(
+                            &mut ed.store,
+                            Store::Profile,
+                            crate::i18n::tr("bookmarks.this_profile"),
+                        );
                         ui.add_enabled_ui(library_open, |ui| {
-                            ui.selectable_value(&mut ed.store, Store::Library, "Library");
+                            ui.selectable_value(
+                                &mut ed.store,
+                                Store::Library,
+                                crate::i18n::tr("tab.library"),
+                            );
                         })
                         .response
-                        .on_hover_text(
-                            "Library bookmarks are in the library's saved views (and its API)",
-                        );
+                        .on_hover_text(crate::i18n::tr("bookmarks.library_bookmarks_tip"));
                     });
                     ui.end_row();
                 }
@@ -877,10 +907,10 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Save").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.save")).clicked() {
                 answer = Some(true);
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 answer = Some(false);
             }
         });
@@ -903,7 +933,7 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 .or_else(|| shortcut_problem(&ed.view.shortcut, me, &all))
                 .or_else(|| {
                     (ed.store == Store::Profile && ed.view.backend == ViewBackend::Library)
-                        .then(|| "Library searches are kept in the library".to_owned())
+                        .then(|| crate::i18n::tr("bookmarks.library_searches_kept").to_owned())
                 });
             match problem {
                 Some(p) => ed.error = Some(p),
@@ -930,9 +960,9 @@ fn organize(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let mut close = false;
     let modal = Modal::new(Id::new("keel-bookmarks")).show(ctx, |ui| {
         ui.set_width(560.0);
-        ui.heading("Organize bookmarks");
+        ui.heading(crate::i18n::tr("bookmarks.organize_title"));
         if list.is_empty() {
-            ui.weak("No bookmarks yet. In a search tab, press Ctrl+D to add one.");
+            ui.weak(crate::i18n::tr("bookmarks.no_bookmarks"));
         }
         egui::ScrollArea::vertical()
             .max_height(420.0)
@@ -964,25 +994,35 @@ fn organize(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                         }
                         ui.label(v.name.as_str()).on_hover_text(v.query.as_str());
                         ui.weak(match (st, v.backend) {
-                            (Store::Library, ViewBackend::Library) => "Library",
-                            (Store::Library, ViewBackend::System) => "System (in the library)",
-                            (Store::Profile, _) => "System",
+                            (Store::Library, ViewBackend::Library) => {
+                                crate::i18n::tr("tab.library")
+                            }
+                            (Store::Library, ViewBackend::System) => {
+                                crate::i18n::tr("bookmarks.system_in_library")
+                            }
+                            (Store::Profile, _) => crate::i18n::tr("bookmarks.system"),
                         });
                         if !v.shortcut.is_empty() {
                             ui.weak(crate::keys::shortcut_label(&v.shortcut));
                         }
-                        if ui.small_button("Edit…").clicked() {
+                        if ui
+                            .small_button(crate::i18n::tr("bookmarks.edit_bookmark"))
+                            .clicked()
+                        {
                             out.push(Action::Find(FindCmd::Edit(*st, v.id)));
                         }
-                        if ui.small_button("Delete…").clicked() {
+                        if ui
+                            .small_button(crate::i18n::tr("bookmarks.delete_bookmark"))
+                            .clicked()
+                        {
                             out.push(Action::Find(FindCmd::AskDelete(*st, v.id)));
                         }
                     });
                 }
             });
         ui.add_space(6.0);
-        ui.weak("Set a bookmark's folder in Edit… to group it; ↑ and ↓ order a folder.");
-        if ui.button("Close").clicked() {
+        ui.weak(crate::i18n::tr("bookmarks.organize_hint"));
+        if ui.button(crate::i18n::tr("toolbar.close")).clicked() {
             close = true;
         }
     });
@@ -998,11 +1038,8 @@ fn filters(ctx: &egui::Context, s: &mut AppState) {
     let mut answer: Option<bool> = None;
     let modal = Modal::new(Id::new("keel-filters")).show(ctx, |ui| {
         ui.set_width(520.0);
-        ui.heading("Filters");
-        ui.weak(
-            "Built in: Everything, Audio, Compressed, Document, Executable, Folder, Picture, \
-             Video. Your own filters put their search in front of what you type.",
-        );
+        ui.heading(crate::i18n::tr("bookmarks.filters_title"));
+        ui.weak(crate::i18n::tr("bookmarks.filters_note"));
         ui.add_space(4.0);
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
@@ -1015,13 +1052,15 @@ fn filters(ctx: &egui::Context, s: &mut AppState) {
                         ed.selected = Some(i);
                     }
                 }
-                if ui.button("New filter").clicked() {
+                if ui.button(crate::i18n::tr("bookmarks.new_filter")).clicked() {
                     let n = (1..).find(|n| {
-                        let name = format!("Filter {n}");
+                        let name =
+                            crate::i18n::tr("bookmarks.filter_n").replace("{n}", &n.to_string());
                         !ed.list.iter().any(|f| f.name == name)
                     });
                     ed.list.push(CustomFilter {
-                        name: format!("Filter {}", n.unwrap_or(1)),
+                        name: crate::i18n::tr("bookmarks.filter_n")
+                            .replace("{n}", &n.unwrap_or(1).to_string()),
                         ..CustomFilter::default()
                     });
                     ed.selected = Some(ed.list.len() - 1);
@@ -1031,21 +1070,24 @@ fn filters(ctx: &egui::Context, s: &mut AppState) {
             ui.vertical(|ui| match ed.selected.filter(|i| *i < ed.list.len()) {
                 Some(i) => {
                     let f = &mut ed.list[i];
-                    ui.label("Name");
+                    ui.label(crate::i18n::tr("toolbar.name"));
                     ui.text_edit_singleline(&mut f.name);
-                    ui.label("Search");
+                    ui.label(crate::i18n::tr("tab.search"));
                     ui.add(
                         egui::TextEdit::singleline(&mut f.search)
                             .hint_text("ext:psd;ai dm:thisyear"),
                     );
                     toggles_ui(ui, &mut f.matching);
-                    if ui.button("Delete filter").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("bookmarks.delete_filter"))
+                        .clicked()
+                    {
                         ed.list.remove(i);
                         ed.selected = None;
                     }
                 }
                 None => {
-                    ui.weak("Pick a filter, or make a new one.");
+                    ui.weak(crate::i18n::tr("bookmarks.pick_filter"));
                 }
             });
         });
@@ -1054,10 +1096,10 @@ fn filters(ctx: &egui::Context, s: &mut AppState) {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("Save").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.save")).clicked() {
                 answer = Some(true);
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 answer = Some(false);
             }
         });
@@ -1115,47 +1157,67 @@ pub fn settings_page(
 ) {
     use crate::search_history::{Order, MAX_LIMIT};
     let h = &mut s.search_history;
-    ui.strong("Search history");
+    ui.strong(crate::i18n::tr("bookmarks.search_history"));
     let mut off = !h.save;
     if ui
-        .checkbox(&mut off, "Do not save search history")
-        .on_hover_text("Nothing is recorded; what was kept is deleted")
+        .checkbox(&mut off, crate::i18n::tr("bookmarks.do_not_save_history"))
+        .on_hover_text(crate::i18n::tr("bookmarks.do_not_save_history_tip"))
         .changed()
     {
         h.save = !off;
     }
     ui.add_enabled_ui(h.save, |ui| {
         ui.horizontal(|ui| {
-            ui.label("Keep at most");
+            ui.label(crate::i18n::tr("bookmarks.keep_at_most"));
             ui.add(egui::DragValue::new(&mut h.max).range(1..=MAX_LIMIT));
-            ui.label("searches");
+            ui.label(crate::i18n::tr("bookmarks.searches"));
         });
-        ui.checkbox(&mut h.suggestions, "Always show suggestions")
-            .on_hover_text("Off: Alt+Down shows them");
+        ui.checkbox(
+            &mut h.suggestions,
+            crate::i18n::tr("bookmarks.always_suggest"),
+        )
+        .on_hover_text(crate::i18n::tr("bookmarks.always_suggest_tip"));
         ui.horizontal(|ui| {
-            ui.label("Suggest");
-            ui.selectable_value(&mut h.order, Order::MostRecent, "Most recent first");
-            ui.selectable_value(&mut h.order, Order::MostUsed, "Most used first");
+            ui.label(crate::i18n::tr("bookmarks.suggest"));
+            ui.selectable_value(
+                &mut h.order,
+                Order::MostRecent,
+                crate::i18n::tr("bookmarks.most_recent"),
+            );
+            ui.selectable_value(
+                &mut h.order,
+                Order::MostUsed,
+                crate::i18n::tr("bookmarks.most_used"),
+            );
         });
     });
-    if ui.button("Clear history").clicked() {
+    if ui
+        .button(crate::i18n::tr("bookmarks.clear_history"))
+        .clicked()
+    {
         pending.push(FindCmd::ClearHistory);
     }
     ui.add_space(8.0);
-    ui.strong("Filters and bookmarks");
+    ui.strong(crate::i18n::tr("bookmarks.filters_and_bookmarks"));
     ui.horizontal(|ui| {
-        if ui.button("Edit filters…").clicked() {
+        if ui
+            .button(crate::i18n::tr("bookmarks.edit_filters"))
+            .clicked()
+        {
             pending.push(FindCmd::EditFilters);
         }
-        if ui.button("Organize bookmarks…").clicked() {
+        if ui
+            .button(crate::i18n::tr("bookmarks.organize_bookmarks"))
+            .clicked()
+        {
             pending.push(FindCmd::Organize);
         }
     });
-    ui.weak(format!(
-        "{} filter(s) and {} profile bookmark(s); library bookmarks are in the library.",
-        s.filters.len(),
-        s.bookmarks.len()
-    ));
+    ui.weak(
+        crate::i18n::tr("bookmarks.counts")
+            .replace("{f}", &s.filters.len().to_string())
+            .replace("{b}", &s.bookmarks.len().to_string()),
+    );
 }
 
 #[cfg(test)]
