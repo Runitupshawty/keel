@@ -55,12 +55,20 @@ pub enum Dialog {
     /// Task 56: Folder icon → Type an emoji…: one emoji (or `theme:<name>`) for `path`.
     FolderIcon {
         path: VPath,
+        /// A folder (else a file).
+        dir: bool,
         text: String,
         error: Option<String>,
         focus: bool,
     },
     /// Task 60: a folder operation (`folder_ops`).
     FolderOp(Box<crate::folder_ops::FolderDialog>),
+    /// Palette "Save session as…": the name; `taken` are the profile's sessions.
+    SessionName {
+        text: String,
+        taken: Vec<String>,
+        focus: bool,
+    },
     /// Task 85: Delete permanently, hard-link dedup, a system cleanup (`system_cleanup`).
     System(Box<crate::system_cleanup::SysDialog>),
     /// Task 85: Compress (NTFS)…
@@ -275,11 +283,13 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
             }
             Dialog::FolderIcon {
                 path,
+                dir,
                 text,
                 error,
                 focus,
             } => {
-                ui.strong(format!("Folder icon for {}", path.name()));
+                let what = if *dir { "Folder" } else { "File" };
+                ui.strong(format!("{what} icon for {}", path.name()));
                 ui.label("Type or paste one emoji (Win+. or Ctrl+Cmd+Space opens the emoji panel)");
                 let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
                 let r = crate::a11y::Named::named(r, "Emoji");
@@ -297,8 +307,8 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                 ui.horizontal(|ui| {
                     if ui.button("Set icon").clicked() || enter {
                         let icon = text.trim();
-                        let names = crate::icons::theme_folder_names();
-                        *error = crate::folder_style::icon_error(icon, &names);
+                        let names = crate::folder_style::theme_names(*dir);
+                        *error = crate::folder_style::icon_error(icon, &names, *dir);
                         if error.is_none() {
                             out = Some(Action::Library(crate::library::LibCmd::FolderStyle {
                                 path: path.clone(),
@@ -306,6 +316,31 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>) -> Option<Action> 
                                 icon: Some(Some(icon.to_owned())),
                             }));
                         }
+                    }
+                    cancel |= ui.button("Cancel").clicked();
+                });
+            }
+            Dialog::SessionName { text, taken, focus } => {
+                ui.label("Save the open tabs and views as session");
+                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                let r = crate::a11y::Named::named(r, "Session name");
+                if std::mem::take(focus) {
+                    r.request_focus();
+                }
+                let name = text.trim();
+                let ok = crate::profiles::valid_name(name);
+                if !name.is_empty() && !ok {
+                    ui.weak(crate::profiles::NAME_RULE);
+                } else if taken.iter().any(|t| t == name) {
+                    ui.weak(format!("Replaces the session \"{name}\""));
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if (ui.add_enabled(ok, egui::Button::new("Save")).clicked() || enter) && ok {
+                        out = Some(Action::Session(crate::profiles::SessionCmd::Save(
+                            name.to_owned(),
+                        )));
                     }
                     cancel |= ui.button("Cancel").clicked();
                 });

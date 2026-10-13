@@ -92,8 +92,8 @@ pub enum SyncOp {
         path: String,
         cas: String,
     },
-    /// The logging device's folder at `path` in its source `source` has this color and
-    /// icon (`crate::FolderStyle`; both None: its style was cleared).
+    /// The logging device's folder (or file) at `path` in its source `source` has this
+    /// color and icon (`crate::FolderStyle`; both None: its style was cleared).
     Style {
         source: String,
         path: String,

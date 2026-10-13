@@ -41,7 +41,7 @@ Keel column: **Has** (where it is documented), **Part** (what is missing), **Lac
 | Overview statistics | v1 (0.4.0) | [SD-REL] | **Has**: library Overview ([library.md](library.md#library)) |
 | Drag and drop in and out of the OS | v1 (0.4.3; drag-out not on Linux) | [SD-REL] | **Has**: drag-out on Windows, macOS and Linux on X11 or XWayland, not from a native Wayland window ([files.md](files.md#dragging-files-to-other-apps)) |
 | Keybinds (duplicate tab, zoom, sidebar toggle) | v1 | [SD-REL] | **Has** (0.23.0): every command's keys configurable per profile in Settings → Keyboard (record, remove, reset, conflicts, import and export), command palette ([files.md](files.md#changing-the-keys)) |
-| 11+ interface languages | v1 (0.2) | [SD-B02] | **Lacks**: English only |
+| 11+ interface languages | v1 (0.2) | [SD-B02] | **Part** (unreleased): English and Spanish (Settings → General → Language) for the panes' chrome, sidebar, status bar, context menu, command palette and Settings → General; the rest is English ([files.md](files.md#interface-language)) |
 | Places, pinned folders, Spaces (custom sidebar layouts) | alpha (Spaces); described (Places) | [SD-REL], [SD-DIR] | **Has** (0.23.0): a user-arranged Favorites section (drag folders in or **Add to Sidebar** from a folder's context menu, drag to reorder, remove), kept per profile, beside library saved views; no Spaces ([files.md](files.md#sidebar)) |
 | Collections or albums | alpha (Collections); 2023 announcement (albums) | [SD-REL], [SD-B23] | **Has** (unreleased): hand-ordered collections across sources, reordered by dragging, with tags and saved views ([library.md](library.md#library)); not synced between devices |
 | Mobile explorer | alpha (alpha.2); v1 mobile alpha | [SD-REL] | **Part**: the installable web app (PWA) with a phone layout ([devices.md](devices.md#phones)); no native app |
@@ -156,9 +156,9 @@ Every row is a claim from [AT] unless marked [AT-W11]. Nothing could be run.
 | Drop zone | yes | [AT] | **Has** ([files.md](files.md#columns-view-and-drop-zone)) |
 | Drag and drop | yes | [AT] | **Has** (Atlas is Windows-only, where Keel's drag-out works) |
 | Cloud integration | yes | [AT] | **Has** |
-| Custom folder and file icons | "change folder and file icons" | [AT] | **Part**: a color and an emoji or icon-theme icon per folder in a library source; file icons come from the icon theme |
+| Custom folder and file icons | "change folder and file icons" | [AT] | **Has** (unreleased, [files.md](files.md#folder-colors-and-icons)): a color and an emoji or icon-theme icon per folder, and an emoji or icon-theme icon per file, in a library source |
 | Filter by typing | yes | [AT] | **Has** |
-| Multiple profiles and sessions | yes | [AT] | **Part**: profiles, each with a restored session; no named sessions within a profile |
+| Multiple profiles and sessions | yes | [AT] | **Has** (unreleased): profiles, each with a restored session and named sessions ([files.md](files.md#profiles)) |
 | Rich color themes | yes | [AT] | **Has**: six built-in themes, your own TOML files and VS Code color themes from the Marketplace ([files.md](files.md#color-themes)) |
 | Smooth animations | yes | [AT] | **Has**, with Reduce motion |
 | Searchable context menus | yes | [AT] | **Has**: every context action is in the searchable command palette, and on Windows the native shell menu (0.19.0), whose commands the palette also searches as `Shell: …` ([files.md](files.md#windows-shell-menu)) |
@@ -237,7 +237,7 @@ The ranking weighs three things: the requirements in spec section 1 (**R**), dai
 | 14 | Library backup and restore | Spacedrive | D: a library that was hashed and tagged is worth keeping. **Done** ([library.md](library.md#backup-and-restore)) | S |
 | 15 | Drag-out on macOS and Linux (**done**: [files.md](files.md#dragging-files-to-other-apps); Linux through X11 or XWayland) | Spacedrive v1; README roadmap | F | M |
 | 16 | File tools: convert and resize images, merge and split PDFs, transcode video | Atlas | D | M |
-| 17 | An icon or color per folder (**done**: [files.md](files.md#folder-colors-and-icons); folders in library sources) | Atlas | D | S-M |
+| 17 | An icon or color per folder, an icon per file (**done**, file icons unreleased: [files.md](files.md#folder-colors-and-icons); folders and files in library sources) | Atlas | D | S-M |
 | 18 | Filter chips for library search (**done**: [Searching](library.md#searching), desktop and web client) | Spacedrive v1 | F: query syntax is a barrier for friends | S-M |
 | 19 | Tag assign mode with number keys (**done**: Ctrl+Shift+A, [library.md](library.md#library)) | Spacedrive v1 | D | S |
 | 20 | Interface translations | Spacedrive v1 | F | M-L |

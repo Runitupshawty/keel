@@ -248,6 +248,21 @@ impl Loaded {
         self.icons.get(id).cloned()
     }
 
+    /// The file names (and `.ext` for extensions) the theme has an icon for, sorted: a
+    /// file's `theme:<name>` icon (`Associations::file_icon` of `<name>`).
+    pub fn file_names(&self, light: bool) -> Vec<String> {
+        let a = self.assoc(light);
+        let names = (a.file_names.iter()).map(|(n, id)| (n.clone(), id));
+        let exts = (a.file_extensions.iter()).map(|(e, id)| (format!(".{e}"), id));
+        let mut out: Vec<String> = (names.chain(exts))
+            .filter(|(_, id)| self.icons.contains_key(*id))
+            .map(|(n, _)| n)
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// The folder names the theme has an icon for, sorted.
     pub fn folder_names(&self, light: bool) -> Vec<String> {
         let names = &self.assoc(light).folder_names;
@@ -1258,6 +1273,15 @@ mod tests {
             "<svg id='folder-src'/>"
         );
         assert!(t.named_folder("docs", false).is_none());
+        // A file's `theme:<name>` icons: file names and `.ext` (an unsafe icon left out).
+        assert_eq!(
+            t.file_names(false),
+            [".d.ts", ".json", ".ts", "cargo.toml", "package.json"]
+        );
+        assert_eq!(
+            bytes_of(t.file(".ts", true)),
+            "<svg id='typescript-light'/>"
+        );
         // No expanded src icon was stored: the default expanded folder instead.
         assert_eq!(
             bytes_of(t.folder(Some("src"), true, false)),

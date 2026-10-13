@@ -4,6 +4,7 @@
 use crate::keymap::{Bindings, Pal};
 use crate::keys::Action;
 use crate::library::LibCmd;
+use crate::profiles::SessionCmd;
 use egui::{Id, Key, Modal, Modifiers};
 use keel_search::Fuzzy;
 
@@ -27,6 +28,8 @@ pub struct Palette {
     /// The library's collections (open, add to, rename, delete), set before `show`; None
     /// while the library is closed.
     pub collections: Option<Vec<keel_core::Collection>>,
+    /// The profile's named sessions: "Open session: <name>", "Delete session: <name>".
+    pub sessions: Vec<String>,
     /// "Undo <what>" for the newest file operation, set before `show`.
     pub undo: Option<String>,
     /// The active tab is a search tab: its toggles and Load more are offered (set before
@@ -69,7 +72,7 @@ fn entries(selection: bool, search: bool, keys: &Bindings) -> [Vec<Item>; 3] {
             _ => continue,
         };
         list.push(Item {
-            label: c.label.to_owned(),
+            label: crate::i18n::command(c.id, c.label).to_owned(),
             shortcut: keys.label(&c.action),
             action: c.action,
         });
@@ -126,15 +129,35 @@ impl Palette {
         // Task 85: Delete permanently (with a selection), system cleanups, launchers.
         items.extend(crate::system_cleanup::palette_items(selection));
         items.extend(self.cleanups.iter().enumerate().map(|(i, title)| Item {
-            label: format!("Run cleanup: {title}"),
+            label: crate::i18n::tr("palette.run_cleanup").replace("{title}", title),
             shortcut: String::new(),
             action: Action::RunCleanup(i),
         }));
         items.extend(self.profiles.iter().map(|name| Item {
-            label: format!("Switch profile: {name}"),
+            label: crate::i18n::tr("palette.switch_profile").replace("{name}", name),
             shortcut: String::new(),
             action: Action::SwitchProfile(name.clone()),
         }));
+        let tr = crate::i18n::tr;
+        items.push(Item {
+            label: tr("palette.save_session").to_owned(),
+            shortcut: String::new(),
+            action: Action::Session(SessionCmd::SaveAs),
+        });
+        for name in &self.sessions {
+            items.extend([
+                Item {
+                    label: tr("palette.open_session").replace("{name}", name),
+                    shortcut: String::new(),
+                    action: Action::Session(SessionCmd::Open(name.clone())),
+                },
+                Item {
+                    label: tr("palette.delete_session").replace("{name}", name),
+                    shortcut: String::new(),
+                    action: Action::Session(SessionCmd::Delete(name.clone())),
+                },
+            ]);
+        }
         self.items = items;
         self.text.clear();
         self.open = true;
@@ -193,7 +216,7 @@ impl Palette {
                 .min(self.shown.len().saturating_sub(1));
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.text)
-                    .hint_text("Type a command")
+                    .hint_text(crate::i18n::tr("palette.hint"))
                     .desired_width(f32::INFINITY),
             );
             if std::mem::take(&mut self.focus) || !r.has_focus() {
@@ -331,6 +354,28 @@ mod tests {
             Action::SwitchProfile("work".into())
         );
         assert_eq!(p.items[p.shown[0]].label, "Switch profile: work");
+    }
+
+    #[test]
+    fn named_sessions_are_listed() {
+        let mut p = Palette {
+            sessions: vec!["photos".into()],
+            ..Palette::default()
+        };
+        p.show(false, &Bindings::default());
+        for (text, action) in [
+            ("save session", SessionCmd::SaveAs),
+            ("open session", SessionCmd::Open("photos".into())),
+            ("delete session", SessionCmd::Delete("photos".into())),
+        ] {
+            p.text = text.into();
+            p.filter();
+            assert_eq!(
+                p.items[p.shown[0]].action,
+                Action::Session(action),
+                "{text}"
+            );
+        }
     }
 
     #[test]

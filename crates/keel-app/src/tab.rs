@@ -1,6 +1,7 @@
 //! One tab of a pane: a directory, its listing, selection, sort, filter and history.
 //! Pure state; `AppState` spawns the listing workers.
 
+use crate::i18n::tr;
 use keel_vfs::{Entry, Kind, VPath};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Range;
@@ -406,10 +407,10 @@ impl Tab {
                         _ => "Collection".into(),
                     }
                 }
-                crate::library::FAVORITES_QUERY => "Favorites".into(),
-                crate::library::RECENTS_QUERY => "Recents".into(),
-                "" => "Library search".into(),
-                q => format!("Library: {q}"),
+                crate::library::FAVORITES_QUERY => tr("tab.favorites").into(),
+                crate::library::RECENTS_QUERY => tr("tab.recents").into(),
+                "" => tr("tab.library_search").into(),
+                q => tr("tab.library_query").replace("{query}", q),
             },
             TabKind::Search { query, .. } if self.filelist.is_some() => {
                 let list = self.filelist.as_ref().map_or("", |s| s.label());
@@ -418,10 +419,10 @@ impl Tab {
                     q => format!("{list}: {q}"),
                 }
             }
-            TabKind::Search { query, .. } if query.is_empty() => "Search".into(),
-            TabKind::Search { query, .. } => format!("Search: {query}"),
-            TabKind::Overview => "Overview".into(),
-            TabKind::Journal => "Journal".into(),
+            TabKind::Search { query, .. } if query.is_empty() => tr("tab.search").into(),
+            TabKind::Search { query, .. } => tr("tab.search_query").replace("{query}", query),
+            TabKind::Overview => tr("tab.overview").into(),
+            TabKind::Journal => tr("tab.journal").into(),
             TabKind::Dir => match self.dir.name() {
                 _ if self.dir.scheme == "node" => crate::devices::node_title(&self.dir)
                     .unwrap_or_else(|| match self.dir.name() {
@@ -430,7 +431,7 @@ impl Tab {
                     }),
                 "" if self.dir.scheme == keel_vfs::library::SCHEME => {
                     crate::library::label_of(&self.dir.authority)
-                        .unwrap_or_else(|| "Library".into())
+                        .unwrap_or_else(|| tr("tab.library").into())
                 }
                 "" if self.is_trash() => keel_vfs::trashbin::label().into(),
                 "" => self.dir.display(),

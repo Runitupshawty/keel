@@ -1,6 +1,8 @@
 //! Settings profiles (spec 2.6): `<config dir>/profiles/<name>/config.toml`, each with its
 //! own session (`session_path`). `keel --profile <name>` picks one at start; Settings →
 //! Profiles and the palette switch in place. Every disk access runs on a worker.
+//! Named sessions (saved tabs and views, palette "Save session as…" / "Open session: …")
+//! are the profile's too: `sessions/<name>.json` next to its session.json.
 
 use crate::session::Session;
 use crate::settings::{cache_dir, config_dir, Settings};
@@ -70,6 +72,48 @@ pub fn session_path(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// The named sessions of profile `name`, next to its session.json.
+pub fn sessions_dir(name: &str) -> Option<PathBuf> {
+    Some(session_path(name)?.with_file_name("sessions"))
+}
+
+/// The current profile's session `name` (named like a profile: it is a file name).
+pub fn named_session_path(name: &str) -> Result<PathBuf> {
+    ensure!(valid_name(name), "\"{name}\": {NAME_RULE}");
+    let dir = sessions_dir(&current()).context("no cache folder")?;
+    Ok(dir.join(format!("{name}.json")))
+}
+
+/// The current profile's named sessions, sorted.
+pub fn sessions() -> Vec<String> {
+    let dir = sessions_dir(&current());
+    let mut names: Vec<String> = dir
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|n| n.strip_suffix(".json").map(str::to_owned))
+        .filter(|n| valid_name(n))
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names
+}
+
+/// The palette's named-session commands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionCmd {
+    /// Ask for a name, then `Save`.
+    SaveAs,
+    /// Save the open tabs and views as `name` (replacing a session of that name).
+    Save(String),
+    /// Open its tabs and views instead of the open ones.
+    Open(String),
+    /// Ask, then `DeleteNow`.
+    Delete(String),
+    DeleteNow(String),
+}
+
 /// The profiles on disk, plus the default and the current one, sorted.
 pub fn list() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(root())
@@ -112,20 +156,27 @@ pub fn rename(from: &str, to: &str) -> Result<()> {
     if old.exists() {
         std::fs::rename(&old, root().join(to)).with_context(|| format!("rename {from}"))?;
     }
-    // The session, when it is not inside the profile folder (KEEL_CONFIG_DIR puts it there).
-    if let (Some(a), Some(b)) = (session_path(from), session_path(to)) {
-        if a.exists() {
-            std::fs::create_dir_all(b.parent().expect("session file has a folder"))?;
-            std::fs::rename(&a, &b).context("move the session")?;
-            if from != DEFAULT {
-                let _ = std::fs::remove_dir(a.parent().expect("session file has a folder"));
+    // The session and named sessions, when they are not inside the profile folder
+    // (KEEL_CONFIG_DIR puts them there).
+    let pairs = [
+        (session_path(from), session_path(to)),
+        (sessions_dir(from), sessions_dir(to)),
+    ];
+    for (a, b) in pairs {
+        if let (Some(a), Some(b)) = (a, b) {
+            if a.exists() {
+                std::fs::create_dir_all(b.parent().expect("session file has a folder"))?;
+                std::fs::rename(&a, &b).context("move the session")?;
             }
         }
+    }
+    if let Some(a) = session_path(from).filter(|_| from != DEFAULT) {
+        let _ = std::fs::remove_dir(a.parent().expect("session file has a folder"));
     }
     Ok(())
 }
 
-/// Sends a profile that is not in use, and its session, to the OS trash.
+/// Sends a profile that is not in use, and its sessions, to the OS trash.
 pub fn delete(name: &str) -> Result<()> {
     ensure!(
         name != current(),
@@ -136,7 +187,12 @@ pub fn delete(name: &str) -> Result<()> {
         DEFAULT => s,
         _ => s.parent().expect("session file has a folder").to_owned(),
     });
-    for path in std::iter::once(root().join(name)).chain(session) {
+    // The default profile's named sessions are beside its session.json, not in a folder.
+    let named = sessions_dir(name).filter(|_| name == DEFAULT);
+    for path in std::iter::once(root().join(name))
+        .chain(session)
+        .chain(named)
+    {
         if path.exists() {
             keel_vfs::LocalProvider.remove(&VPath::local(&path))?;
         }
@@ -166,7 +222,10 @@ pub fn load(name: &str) -> Loaded {
 }
 
 pub enum Done {
-    Listed(Vec<String>),
+    /// The profiles, and the current profile's named sessions.
+    Listed(Vec<String>, Vec<String>),
+    /// A named session read from disk, to open.
+    Session(String, Box<Session>),
     Loaded(Box<Loaded>),
     /// A change finished: an info toast, then the list is read again.
     Changed(String),
@@ -228,7 +287,7 @@ impl Profiles {
     }
 
     pub fn relist(&mut self) {
-        self.run(|| Ok(Done::Listed(list())));
+        self.run(|| Ok(Done::Listed(list(), sessions())));
     }
 
     /// Reads profile `name` on a worker; `AppState::profiles_tick` applies it.
@@ -353,11 +412,17 @@ impl AppState {
         while let Ok(done) = self.profiles.rx.try_recv() {
             self.profiles.busy = false;
             match done {
-                Done::Listed(names) => {
+                Done::Listed(names, sessions) => {
                     let current = current();
                     self.palette.profiles =
                         names.iter().filter(|n| **n != current).cloned().collect();
+                    self.palette.sessions = sessions;
                     self.profiles.names = names;
+                }
+                Done::Session(name, mut session) => {
+                    session.repair(&self.home);
+                    self.apply_session(*session);
+                    self.toasts.info(format!("Session: {name}"));
                 }
                 Done::Loaded(loaded) => {
                     self.apply_profile(*loaded);
@@ -410,6 +475,24 @@ impl AppState {
         self.theme = self.themes.get(&settings.theme);
         self.theme.apply(&self.ctx);
         self.settings = settings;
+        // Task 23: its stash too, else the old one would be saved into its session.json.
+        self.dropzone.set_items(std::mem::take(&mut session.stash));
+        self.apply_session(session);
+        // Undo is per window and profile: the old profile's operations are not offered.
+        self.undo.clear();
+        self.jobs.undo_generation = self.undo.generation();
+        for notice in notices {
+            self.toasts.error(notice);
+        }
+        self.toasts.info(format!("Profile: {name}"));
+    }
+}
+
+impl AppState {
+    /// Opens the tabs of `session` (repaired) instead of the open ones, with its views and
+    /// column chains (listed by the next tick); else the old ones would be saved into the
+    /// session.json (Task 23). The drop zone's stash stays.
+    pub fn apply_session(&mut self, session: Session) {
         for (p, (dirs, active)) in session
             .panes
             .into_iter()
@@ -422,18 +505,62 @@ impl AppState {
                 self.list(p, t);
             }
         }
-        // Task 23: its views, column chains (listed by the next tick) and stash too;
-        // else the old ones would be saved into its session.json.
         crate::view_columns::restore_session(&mut self.panes, &session.views, &session.columns);
-        self.dropzone.set_items(session.stash);
-        // Undo is per window and profile: the old profile's operations are not offered.
-        self.undo.clear();
-        self.jobs.undo_generation = self.undo.generation();
         self.active = if self.dual { session.active } else { 0 };
-        for notice in notices {
-            self.toasts.error(notice);
+    }
+
+    /// The palette's named sessions; the disk is read and written on the profile worker.
+    pub fn session_cmd(&mut self, cmd: SessionCmd) {
+        let name = match &cmd {
+            SessionCmd::SaveAs => {
+                self.dialog = Some(crate::dialogs::Dialog::SessionName {
+                    text: String::new(),
+                    taken: self.palette.sessions.clone(),
+                    focus: true,
+                });
+                return;
+            }
+            SessionCmd::Save(n)
+            | SessionCmd::Open(n)
+            | SessionCmd::Delete(n)
+            | SessionCmd::DeleteNow(n) => n.clone(),
+        };
+        // The path is the current profile's now, also when a switch follows.
+        let path = match named_session_path(&name) {
+            Ok(path) => path,
+            Err(e) => return self.toasts.error(format!("{e:#}")),
+        };
+        match cmd {
+            SessionCmd::SaveAs => {}
+            SessionCmd::Save(_) => {
+                let session = Session::of_tabs(self);
+                let text = format!("Session \"{name}\" saved");
+                self.profiles.run(move || {
+                    session.save_to(&path)?;
+                    Ok(Done::Changed(text))
+                });
+            }
+            SessionCmd::Open(_) => self.profiles.run(move || match Session::load_from(&path) {
+                (Some(session), _) => Ok(Done::Session(name, Box::new(session))),
+                (None, notice) => Err(anyhow::anyhow!(
+                    notice.unwrap_or_else(|| format!("No session \"{name}\""))
+                )),
+            }),
+            SessionCmd::Delete(_) => {
+                self.dialog = Some(crate::dialogs::Dialog::Confirm {
+                    text: format!("Delete the session \"{name}\"? Its file goes to the trash."),
+                    yes: "Move to trash",
+                    on_yes: crate::keys::Action::Session(SessionCmd::DeleteNow(name)),
+                });
+            }
+            SessionCmd::DeleteNow(_) => {
+                let text = format!("Session \"{name}\" moved to the trash");
+                self.profiles.run(move || {
+                    keel_vfs::LocalProvider.remove(&VPath::local(&path))?;
+                    Ok(Done::Changed(text))
+                });
+            }
         }
-        self.toasts.info(format!("Profile: {name}"));
     }
 }
 
@@ -557,6 +684,85 @@ mod tests {
         assert_eq!(list(), ["default"]);
         assert!(!dir.join("profiles").join("job").exists());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs the profile worker's answers until `done` holds (5 s at most).
+    fn tick_until(state: &mut AppState, done: impl Fn(&AppState) -> bool) -> bool {
+        for _ in 0..500 {
+            state.profiles_tick();
+            if done(state) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn named_sessions_save_open_delete_and_follow_the_profile() {
+        let _env = crate::settings::TEST_ENV.lock();
+        let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+        let dir = std::env::temp_dir().join(format!("keel-sessions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::env::set_var("KEEL_CONFIG_DIR", &dir);
+        set_current(DEFAULT);
+        let (home, a) = (VPath::local(&dir), VPath::local(dir.join("a")));
+        let mut state = AppState::new(
+            egui::Context::default(),
+            std::sync::Arc::new(keel_vfs::Router::new()),
+            home.clone(),
+        );
+        assert!(sessions().is_empty());
+        assert!(named_session_path("../x").is_err(), "a file name");
+
+        // Save: the open tabs and views, next to the profile's session.json.
+        state.panes[0].tabs.push(Tab::new(a.clone()));
+        state.panes[0].active = 1;
+        state.panes[1].view = crate::pane::ViewMode::Grid;
+        let saved = Session::of_tabs(&state);
+        state.session_cmd(SessionCmd::Save("photos".into()));
+        assert!(tick_until(&mut state, |s| s.palette.sessions == ["photos"]));
+        let file = dir.join("sessions").join("photos.json");
+        assert_eq!(named_session_path("photos").unwrap(), file);
+        assert_eq!(Session::load_from(&file).0, Some(saved.clone()));
+
+        // Open: its tabs replace the open ones; the drop zone's stash stays.
+        state.dropzone.set_items(vec![a.clone()]);
+        state.apply_session(Session::single(home.clone()));
+        state.session_cmd(SessionCmd::Open("photos".into()));
+        assert!(tick_until(&mut state, |s| s.panes[0].tabs.len() == 2));
+        assert_eq!(Session::of_tabs(&state), saved);
+        assert_eq!(state.dropzone.items(), std::slice::from_ref(&a));
+        state.session_cmd(SessionCmd::Open("gone".into()));
+        assert!(tick_until(&mut state, |s| !s.toasts.list.is_empty()));
+
+        // Renaming the default profile takes its named sessions along; deleting trashes them.
+        create("work", &Settings::default()).unwrap();
+        state.apply_profile(load("work"));
+        state.profiles.relist(); // as `Done::Loaded` does
+        assert!(tick_until(&mut state, |s| s.palette.sessions.is_empty()));
+        rename(DEFAULT, "old").unwrap();
+        assert!(!file.exists());
+        set_current("old");
+        assert_eq!(sessions(), ["photos"]);
+        set_current("work");
+
+        // Delete asks first, then trashes the file.
+        state.apply_profile(load("old"));
+        state.session_cmd(SessionCmd::Delete("photos".into()));
+        assert!(matches!(
+            &state.dialog,
+            Some(crate::dialogs::Dialog::Confirm { on_yes, .. })
+                if *on_yes == crate::keys::Action::Session(SessionCmd::DeleteNow("photos".into()))
+        ));
+        state.session_cmd(SessionCmd::DeleteNow("photos".into()));
+        assert!(tick_until(&mut state, |s| !sessions()
+            .contains(&"photos".into())
+            && s.palette.sessions.is_empty()));
+
+        set_current(DEFAULT);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

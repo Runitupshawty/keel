@@ -1,8 +1,10 @@
-//! Folder colors and icons (Task 56, parity gap #17).
+//! Folder colors and icons (Task 56, parity gap #17), and file icons.
 //!
 //! A folder of a library source can carry a color (`#rrggbb`) and an icon: one emoji, or
 //! `theme:<name>`, the icon theme's folder icon for folders named `<name>` (the app falls
-//! back to its own folder icon when no theme has that name). Styles live in the source's
+//! back to its own folder icon when no theme has that name). A file can carry an icon
+//! (no color): one emoji, or `theme:<name>`, the icon theme's file icon for a file named
+//! `<name>` (`theme:.rs` for an extension). Styles live in the source's
 //! store next to the tag links, keyed by record (`folder_style`, source schema 11): a move
 //! or rename the index records keeps the record, so the style follows the folder; a folder
 //! that leaves the index, or a source deleted with its store, drops it. They sync between
@@ -25,7 +27,7 @@ const MAX_EMOJI: usize = 64;
 /// Bytes in a `theme:` name.
 const MAX_THEME_NAME: usize = 64;
 
-/// A folder's color and icon; both None is no style.
+/// A folder's color and icon, or a file's icon; both None is no style.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FolderStyle {
     /// `#rrggbb`.
@@ -132,8 +134,9 @@ impl Library {
         .optional()?)
     }
 
-    /// Sets exactly this style on an indexed folder (an empty style clears it) and logs it
-    /// for library sync. A file, or a record no longer in the index, is refused.
+    /// Sets exactly this style on an indexed folder or file (an empty style clears it) and
+    /// logs it for library sync. A file with a color, or a record no longer in the index,
+    /// is refused.
     pub fn set_folder_style(&self, record: &RecordRef, style: &FolderStyle) -> Result<()> {
         style.check()?;
         let src = self.style_source(record)?;
@@ -142,7 +145,7 @@ impl Library {
     }
 
     /// `set_folder_style` without checks of the style or the sync log (a change another
-    /// device made): the folder's path in its source.
+    /// device made): the folder's or file's path in its source.
     pub(crate) fn set_style_row(
         &self,
         src: &Source,
@@ -157,8 +160,8 @@ impl Library {
             .optional()?;
         let (path, kind) = row.context("that folder is not in the library index")?;
         ensure!(
-            kind == crate::fsid::DIR,
-            "only folders take a color or icon"
+            kind == crate::fsid::DIR || style.color.is_none(),
+            "only folders take a color"
         );
         if style.is_empty() {
             c.execute("DELETE FROM folder_style WHERE record = ?1", [id])?;
@@ -171,7 +174,7 @@ impl Library {
         Ok(path)
     }
 
-    /// Every styled folder in every source, by path.
+    /// Every styled folder and file in every source, by path.
     pub fn folder_styles(&self) -> Result<Vec<(LibraryHit, FolderStyle)>> {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         let mut out = Vec::new();

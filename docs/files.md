@@ -644,6 +644,14 @@ On Windows, Settings → General → **Explorer menu** adds two commands to Expl
 
 A profile is a separate settings file and session (tabs, views, drop zone). Settings → Profiles creates one (a copy of the current settings), renames, deletes (to the OS trash) and switches; the command palette has "Switch profile: <name>". `keel --profile <name>` starts in a profile. Files: `<config>/profiles/<name>/config.toml`; the session is in the cache folder (`profiles/<name>/session.json`, or `session.json` for `default`).
 
+**Named sessions**: the command palette's **Save session as…** saves the open tabs of both panes, their views and Columns chains under a name (named like a profile; saving under a name that exists replaces it). **Open session: <name>** opens them instead of the open tabs (the drop zone keeps its stash), and **Delete session: <name>** moves one to the OS trash after asking. They belong to the current profile and sit next to its session, in `sessions/<name>.json`; renaming or deleting a profile takes them along.
+
+## Interface language
+
+Settings → General → **Language** picks English or Español (Spanish). The choice applies at once and is saved per profile (`language = "es"` in `config.toml`). Translated so far: each pane's tab strip, **Search here** box, navigation and view buttons, path box and filter; the sidebar's section headings, places (Home, Desktop, …) and menus; the status bar; the preview panel's Preview and Inspector tabs; the file list's context menu (except Folder color, Folder icon and the tag colors); the command palette; and Settings → General with the names of the Settings pages. Everything else (the Finder-style toolbar, the path bar, the other Settings pages and a few rows of General, dialogs, toasts, job messages and the command line) is still English, as is any text the translation lacks.
+
+The text lives in `crates/keel-app/i18n/<code>.toml`, one `key = "text"` table per language, built into Keel; `en.toml` is the list of keys and the fallback. The command palette's English names are those of the command table (`keymap.rs`, the names Settings → Keyboard shows); another language translates them by command id in its `[command]` table (`"view.refresh" = "Actualizar"`). To add a language, copy `en.toml` to `<code>.toml`, translate every value (keep placeholders such as `{name}` as they are), add a `[command]` table like Spanish's, and add the file to `FILES` in `crates/keel-app/src/i18n.rs`. To translate more of the window, add a key to `en.toml` and every other language and write `tr("table.key")` where the English text was (`.replace("{name}", …)` for a placeholder). The tests check that every language has every key with the same placeholders and every palette command, and that every key the code uses exists.
+
 ## Appearance
 
 Settings → **Appearance** sets how the window is drawn; the color theme (below) sets its colors on top.
@@ -702,7 +710,7 @@ A theme with `uiTheme: "vs"` is light, any other dark; a missing key takes the b
 
 ## Folder colors and icons
 
-A folder in a library source can have a color and an icon of its own. Right-click it (in any view, a `library://` tab included) and choose:
+A folder in a library source can have a color and an icon of its own, and a file an icon. Right-click it (in any view, a `library://` tab included) and choose:
 
 - **Folder color**: one of the tag palette's colors (Red, Orange, Yellow, Green, Teal, Blue, Purple, Pink, Gray), or **Clear**.
 - **Folder icon**: one of 40 common emoji, **Type an emoji…** for any other (one emoji: Win+. on Windows or Ctrl+Cmd+Space on macOS opens the system's emoji panel; `theme:<name>` also works there), **Icon theme** (when an [icon theme](#icon-themes) is installed: its own icons for folders named `src`, `docs`, `music` and so on, for any folder), or **Clear**.
@@ -710,6 +718,8 @@ A folder in a library source can have a color and an icon of its own. Right-clic
 The color tints the folder's icon in every view (Details, Grid, Columns, the media view) and puts a dot after its name in Details; an emoji takes the place of the folder icon, drawn in the folder's color when it has one. The sidebar's library section shows a styled source's icon next to its name, and Ctrl+P shows a styled folder's icon in its results. Screen readers hear "Folder color: Red" and "Folder icon: 📷".
 
 Styles are kept in the library, never in the folder itself: the folder is not touched, and another program or file manager does not see them. They follow the folder when it is renamed or moved within its source (the library index records the move), they go when the folder is deleted or its source is removed from the library, and they are in a [library backup](library.md#backup-and-restore). With library sync on, they reach your other devices like tags kept by place: on the other device the style shows on this folder in its `node://` source of this device's folder ([Devices](devices.md)).
+
+A file's menu has **File icon** (no color): the same emoji and **Type an emoji…**, and **Icon theme** (when an icon theme is installed) lists the theme's icons by file name and extension (`package.json`, `.rs`, …), so a file can take another type's icon; `theme:.rs` typed in the dialog works too. The icon replaces the file's own in Details, Columns, Gallery, the path bar, Ctrl+P, and in Grid and the media view when the file has no thumbnail (a picture's thumbnail still shows). Screen readers hear "File icon: 📌". It is kept, follows the file and syncs like a folder's style.
 
 A folder outside every library source cannot be styled: its menu says **Add the folder's drive to the library to style it** (Library → **Add source…**). With the library off it says how to turn it on. `library.folder_style` and `library.set_folder_style` read and set styles through the API ([api.md](api.md)).
 

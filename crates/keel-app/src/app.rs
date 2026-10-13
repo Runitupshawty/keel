@@ -1,6 +1,7 @@
 //! The eframe app: message drain, keyboard, sidebar, dual panes, preview panel,
 //! popups (jump, palette), status bar, toasts.
 
+use crate::i18n::tr;
 use crate::keys::{self, Action};
 use crate::pane::{self, DragPayload, ViewCx};
 use crate::session::Session;
@@ -295,6 +296,7 @@ impl App {
             panic!("test panic inside a frame");
         }
         let s = &mut self.state;
+        crate::i18n::set(&s.settings.language);
         crate::anim::apply(ctx, s.settings.reduce_motion); // Task 23
         crate::design::sync(ctx, &s.settings, &s.theme); // Task 64: style and accent
         let shown = crate::design::shown(ctx, &s.theme); // the theme as it is drawn
@@ -456,10 +458,10 @@ impl App {
                 use crate::inspector::PanelTab;
                 ui.horizontal(|ui| {
                     for (tab, label) in [
-                        (PanelTab::Preview, "Preview"),
-                        (PanelTab::Inspector, "Inspector"),
+                        (PanelTab::Preview, "panel.preview"),
+                        (PanelTab::Inspector, "panel.inspector"),
                     ] {
-                        ui.selectable_value(&mut s.preview.tab, tab, label);
+                        ui.selectable_value(&mut s.preview.tab, tab, tr(label));
                     }
                 });
                 ui.separator();
@@ -803,9 +805,9 @@ fn drag_verb(drag: &DragPayload, over: Option<usize>, shift: bool) -> &'static s
     let extract = drag.dir.split_archive().is_some();
     let moves = over.is_some_and(|p| pane::drop_moves(Some(drag.pane), p, shift));
     if moves && !extract {
-        "Move"
+        tr("status.drag_move")
     } else {
-        "Copy"
+        tr("status.drag_copy")
     }
 }
 
@@ -856,9 +858,10 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .sum()
         };
         // Phase 14 Task 67: "12 items, 431.2 GB available" (the count stays its own label).
-        let available = (s.sidebar.drive_of(&tab.dir))
-            .map(|(_, _, free, _)| format!(", {} available", format_size(*free, DECIMAL)));
-        let mut left = vec![crate::jobs::items(n)];
+        let available = (s.sidebar.drive_of(&tab.dir)).map(|(_, _, free, _)| {
+            tr("status.available").replace("{size}", &format_size(*free, DECIMAL))
+        });
+        let mut left = vec![crate::i18n::items(n)];
         if tab.is_search() {
             // Task 76: the results' total size, and the selection's beside it.
             let total: u64 = (tab.visible_cached().iter())
@@ -866,20 +869,20 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
                 .sum();
             left.push(format_size(total, DECIMAL));
             if picked {
-                left.push(format!(
-                    "{} selected ({})",
-                    tab.selected.len(),
-                    format_size(bytes, DECIMAL)
-                ));
+                left.push(
+                    tr("status.selected_size")
+                        .replace("{n}", &tab.selected.len().to_string())
+                        .replace("{size}", &format_size(bytes, DECIMAL)),
+                );
             }
         } else {
             if picked {
-                left.push(format!("{} selected", tab.selected.len()));
+                left.push(tr("status.selected").replace("{n}", &tab.selected.len().to_string()));
             }
             left.push(format_size(bytes, DECIMAL));
         }
         if !tab.filter.is_empty() {
-            left.push(format!("filter: {}", tab.filter));
+            left.push(tr("status.filter").replace("{text}", &tab.filter));
         }
         if narrow {
             if let Some(a) = &available {
@@ -904,7 +907,7 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
             }
         }
         // Announced after navigation: the folder and its item count (a live region).
-        let live = format!("{}, {}", tab.title(), crate::jobs::items(n));
+        let live = format!("{}, {}", tab.title(), crate::i18n::items(n));
         crate::a11y::live(
             ui.ctx(),
             egui::Id::new("keel-live-folder"),
@@ -914,21 +917,22 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
         );
         let dir = tab.dir.clone();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let label = format!("Theme: {}", s.theme.name);
+            let label = tr("status.theme").replace("{name}", &s.theme.name);
             if ui
                 .add(egui::Button::new(label).frame(false))
-                .on_hover_text("Toggle dark / light")
+                .on_hover_text(tr("status.toggle_theme"))
                 .clicked()
             {
                 out.push((p, Action::ToggleTheme));
             }
             if let Some((name, _, free, total)) = s.sidebar.drive_of(&dir) {
                 ui.separator();
-                ui.label(format!(
-                    "{name}  {} free of {}",
-                    format_size(*free, DECIMAL),
-                    format_size(*total, DECIMAL)
-                ));
+                ui.label(
+                    tr("status.drive_free")
+                        .replace("{name}", name)
+                        .replace("{free}", &format_size(*free, DECIMAL))
+                        .replace("{total}", &format_size(*total, DECIMAL)),
+                );
             }
             if cfg!(windows) {
                 ui.separator();
@@ -939,7 +943,7 @@ fn status_bar(ui: &mut egui::Ui, s: &mut AppState, out: &mut Vec<(usize, Action)
             }
             if s.show_hidden {
                 ui.separator();
-                ui.weak("hidden shown");
+                ui.weak(tr("status.hidden_shown"));
             }
         });
     });

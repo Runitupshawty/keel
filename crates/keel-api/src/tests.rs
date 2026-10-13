@@ -466,7 +466,21 @@ fn folder_styles_are_previewed_set_read_and_cleared() {
         "library.set_folder_style",
         json!({"path": root, "color": ""}),
     );
-    // Refused at the preview: bad values, a file, a folder outside the library.
+    // A file takes an icon (synced and read like a folder's) but no color.
+    let notes = s(&f.files.path().join("docs").join("notes.txt"));
+    let set = apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": notes, "icon": "theme:.txt"}),
+    );
+    assert_eq!(set, json!({"path": notes, "icon": "theme:.txt"}));
+    assert_eq!(read(Some(&notes)), json!([set]));
+    apply(
+        &f.ctx,
+        "library.set_folder_style",
+        json!({"path": notes, "icon": ""}),
+    );
+    // Refused at the preview: bad values, a file's color, a folder outside the library.
     let refused = |params: Value| call(&f.ctx, "library.set_folder_style", params).unwrap_err();
     for bad in [
         json!({"path": docs, "color": "blue"}),

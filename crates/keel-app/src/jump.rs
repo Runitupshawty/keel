@@ -504,10 +504,8 @@ impl Jump {
                         let mut job = egui::text::LayoutJob::default();
                         job.append(name, 0.0, fmt(strong));
                         job.append(dir, 12.0, fmt(weak));
-                        // Task 56: a folder's color and icon from the library.
-                        let style = (!found.file)
-                            .then(|| crate::folder_style::published(ui.ctx(), &found.vpath()))
-                            .flatten();
+                        // Task 56: a folder's color and icon, a file's icon, from the library.
+                        let style = crate::folder_style::published(ui.ctx(), &found.vpath());
                         let icon = match found.file {
                             true => crate::icons::file_icon(name),
                             false => crate::icons::folder(),
@@ -525,13 +523,13 @@ impl Jump {
                                 .frame(i == self.cursor),
                         );
                         if let Some(style) = &style {
-                            let label = format!("{name} {dir}, {}", crate::folder_style::describe(style));
+                            let label = format!("{name} {dir}, {}", crate::folder_style::describe(style, !found.file));
                             r.clone().named(&label);
                             let at = egui::Rect::from_center_size(
                                 egui::pos2(r.rect.left() + ui.spacing().button_padding.x + 8.0, r.rect.center().y),
                                 egui::vec2(16.0, 16.0),
                             );
-                            crate::folder_style::paint(ui, at, icon, Some(style), false);
+                            crate::folder_style::paint(ui, at, icon, Some(style), !found.file, false);
                         }
                         if i == self.cursor && (up + down) > 0 {
                             r.scroll_to_me(None);

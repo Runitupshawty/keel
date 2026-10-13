@@ -3,6 +3,7 @@
 //! UI thread.
 
 use crate::a11y::Named;
+use crate::i18n::tr;
 use crate::session::Session;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::path::{Path, PathBuf};
@@ -16,13 +17,14 @@ const MB: u64 = 1024 * 1024;
 /// The UI scale's range (egui allows 0.2 to 5).
 pub const MIN_SCALE: f32 = 0.5;
 pub const MAX_SCALE: f32 = 3.0;
-/// The UI scale slider's suffix (×) and hint.
+/// The UI scale slider's suffix (×).
 const SCALE_SUFFIX: &str = "\u{d7}";
-const SCALE_HINT: &str = "Also Ctrl+= and Ctrl+- (Ctrl+0: 1.0\u{d7})";
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
+    /// Interface language (`i18n`): "en", "es".
+    pub language: String,
     pub theme: String,
     /// Task 64: Settings → Appearance → Style. New profiles start in Finder-style; a
     /// config.toml from before the setting keeps Classic.
@@ -238,6 +240,7 @@ pub struct ArchiveSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: "en".into(),
             theme: "dark".into(),
             style: crate::design::Style::Finder,
             accent: crate::design::Accent::Auto,
@@ -683,6 +686,11 @@ impl Persist {
     }
 }
 
+/// "Saved to <config.toml>".
+fn saved_to() -> String {
+    tr("settings.saved_to").replace("{path}", &Settings::path().display().to_string())
+}
+
 /// Pages of the Settings window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -814,24 +822,30 @@ pub fn window(
     if !recording {
         crate::a11y::esc_closes(ctx, "Settings", open);
     }
-    egui::Window::new("Settings")
+    // The id stays "Settings" in every language (window position, `esc_closes`).
+    egui::Window::new(tr("settings.title"))
+        .id(egui::Id::new("Settings"))
         .open(open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut remotes.page, Page::General, "General");
-                ui.selectable_value(&mut remotes.page, Page::Appearance, "Appearance");
-                ui.selectable_value(&mut remotes.page, Page::Remotes, "Remotes");
-                ui.selectable_value(&mut remotes.page, Page::Cloud, "Cloud");
-                ui.selectable_value(&mut remotes.page, Page::Profiles, "Profiles");
-                ui.selectable_value(&mut remotes.page, Page::Icons, "Icons");
-                ui.selectable_value(&mut remotes.page, Page::Library, "Library");
-                ui.selectable_value(&mut remotes.page, Page::Devices, "Devices");
-                ui.selectable_value(&mut remotes.page, Page::Keyboard, "Keyboard");
-                ui.selectable_value(&mut remotes.page, Page::SearchIndex, "Search index");
-                ui.selectable_value(&mut remotes.page, Page::Search, "Search");
-                ui.selectable_value(&mut remotes.page, Page::Cleanups, "Cleanups");
+                for (page, key) in [
+                    (Page::General, "settings.general"),
+                    (Page::Appearance, "settings.appearance"),
+                    (Page::Remotes, "settings.remotes"),
+                    (Page::Cloud, "settings.cloud"),
+                    (Page::Profiles, "settings.profiles"),
+                    (Page::Icons, "settings.icons"),
+                    (Page::Library, "settings.library"),
+                    (Page::Devices, "settings.devices"),
+                    (Page::Keyboard, "settings.keyboard"),
+                    (Page::SearchIndex, "settings.search_index"),
+                    (Page::Search, "settings.search"),
+                    (Page::Cleanups, "settings.cleanups"),
+                ] {
+                    ui.selectable_value(&mut remotes.page, page, tr(key));
+                }
             });
             ui.separator();
             if remotes.page != Page::General {
@@ -849,14 +863,14 @@ pub fn window(
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);
-                ui.weak(format!("Saved to {}", Settings::path().display()));
+                ui.weak(saved_to());
                 return;
             }
             egui::Grid::new("settings-grid")
                 .num_columns(2)
                 .spacing([16.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label("Theme");
+                    ui.label(tr("settings.theme"));
                     let shown = (themes.iter().find(|(n, _)| *n == s.theme))
                         .map_or(s.theme.as_str(), |(_, label)| label.as_str());
                     let combo = egui::ComboBox::from_id_salt("settings-theme")
@@ -872,36 +886,53 @@ pub fn window(
                                 }
                             }
                         });
-                    let _ = combo.response.named("Theme");
+                    let _ = combo.response.named(tr("settings.theme"));
+                    ui.end_row();
+                    ui.label(tr("settings.language"));
+                    let shown = (crate::i18n::languages().find(|(code, _)| *code == s.language))
+                        .map_or(s.language.as_str(), |(_, name)| name);
+                    let _ = egui::ComboBox::from_id_salt("settings-language")
+                        .selected_text(shown)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for (code, name) in crate::i18n::languages() {
+                                ui.selectable_value(&mut s.language, code.to_owned(), name);
+                            }
+                        })
+                        .response
+                        .named(tr("settings.language"));
                     ui.end_row();
                     color_themes.settings_rows(ui, &s.theme);
                     ui.end_row();
-                    ui.label("Hidden files");
-                    ui.checkbox(&mut s.show_hidden, "Show");
+                    ui.label(tr("settings.hidden_files"));
+                    ui.checkbox(&mut s.show_hidden, tr("settings.show"));
                     ui.end_row();
-                    ui.label("Layout");
-                    ui.checkbox(&mut s.dual, "Dual pane");
+                    ui.label(tr("settings.layout"));
+                    ui.checkbox(&mut s.dual, tr("settings.dual_pane"));
                     ui.end_row();
                     ui.label("");
-                    ui.checkbox(&mut s.preview_open, "Preview panel");
+                    ui.checkbox(&mut s.preview_open, tr("settings.preview_panel"));
                     ui.end_row();
                     // Phase 14 Task 67.
                     ui.label("");
-                    ui.checkbox(&mut s.finder.path_bar, "Path bar");
+                    ui.checkbox(&mut s.finder.path_bar, tr("settings.path_bar"));
                     ui.end_row();
-                    ui.label("Space");
-                    ui.checkbox(&mut s.finder.space_quick_look, "Opens Quick Look")
-                        .on_hover_text("Off: Space selects the cursor row (Ctrl+Space always does)");
+                    ui.label(tr("settings.space"));
+                    ui.checkbox(
+                        &mut s.finder.space_quick_look,
+                        tr("settings.space_quick_look"),
+                    )
+                    .on_hover_text(tr("settings.space_quick_look_tip"));
                     ui.end_row();
-                    ui.label("Dragging");
-                    ui.checkbox(&mut s.finder.spring_loaded, "Spring-loaded folders")
-                        .on_hover_text("A drag resting on a folder for 0.6 s opens it");
+                    ui.label(tr("settings.dragging"));
+                    ui.checkbox(&mut s.finder.spring_loaded, tr("settings.spring_loaded"))
+                        .on_hover_text(tr("settings.spring_loaded_tip"));
                     ui.end_row();
                     // --- Task 23 ---
-                    ui.label("Motion");
-                    ui.checkbox(&mut s.reduce_motion, "Reduce motion");
+                    ui.label(tr("settings.motion"));
+                    ui.checkbox(&mut s.reduce_motion, tr("settings.reduce_motion"));
                     ui.end_row();
-                    let label = ui.label("UI scale");
+                    let label = ui.label(tr("settings.ui_scale"));
                     let scale = ui.add(
                         egui::Slider::new(&mut s.ui_scale, MIN_SCALE..=MAX_SCALE)
                             .step_by(0.1)
@@ -910,9 +941,9 @@ pub fn window(
                     );
                     let _ = scale
                         .labelled_by(label.id)
-                        .on_hover_text(SCALE_HINT);
+                        .on_hover_text(tr("settings.scale_hint"));
                     ui.end_row();
-                    let label = ui.label("Max preview size");
+                    let label = ui.label(tr("settings.max_preview"));
                     let slider = ui.add(
                         egui::Slider::new(
                             &mut s.max_preview_mb,
@@ -922,28 +953,26 @@ pub fn window(
                     );
                     let _ = slider.labelled_by(label.id);
                     ui.end_row();
-                    ui.label("Hover preview");
+                    ui.label(tr("settings.hover_preview"));
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut s.hover_preview, "When resting on a file")
-                            .on_hover_text("A large preview when the pointer rests on a file");
+                        ui.checkbox(&mut s.hover_preview, tr("settings.hover_preview_on"))
+                            .on_hover_text(tr("settings.hover_preview_tip"));
                         let delay = ui.add_enabled(
                             s.hover_preview,
                             egui::Slider::new(&mut s.hover_preview_ms, 200..=2000)
                                 .step_by(100.0)
                                 .suffix(" ms"),
                         );
-                        let _ = delay.named("Hover preview delay");
+                        let _ = delay.named(tr("settings.hover_preview_delay"));
                     });
                     ui.end_row();
-                    ui.label("Transfers");
-                    ui.checkbox(&mut s.one_transfer_per_drive, "One at a time per drive")
-                        .on_hover_text("Copies and moves on the same drive wait for each other");
+                    ui.label(tr("settings.transfers"));
+                    ui.checkbox(&mut s.one_transfer_per_drive, tr("settings.one_per_drive"))
+                        .on_hover_text(tr("settings.one_per_drive_tip"));
                     ui.end_row();
-                    ui.label("Folder sizes");
-                    ui.checkbox(&mut s.folder_sizes_local, "In local folders")
-                        .on_hover_text(
-                            "Walk each local folder you open for its subfolders' sizes (library folders always have them)",
-                        );
+                    ui.label(tr("settings.folder_sizes"));
+                    ui.checkbox(&mut s.folder_sizes_local, tr("settings.in_local_folders"))
+                        .on_hover_text(tr("settings.in_local_folders_tip"));
                     ui.end_row();
                     // --- Task 24 ---
                     for kind in crate::hotkey::Kind::ALL {
@@ -957,65 +986,54 @@ pub fn window(
                         let _ = crate::hotkey::field(ui, kind, text).labelled_by(label.id);
                         ui.end_row();
                     }
-                    ui.label("Search windows");
-                    ui.checkbox(&mut s.searches_in_windows, "Open searches in new windows");
+                    ui.label(tr("settings.search_windows"));
+                    ui.checkbox(
+                        &mut s.searches_in_windows,
+                        tr("settings.searches_in_windows"),
+                    );
                     ui.end_row();
-                    ui.label("Window level");
-                    ui.checkbox(&mut s.always_on_top, "Always on top");
+                    ui.label(tr("settings.window_level"));
+                    ui.checkbox(&mut s.always_on_top, tr("settings.always_on_top"));
                     ui.end_row();
                     if cfg!(windows) {
-                        ui.label("Tray");
-                        ui.checkbox(&mut s.run_in_background, "Run in background when closed");
+                        ui.label(tr("settings.tray"));
+                        ui.checkbox(&mut s.run_in_background, tr("settings.run_in_background"));
                         ui.end_row();
                     }
-                    ui.label("Result omissions");
-                    if ui.button("Manage omissions").clicked() {
+                    ui.label(tr("settings.omissions"));
+                    if ui.button(tr("settings.manage_omissions")).clicked() {
                         s.omissions.manage = true;
                     }
                     ui.end_row();
-                    ui.label("Instances");
-                    ui.checkbox(&mut s.single_instance, "Reuse the running window")
-                        .on_hover_text("`keel <folder>` opens a tab here (from the next start)");
+                    ui.label(tr("settings.instances"));
+                    ui.checkbox(&mut s.single_instance, tr("settings.reuse_window"))
+                        .on_hover_text(tr("settings.reuse_window_tip"));
                     ui.end_row();
-                    ui.label("Updates");
-                    ui.checkbox(&mut s.updates.check, "Check for updates")
-                        .on_hover_text(
-                            "Once a day, ask GitHub for the latest release (sends only the Keel version)",
-                        );
+                    ui.label(tr("settings.updates"));
+                    ui.checkbox(&mut s.updates.check, tr("settings.check_updates"))
+                        .on_hover_text(tr("settings.check_updates_tip"));
                     ui.end_row();
-                    ui.label("Crash reports");
-                    ui.checkbox(&mut s.crash_prompt, "Offer at start")
-                        .on_hover_text(
-                            "After a crash, show the saved report the next time Keel starts",
-                        );
+                    ui.label(tr("settings.crash_reports"));
+                    ui.checkbox(&mut s.crash_prompt, tr("settings.offer_at_start"))
+                        .on_hover_text(tr("settings.offer_at_start_tip"));
                     ui.end_row();
                     // --- Task 76 ---
-                    crate::search_tab::settings_rows(
-                        ui,
-                        &mut s.search,
-                        &mut s.quote_copied_paths,
-                    );
+                    crate::search_tab::settings_rows(ui, &mut s.search, &mut s.quote_copied_paths);
                     if cfg!(windows) {
                         // --- Task 85 ---
-                        ui.label("Explorer menu");
+                        ui.label(tr("settings.explorer_menu"));
                         crate::explorer_menu::setting(ui);
                         ui.end_row();
-                        ui.label("Search index");
+                        ui.label(tr("settings.search_index"));
                         crate::index_ui::full_index_button(ui, searcher, tx);
                         ui.end_row();
-                        ui.label("Index service");
+                        ui.label(tr("settings.index_service"));
                         crate::index_ui::service_row(ui, tx);
                         ui.end_row();
-                        ui.label("Index privacy");
+                        ui.label(tr("settings.index_privacy"));
                         let hide = ui
-                            .checkbox(
-                                &mut s.index_hide_unlistable,
-                                "Hide files in folders you cannot open",
-                            )
-                            .on_hover_text(
-                                "Search results leave out files in other users' folders and \
-                                 system folders that Explorer would not show you",
-                            );
+                            .checkbox(&mut s.index_hide_unlistable, tr("settings.hide_unlistable"))
+                            .on_hover_text(tr("settings.hide_unlistable_tip"));
                         if hide.changed() {
                             crate::index_ui::apply_hide_unlistable(s.index_hide_unlistable);
                         }
@@ -1023,7 +1041,7 @@ pub fn window(
                     }
                 });
             ui.add_space(4.0);
-            ui.weak(format!("Saved to {}", Settings::path().display()));
+            ui.weak(saved_to());
         });
     theme_changed
 }
@@ -1049,8 +1067,9 @@ mod tests {
     #[test]
     fn scale_label_is_a_times_sign() {
         assert_eq!(super::SCALE_SUFFIX, "×");
-        assert!(super::SCALE_HINT.ends_with("1.0×)"));
-        assert!(!super::SCALE_HINT.contains('{'));
+        let hint = crate::i18n::tr("settings.scale_hint");
+        assert!(hint.ends_with("1.0×)"));
+        assert!(!hint.contains('{'));
     }
 
     #[test]

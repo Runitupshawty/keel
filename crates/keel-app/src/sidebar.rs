@@ -5,6 +5,7 @@
 //! and **Tags** (Task 29). Each section's header hides it (Hide / Show on hover); the
 //! layout is kept per profile in `[sidebar]` (`sidebar_prefs`).
 
+use crate::i18n::tr;
 use crate::keys::Action;
 use crate::library::{LibCmd, RECENTS_QUERY};
 use crate::pane::DragPayload;
@@ -103,6 +104,30 @@ impl Default for Sidebar {
     }
 }
 
+/// A place's name in the interface language.
+fn place_label(p: Place) -> &'static str {
+    tr(match p {
+        Place::Recents => "sidebar.recents",
+        Place::Applications if cfg!(windows) => "sidebar.programs",
+        Place::Applications => "sidebar.applications",
+        Place::Desktop => "sidebar.desktop",
+        Place::Documents => "sidebar.documents",
+        Place::Downloads => "sidebar.downloads",
+        Place::Home => "sidebar.home",
+    })
+}
+
+/// A section's title in the interface language.
+fn section_title(s: Section) -> &'static str {
+    tr(match s {
+        Section::Favorites => "sidebar.favorites",
+        Section::Locations => "sidebar.locations",
+        Section::Library => "sidebar.library",
+        Section::Bookmarks => "sidebar.bookmarks",
+        Section::Tags => "sidebar.tags",
+    })
+}
+
 /// The icon of a place.
 fn place_glyph(p: Place) -> Glyph {
     match p {
@@ -152,10 +177,10 @@ impl Sidebar {
             ui.style_mut().interaction.selectable_labels = false;
             ui.spacing_mut().item_spacing.y = 1.0;
             let fav_menu = |ui: &mut egui::Ui, out: &mut Vec<Action>| {
-                menu_item(ui, "Add current folder", out, || {
+                menu_item(ui, tr("sidebar.add_current_folder"), out, || {
                     SidebarCmd::PinFolder(current.clone())
                 });
-                menu_item(ui, "Restore default favorites", out, || {
+                menu_item(ui, tr("sidebar.restore_favorites"), out, || {
                     SidebarCmd::ResetFavorites
                 });
             };
@@ -229,7 +254,10 @@ impl Sidebar {
                 Favorite::Place { place } => place_glyph(*place),
                 Favorite::Folder { .. } => Glyph::Folder,
             };
-            let label = fav.label();
+            let label = match fav {
+                Favorite::Place { place } => place_label(*place).to_owned(),
+                Favorite::Folder { .. } => fav.label(),
+            };
             let selected = target.as_ref() == Some(current);
             let id = Id::new(("sidebar-favorite", i));
             let r = row(
@@ -243,7 +271,7 @@ impl Sidebar {
             );
             let r = match &target {
                 Some(t) => r.on_hover_text(t.display()),
-                None => r.on_hover_text("Files you opened lately (the library's Recents)"),
+                None => r.on_hover_text(tr("sidebar.recents_tip")),
             };
             if r.clicked() {
                 out.push(match &target {
@@ -258,24 +286,24 @@ impl Sidebar {
             r.dnd_set_drag_payload(FavDrag(i, label.clone()));
             r.context_menu(|ui| {
                 if let Some(t) = &target {
-                    if ui.button("Open in new tab").clicked() {
+                    if ui.button(tr("sidebar.open_in_new_tab")).clicked() {
                         out.push(Action::NewTabAt(t.clone()));
                         ui.close_menu();
                     }
                 }
                 if i > 0 {
-                    menu_item(ui, "Move up", out, || SidebarCmd::Move {
+                    menu_item(ui, tr("sidebar.move_up"), out, || SidebarCmd::Move {
                         from: i,
                         to: i - 1,
                     });
                 }
                 if i + 1 < len {
-                    menu_item(ui, "Move down", out, || SidebarCmd::Move {
+                    menu_item(ui, tr("sidebar.move_down"), out, || SidebarCmd::Move {
                         from: i,
                         to: i + 2,
                     });
                 }
-                menu_item(ui, "Remove from Sidebar", out, || SidebarCmd::Unpin(i));
+                menu_item(ui, tr("sidebar.remove"), out, || SidebarCmd::Unpin(i));
             });
             rows.push((i, r.rect, target));
         }
@@ -284,7 +312,7 @@ impl Sidebar {
             ui.painter().text(
                 pos2(rect.left() + PAD_X, rect.center().y),
                 Align2::LEFT_CENTER,
-                "Drag folders here",
+                tr("sidebar.drag_folders_here"),
                 egui::TextStyle::Body.resolve(ui.style()),
                 ui.visuals().weak_text_color(),
             );
@@ -303,10 +331,10 @@ impl Sidebar {
         out: &mut Vec<Action>,
     ) {
         if self.drives_stuck {
-            ui.colored_label(ui.visuals().warn_fg_color, "Drives are not responding")
-                .on_hover_text("A drive (often a disconnected network drive) is not answering");
+            ui.colored_label(ui.visuals().warn_fg_color, tr("sidebar.drives_stuck"))
+                .on_hover_text(tr("sidebar.drives_stuck_tip"));
         } else if self.drives.is_empty() {
-            ui.weak("Loading…");
+            ui.weak(tr("sidebar.loading"));
         }
         for (name, label, free, total) in &self.drives {
             let text = if label.is_empty() || cfg!(not(windows)) {
@@ -340,24 +368,23 @@ impl Sidebar {
             if *total > 0 {
                 let used = 1.0 - *free as f32 / *total as f32;
                 usage_line(ui, r.rect, used, ejectable);
-                tip = format!(
-                    "{tip}\n{} free of {}",
-                    format_size(*free, DECIMAL),
-                    format_size(*total, DECIMAL)
-                );
+                let free = (tr("sidebar.free_of"))
+                    .replace("{free}", &format_size(*free, DECIMAL))
+                    .replace("{total}", &format_size(*total, DECIMAL));
+                tip = format!("{tip}\n{free}");
             }
             let r = r.on_hover_text(tip);
             clicked(&r, &path, out);
             r.context_menu(|ui| {
                 // Phase 17 Task 82.
-                if ui.button("Analyze disk usage").clicked() {
+                if ui.button(tr("sidebar.analyze_disk_usage")).clicked() {
                     let root = keel_vfs::du::Root::Path(path.to_local_path().unwrap_or_default());
                     out.push(Action::DiskUsage(crate::disk_usage::DuCmd::Scan(vec![
                         root,
                     ])));
                     ui.close_menu();
                 }
-                if ui.button("Open in a new tab").clicked() {
+                if ui.button(tr("sidebar.open_in_a_new_tab")).clicked() {
                     out.push(Action::NewTabAt(path.clone()));
                     ui.close_menu();
                 }
@@ -384,7 +411,7 @@ impl Sidebar {
             let r = row(ui, id, Glyph::Terminal, name, here, Sense::click(), |ui| {
                 ui.weak("WSL");
                 if starting {
-                    ui.weak("starting…");
+                    ui.weak(tr("sidebar.starting"));
                     ui.spinner();
                 }
             })
@@ -420,7 +447,7 @@ impl Sidebar {
             crate::devices::sidebar(ui, Some(devices.as_slice()), note, current, accent, out);
         }
         if self.remotes.is_empty() && self.clouds.is_empty() {
-            menu_row(ui, "Add server or cloud…", |ui| add_menu(ui, out));
+            menu_row(ui, tr("sidebar.add_server"), |ui| add_menu(ui, out));
         }
     }
 }
@@ -517,9 +544,14 @@ fn header(
     menu: impl FnOnce(&mut egui::Ui, &mut Vec<Action>),
 ) -> bool {
     let open = !prefs.is_hidden(section);
-    let title = section.title();
+    let title = section_title(section);
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), HEADER_H));
-    let r = ui.interact(rect, Id::new(("sidebar-header", title)), Sense::click());
+    // The id is the English title: the same in every language.
+    let r = ui.interact(
+        rect,
+        Id::new(("sidebar-header", section.title())),
+        Sense::click(),
+    );
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     ui.ctx()
         .accesskit_node_builder(r.id, |b| b.set_expanded(open));
@@ -534,7 +566,7 @@ fn header(
         theme.muted(),
     );
     if r.hovered() || r.has_focus() {
-        let word = if open { "Hide" } else { "Show" };
+        let word = tr(if open { "sidebar.hide" } else { "sidebar.show" });
         let at = pos2(rect.right() - PAD_X, y);
         painter.text(at, Align2::RIGHT_CENTER, word, font, theme.muted());
     }
@@ -543,7 +575,10 @@ fn header(
         out.push(toggle.clone());
     }
     r.context_menu(|ui| {
-        if ui.button(if open { "Hide" } else { "Show" }).clicked() {
+        if ui
+            .button(tr(if open { "sidebar.hide" } else { "sidebar.show" }))
+            .clicked()
+        {
             out.push(toggle);
             ui.close_menu();
         }
@@ -567,14 +602,14 @@ fn menu_item(
 
 /// Add an SFTP / FTP host or a cloud account (Settings → Remotes / Cloud).
 fn add_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
-    if ui.button("Add SFTP or FTP host…").clicked() {
+    if ui.button(tr("sidebar.add_host")).clicked() {
         out.push(Action::Remote {
             host: String::new(),
             cmd: crate::remotes::RemoteCmd::Add,
         });
         ui.close_menu();
     }
-    if ui.button("Add cloud account…").clicked() {
+    if ui.button(tr("sidebar.add_cloud")).clicked() {
         out.push(Action::Cloud {
             id: String::new(),
             cmd: crate::clouds::CloudCmd::Add,
@@ -686,7 +721,7 @@ fn eject_button(ui: &mut egui::Ui, what: &str) -> egui::Response {
         v.text_color()
     };
     glyphs::paint(ui.painter(), rect.shrink(2.0), Glyph::Eject, color);
-    let name = format!("Eject {what}");
+    let name = tr("sidebar.eject").replace("{name}", what);
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
     r.on_hover_text(name)
 }

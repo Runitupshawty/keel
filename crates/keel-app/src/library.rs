@@ -205,8 +205,11 @@ pub enum LibCmd {
         color: Option<Option<String>>,
         icon: Option<Option<String>>,
     },
-    /// Folder icon → Type an emoji…: the dialog for this folder.
-    TypeFolderIcon(VPath),
+    /// Folder icon (File icon) → Type an emoji…: the dialog for this folder (`dir`) or file.
+    TypeFolderIcon {
+        path: VPath,
+        dir: bool,
+    },
     /// Tag (or untag) these paths (the details view's favorite star).
     TagPaths {
         paths: Vec<VPath>,
@@ -2758,9 +2761,10 @@ impl AppState {
                     });
                 self.library.refresh_meta_soon();
             }
-            LibCmd::TypeFolderIcon(path) => {
+            LibCmd::TypeFolderIcon { path, dir } => {
                 self.dialog = Some(crate::dialogs::Dialog::FolderIcon {
                     path,
+                    dir,
                     text: String::new(),
                     error: None,
                     focus: true,
@@ -3219,7 +3223,7 @@ pub const LOST: &str =
     "keel-daemon stopped: reconnect, or open the library in this window, to make changes";
 
 impl LibraryUi {
-    /// Task 56: the style of the folder at `p` (real or `library://`), if it has one.
+    /// Task 56: the style of the folder or file at `p` (real or `library://`), if it has one.
     pub fn style_of(&self, p: &VPath) -> Option<&keel_core::FolderStyle> {
         if self.styles.is_empty() {
             return None;

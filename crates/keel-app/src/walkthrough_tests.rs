@@ -1934,6 +1934,48 @@ fn settings_controls_persist_after_reopening() {
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
+/// Settings → Language: Español turns the window chrome, Settings and the palette Spanish
+/// at once; English turns them back.
+#[test]
+fn language_switch_to_spanish_and_back() {
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    let pick = |h: &mut H, combo: &str, language: &str| {
+        let at = h
+            .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::ComboBox))
+            .find(|n| n.label().as_deref() == Some(combo))
+            .map(|n| center_of(&n))
+            .expect("language combo box");
+        click_at(h, at, NONE, PointerButton::Primary);
+        click_last(h, language);
+    };
+    key(&mut h, CMD, Key::Comma);
+    assert!(has(&h, "Language"));
+    pick(&mut h, "Language", "Español");
+    assert_eq!(s(&h).settings.language, "es");
+    for shown in [
+        "Ajustes",
+        "Idioma",
+        "Panel doble",
+        "Tema: dark",
+        "Ubicaciones",
+        "Detalles",
+    ] {
+        assert!(has(&h, shown), "{shown:?} shown");
+    }
+    assert!(!has(&h, "Dual pane"));
+    shot(&mut h, "settings-spanish");
+    key(&mut h, CMD_SHIFT, Key::P);
+    let labels: Vec<String> = (s(&h).palette.items.iter())
+        .map(|i| i.label.clone())
+        .collect();
+    assert!(labels.iter().any(|l| l == "Buscar archivos"), "{labels:?}");
+    key(&mut h, NONE, Key::Escape);
+    pick(&mut h, "Idioma", "English");
+    assert_eq!(s(&h).settings.language, "en");
+    assert!(has(&h, "Dual pane") && has(&h, "Theme: dark") && !has(&h, "Ajustes"));
+}
+
 /// Theme in the status bar switches dark / light; three screens in the light theme.
 #[test]
 fn theme_switch_and_light_screens() {
@@ -1999,6 +2041,55 @@ fn profile_switch() {
     assert!(wait(&mut h, 10, &|_| crate::profiles::current() == "default"));
     drop(h);
     crate::profiles::set_current("default");
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// The palette's named sessions: "Save session as…" names the open tabs, "Open session:"
+/// brings them back after the tabs changed, "Delete session:" asks first.
+#[test]
+fn named_sessions() {
+    let _env = crate::settings::TEST_ENV.lock();
+    let _restore = crate::settings::EnvRestore::save(&["KEEL_CONFIG_DIR"]);
+    let cfg = std::env::temp_dir().join(format!("keel-walk-{}-sessions", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cfg);
+    std::env::set_var("KEEL_CONFIG_DIR", &cfg);
+    crate::profiles::set_current("default");
+    let root = demo();
+    let mut h = app(&root.join("Documents"), &root.join("Pictures"));
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "save session");
+    key(&mut h, NONE, Key::Enter);
+    assert!(has(&h, "Save the open tabs and views as session"));
+    type_text(&mut h, "photos");
+    shot(&mut h, "session-save");
+    click(&mut h, "Save");
+    let file = cfg.join("sessions").join("photos.json");
+    assert!(wait(&mut h, 10, &|s| s.palette.sessions == ["photos"]));
+    assert!(file.is_file());
+
+    // Elsewhere, then back.
+    key(&mut h, CMD, Key::T);
+    assert_eq!(s(&h).panes[0].tabs.len(), 2);
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "open session");
+    assert!(has(&h, "Open session: photos"));
+    key(&mut h, NONE, Key::Enter);
+    assert!(wait(&mut h, 10, &|s| s.panes[0].tabs.len() == 1));
+    assert!(dir_is(s(&h), 0, &root.join("Documents")));
+    assert!(dir_is(s(&h), 1, &root.join("Pictures")));
+
+    key(&mut h, CMD_SHIFT, Key::P);
+    type_text(&mut h, "delete session");
+    key(&mut h, NONE, Key::Enter);
+    assert!(has(
+        &h,
+        "Delete the session \"photos\"? Its file goes to the trash."
+    ));
+    // Cancel: the flows never use the system trash (profiles' tests delete one).
+    click(&mut h, "Cancel");
+    h.run_steps(3);
+    assert!(s(&h).dialog.is_none() && file.is_file());
+    drop(h);
     let _ = std::fs::remove_dir_all(&cfg);
 }
 
@@ -2854,7 +2945,7 @@ fn inspector_copies_and_folder_totals() {
 
 /// Task 56: right-click a folder → Folder color → Red: the dot shows after its name;
 /// Folder icon → 📷: the row shows the emoji; Clear both. Outside the library the menu
-/// says why it cannot style.
+/// says why it cannot style. A file has File icon only: 📌, then Clear.
 #[test]
 #[ignore]
 fn library_folder_color_and_icon() {
@@ -2937,6 +3028,23 @@ fn library_folder_color_and_icon() {
     );
     h.run_steps(3);
     assert!(!has_contains(&h, "Folder color:") && !has_contains(&h, "Folder icon:"));
+    // A file: File icon only (no color); the row shows the emoji, then it is cleared.
+    let todo = VPath::local(docs.join("todo.txt"));
+    let pinned = |s: &AppState| s.library.style_of(&todo).and_then(|t| t.emoji()) == Some("📌");
+    right_click_row(&mut h, "todo.txt");
+    assert!(!has(&h, "Folder color") && !has(&h, "Folder icon"));
+    click(&mut h, "File icon");
+    click_last(&mut h, "📌");
+    assert!(wait(&mut h, 10, &pinned), "the file's icon");
+    h.run_steps(3);
+    assert!(has(&h, "File icon: 📌"), "{}", dump(&h, "File"));
+    right_click_row(&mut h, "todo.txt");
+    click(&mut h, "File icon");
+    click_last(&mut h, "Clear icon");
+    assert!(
+        wait(&mut h, 10, &|s| s.library.style_of(&todo).is_none()),
+        "the file's icon cleared"
+    );
     close_library(&mut h);
 }
 
