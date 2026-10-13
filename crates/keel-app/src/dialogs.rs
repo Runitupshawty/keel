@@ -431,10 +431,18 @@ pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
         }
         let stem = name.split('.').next().unwrap_or(name).trim_end();
         let upper = stem.to_ascii_uppercase();
-        let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || ((upper.starts_with("COM") || upper.starts_with("LPT"))
-                && upper.len() == 4
-                && matches!(upper.as_bytes()[3], b'1'..=b'9'));
+        let reserved = matches!(
+            upper.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        ) || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            });
         if reserved {
             return Some(format!("\"{stem}\" is a reserved name on Windows"));
         }
@@ -445,6 +453,17 @@ pub(crate) fn invalid_name_for(name: &str, windows: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_console_and_superscript_device_names() {
+        for name in ["CONIN$", "conout$.txt", "COM¹", "com².log", "LPT³.txt"] {
+            assert!(invalid_name_for(name, true).is_some(), "{name}");
+            assert_eq!(invalid_name_for(name, false), None);
+        }
+        for name in ["COM⁴", "LPT¹0", "CONIN$x"] {
+            assert_eq!(invalid_name_for(name, true), None);
+        }
+    }
 
     #[test]
     fn names_are_checked_per_os() {
