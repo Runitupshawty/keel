@@ -19,8 +19,12 @@ pub const DEBOUNCE: Duration = Duration::from_millis(150);
 /// Copies and history shown at first; "Show all" asks for `MAX_ALL`.
 pub const MAX: usize = 50;
 pub const MAX_ALL: usize = 1000;
-pub const NOT_IN_LIBRARY: &str = "Not in the library";
-pub const LIBRARY_OFF: &str = "Not in the library (the library is off)";
+pub fn not_in_library() -> String {
+    crate::i18n::tr("inspector.not_in_library").to_owned()
+}
+pub fn library_off() -> String {
+    crate::i18n::tr("inspector.library_off").to_owned()
+}
 
 /// The preview panel's tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,10 +121,10 @@ impl Inspector {
 /// "Folder", "Link", "PDF file", "File".
 fn kind_text(e: &Entry) -> String {
     match (&e.kind, e.is_link) {
-        (_, true) => "Link".into(),
-        (Kind::Dir, _) => "Folder".into(),
-        _ if e.ext.is_empty() => "File".into(),
-        _ => format!("{} file", e.ext.to_uppercase()),
+        (_, true) => crate::i18n::tr("inspector.kind_link").into(),
+        (Kind::Dir, _) => crate::i18n::tr("inspector.kind_folder").into(),
+        _ if e.ext.is_empty() => crate::i18n::tr("inspector.kind_file").into(),
+        _ => crate::i18n::tr("inspector.kind_ext").replace("{ext}", &e.ext.to_uppercase()),
     }
 }
 
@@ -130,25 +134,37 @@ pub fn history_text(h: &HistoryEntry) -> String {
     let tag = h.tag.as_deref().unwrap_or("?");
     let fav = tag == "Favorites";
     let what = match (h.kind.as_str(), &h.from, &h.to) {
-        ("copy", Some(f), _) => format!("Copied from {f}"),
-        ("copy", _, Some(t)) => format!("Copied to {t}"),
-        ("move", Some(f), _) => format!("Moved from {f}"),
-        ("move", _, Some(t)) => format!("Moved to {t}"),
-        ("rename", Some(f), _) => format!("Renamed from {}", name(f)),
-        ("rename", _, Some(t)) => format!("Renamed to {}", name(t)),
-        (k @ ("merge" | "flatten" | "organize"), Some(f), _) => format!("Moved from {f} ({k})"),
-        (k @ ("merge" | "flatten" | "organize"), _, Some(t)) => format!("Moved to {t} ({k})"),
-        ("delete", ..) => "Deleted".into(),
-        ("tag", ..) if fav => "Added to Favorites".into(),
-        ("untag", ..) if fav => "Removed from Favorites".into(),
-        ("tag", ..) => format!("Tagged {tag}"),
-        ("untag", ..) => format!("Untagged {tag}"),
+        ("copy", Some(f), _) => crate::i18n::tr("inspector.copied_from").replace("{path}", f),
+        ("copy", _, Some(t)) => crate::i18n::tr("inspector.copied_to").replace("{path}", t),
+        ("move", Some(f), _) => crate::i18n::tr("inspector.moved_from").replace("{path}", f),
+        ("move", _, Some(t)) => crate::i18n::tr("inspector.moved_to").replace("{path}", t),
+        ("rename", Some(f), _) => {
+            crate::i18n::tr("inspector.renamed_from").replace("{name}", &name(f))
+        }
+        ("rename", _, Some(t)) => {
+            crate::i18n::tr("inspector.renamed_to").replace("{name}", &name(t))
+        }
+        (k @ ("merge" | "flatten" | "organize"), Some(f), _) => {
+            crate::i18n::tr("inspector.moved_from_kind")
+                .replace("{path}", f)
+                .replace("{kind}", k)
+        }
+        (k @ ("merge" | "flatten" | "organize"), _, Some(t)) => {
+            crate::i18n::tr("inspector.moved_to_kind")
+                .replace("{path}", t)
+                .replace("{kind}", k)
+        }
+        ("delete", ..) => crate::i18n::tr("inspector.deleted").into(),
+        ("tag", ..) if fav => crate::i18n::tr("inspector.added_to_favorites").into(),
+        ("untag", ..) if fav => crate::i18n::tr("inspector.removed_from_favorites").into(),
+        ("tag", ..) => crate::i18n::tr("inspector.tagged").replace("{tag}", tag),
+        ("untag", ..) => crate::i18n::tr("inspector.untagged").replace("{tag}", tag),
         (kind, ..) => kind.to_owned(),
     };
     let status = match h.ok {
         Some(true) => "",
-        Some(false) => " (failed)",
-        None => " (running)",
+        Some(false) => crate::i18n::tr("inspector.failed"),
+        None => crate::i18n::tr("inspector.running"),
     };
     format!("{}  {what}{status}", when(Some(h.ts)))
 }
@@ -164,7 +180,11 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str, copy: Option<&str>) {
     ui.horizontal(|ui| {
         ui.add(egui::Label::new(value).truncate());
         if let Some(what) = copy {
-            if ui.small_button("Copy").tip(what).clicked() {
+            if ui
+                .small_button(crate::i18n::tr("menu.copy"))
+                .tip(what)
+                .clicked()
+            {
                 ui.ctx().copy_text(value.to_owned());
             }
         }
@@ -187,7 +207,7 @@ fn size(bytes: u64) -> String {
 pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<Action>) {
     let Some(entry) = ins.entry.clone() else {
         ui.centered_and_justified(|ui| {
-            ui.label(RichText::new("Select a file or folder to inspect").color(muted))
+            ui.label(RichText::new(crate::i18n::tr("inspector.select_to_inspect")).color(muted))
         });
         return;
     };
@@ -197,17 +217,27 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add(egui::Label::new(RichText::new(&entry.name).strong()).truncate());
-            heading(ui, "Overview", muted);
+            heading(ui, crate::i18n::tr("tab.overview"), muted);
             grid(ui, "inspector-overview", |ui| {
-                row(ui, "Kind", &kind_text(&entry), None);
+                row(
+                    ui,
+                    crate::i18n::tr("toolbar.kind"),
+                    &kind_text(&entry),
+                    None,
+                );
                 if entry.kind != Kind::Dir {
-                    row(ui, "Size", &size(entry.size), None);
+                    row(ui, crate::i18n::tr("toolbar.size"), &size(entry.size), None);
                 }
                 let modified = crate::view_details::date_text(&entry);
                 if !modified.is_empty() {
-                    row(ui, "Modified", &modified, None);
+                    row(ui, crate::i18n::tr("inspector.modified"), &modified, None);
                 }
-                row(ui, "Path", &entry.path.display(), Some("Copy path"));
+                row(
+                    ui,
+                    crate::i18n::tr("inspector.path"),
+                    &entry.path.display(),
+                    Some(crate::i18n::tr("menu.copy_path")),
+                );
             });
             journal(ui, ins.journal.as_ref(), muted, out);
             let lib = match &ins.answer {
@@ -217,34 +247,42 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
                     return;
                 }
                 Some(Err(e)) => {
-                    heading(ui, "Library", muted);
+                    heading(ui, crate::i18n::tr("tab.library"), muted);
                     ui.weak(e);
                     return;
                 }
                 Some(Ok(i)) => i.library.as_ref(),
             };
             let Some(lib) = lib else {
-                for title in ["Library", "Copies", "History", "Tags"] {
+                for title in [
+                    crate::i18n::tr("tab.library"),
+                    crate::i18n::tr("inspector.copies"),
+                    crate::i18n::tr("inspector.history"),
+                    crate::i18n::tr("sidebar.tags"),
+                ] {
                     heading(ui, title, muted);
-                    ui.weak(NOT_IN_LIBRARY);
+                    ui.weak(not_in_library());
                 }
                 return;
             };
             library(ui, lib, muted, out);
-            heading(ui, "History", muted);
+            heading(ui, crate::i18n::tr("inspector.history"), muted);
             if lib.history.is_empty() {
-                ui.weak("No operations on it yet");
+                ui.weak(crate::i18n::tr("inspector.no_operations"));
             }
             for h in &lib.history {
                 ui.add(egui::Label::new(history_text(h)).truncate());
             }
-            if lib.more_history && ins.max < MAX_ALL && ui.button("Show all").clicked() {
+            if lib.more_history
+                && ins.max < MAX_ALL
+                && ui.button(crate::i18n::tr("inspector.show_all")).clicked()
+            {
                 show_all = true;
             }
-            heading(ui, "Tags", muted);
+            heading(ui, crate::i18n::tr("sidebar.tags"), muted);
             ui.horizontal_wrapped(|ui| {
                 if lib.favorite {
-                    ui.label("★ Favorite");
+                    ui.label(crate::i18n::tr("inspector.favorite"));
                 }
                 for t in &lib.tags {
                     let tag = keel_core::Tag {
@@ -256,11 +294,11 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
                     crate::library_ui::chip(ui, &tag);
                 }
                 if !lib.favorite && lib.tags.is_empty() {
-                    ui.weak("No tags");
+                    ui.weak(crate::i18n::tr("inspector.no_tags"));
                 }
                 if ui
-                    .button("Tags…")
-                    .on_hover_text("Tag… (Ctrl+Shift+T)")
+                    .button(crate::i18n::tr("inspector.tags_button"))
+                    .on_hover_text(crate::i18n::tr("inspector.tags_tip"))
                     .clicked()
                 {
                     out.push(Action::Library(LibCmd::TagPicker));
@@ -281,7 +319,7 @@ fn journal(
     muted: Color32,
     out: &mut Vec<Action>,
 ) {
-    heading(ui, "Index journal", muted);
+    heading(ui, crate::i18n::tr("inspector.index_journal"), muted);
     match entries {
         None => {
             crate::anim::spinner(ui);
@@ -290,14 +328,18 @@ fn journal(
             ui.weak(e);
         }
         Some(Ok(list)) if list.is_empty() => {
-            ui.weak("No changes recorded");
+            ui.weak(crate::i18n::tr("inspector.no_changes"));
         }
         Some(Ok(list)) => {
             for e in list {
                 ui.add(egui::Label::new(crate::journal_ui::entry_text(e)).truncate())
                     .on_hover_text(&e.path);
             }
-            if list.len() >= JOURNAL_MAX && ui.small_button("Open the journal").clicked() {
+            if list.len() >= JOURNAL_MAX
+                && ui
+                    .small_button(crate::i18n::tr("inspector.open_journal"))
+                    .clicked()
+            {
                 out.push(Action::OpenJournal);
             }
         }
@@ -306,60 +348,114 @@ fn journal(
 
 /// The Library section, then Copies (a file) or the folder's totals.
 fn library(ui: &mut egui::Ui, lib: &InspectedRecord, muted: Color32, out: &mut Vec<Action>) {
-    heading(ui, "Library", muted);
+    heading(ui, crate::i18n::tr("tab.library"), muted);
     grid(ui, "inspector-library", |ui| {
-        row(ui, "Source", &lib.source_label, None);
-        let v = &lib.volume;
-        let state = state_text(crate::backend::volume_state(v.state));
-        let backup = if v.backup { " · backup" } else { "" };
         row(
             ui,
-            "Volume",
+            crate::i18n::tr("inspector.source"),
+            &lib.source_label,
+            None,
+        );
+        let v = &lib.volume;
+        let state = state_text(crate::backend::volume_state(v.state));
+        let backup = if v.backup {
+            crate::i18n::tr("inspector.backup")
+        } else {
+            ""
+        };
+        row(
+            ui,
+            crate::i18n::tr("inspector.volume"),
             &format!("{} · {state}{backup}", v.label),
             None,
         );
         if let Some(id) = &lib.content_id {
-            row(ui, "Content id", id, Some("Copy content id"));
+            row(
+                ui,
+                crate::i18n::tr("inspector.content_id"),
+                id,
+                Some(crate::i18n::tr("inspector.copy_content_id")),
+            );
         }
-        row(ui, "First seen", &seen(lib.first_seen), None);
+        row(
+            ui,
+            crate::i18n::tr("inspector.first_seen"),
+            &seen(lib.first_seen),
+            None,
+        );
         if lib.folder.is_none() {
-            row(ui, "Last hashed", &seen(lib.last_hashed), None);
+            row(
+                ui,
+                crate::i18n::tr("inspector.last_hashed"),
+                &seen(lib.last_hashed),
+                None,
+            );
         }
         if let Some(c) = &lib.copies {
-            let mut text = format!(
-                "{} in {}",
-                plural(c.copies, "copy", "copies"),
-                plural(c.failure_domains, "failure domain", "failure domains")
+            let copies = plural(
+                c.copies,
+                crate::i18n::tr("inspector.copy_one"),
+                crate::i18n::tr("inspector.copy_many"),
             );
+            let domains = plural(
+                c.failure_domains,
+                crate::i18n::tr("inspector.domain_one"),
+                crate::i18n::tr("inspector.domain_many"),
+            );
+            let mut text = crate::i18n::tr("inspector.copies_in")
+                .replace("{copies}", &copies)
+                .replace("{domains}", &domains);
             if c.backed_up {
-                text.push_str(", backed up");
+                text.push_str(crate::i18n::tr("inspector.backed_up"));
             }
-            row(ui, "Protection", &text, None);
+            row(ui, crate::i18n::tr("inspector.protection"), &text, None);
         }
     });
     if let Some(f) = &lib.folder {
-        heading(ui, "Folder", muted);
+        heading(ui, crate::i18n::tr("inspector.folder"), muted);
         grid(ui, "inspector-folder", |ui| {
-            let known = |v: Option<u64>, f: fn(u64) -> String| v.map_or("not known yet".into(), f);
-            row(ui, "Size", &known(f.bytes, size), None);
-            row(ui, "Files", &known(f.files, count), None);
-            row(ui, "Folders", &count(f.folders), None);
+            let known = |v: Option<u64>, f: fn(u64) -> String| {
+                v.map_or(crate::i18n::tr("inspector.not_known_yet").to_owned(), f)
+            };
+            row(
+                ui,
+                crate::i18n::tr("toolbar.size"),
+                &known(f.bytes, size),
+                None,
+            );
+            row(
+                ui,
+                crate::i18n::tr("inspector.files"),
+                &known(f.files, count),
+                None,
+            );
+            row(
+                ui,
+                crate::i18n::tr("inspector.folders"),
+                &count(f.folders),
+                None,
+            );
             if let Some(b) = &f.biggest {
                 let s = b
                     .bytes
                     .map(|b| format!(" ({})", size(b)))
                     .unwrap_or_default();
-                row(ui, "Biggest", &format!("{}{s}", b.name), None);
+                row(
+                    ui,
+                    crate::i18n::tr("inspector.biggest"),
+                    &format!("{}{s}", b.name),
+                    None,
+                );
             }
         });
         return;
     }
-    heading(ui, "Copies", muted);
+    heading(ui, crate::i18n::tr("inspector.copies"), muted);
     let Some(c) = &lib.copies else { return };
     if lib.content_id.is_none() {
-        ui.weak("Not hashed yet: its copies are not known");
+        ui.weak(crate::i18n::tr("inspector.not_hashed"));
     } else if c.locations.is_empty() {
-        ui.weak("No other copy in the library");
+        ui.weak(crate::i18n::tr("inspector.no_other_copy"));
     }
     for l in &c.locations {
         let state = l.state.map(|s| state_text(crate::backend::volume_state(s)));
@@ -368,7 +464,7 @@ fn library(ui: &mut egui::Ui, lib: &InspectedRecord, muted: Color32, out: &mut V
             tip.push_str(&format!(" · {state}"));
         }
         if l.claimed {
-            tip.push_str(" · claimed by the device, not counted");
+            tip.push_str(crate::i18n::tr("inspector.claimed"));
         }
         let r = ui.add(egui::Button::new(&l.path).truncate()).tip(&l.path);
         if r.on_hover_text(tip).clicked() {
@@ -376,12 +472,14 @@ fn library(ui: &mut egui::Ui, lib: &InspectedRecord, muted: Color32, out: &mut V
         }
     }
     if lib.more_copies {
-        ui.weak("More copies than shown");
+        ui.weak(crate::i18n::tr("inspector.more_copies"));
     }
 }
 
 fn seen(t: Option<i64>) -> String {
-    t.map_or("not recorded".into(), |t| when(Some(t)))
+    t.map_or(crate::i18n::tr("inspector.not_recorded").to_owned(), |t| {
+        when(Some(t))
+    })
 }
 
 fn plural(n: u64, one: &str, many: &str) -> String {

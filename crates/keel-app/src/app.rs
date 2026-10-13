@@ -430,7 +430,7 @@ impl App {
             let target = s.preview_target();
             if let Some((path, req, max)) = s.preview.inspector.follow(ctx, target.as_ref()) {
                 if !s.library.inspect(path, req, max) {
-                    let off = crate::inspector::LIBRARY_OFF.to_owned();
+                    let off = crate::inspector::library_off();
                     s.preview.inspector.answered(req, Err(off));
                 }
             }
