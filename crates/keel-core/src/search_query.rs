@@ -155,71 +155,74 @@ fn parse_text(text: &str, opts: &Options) -> Result<(String, Ast)> {
     Ok((text.clone(), keel_query::parse_ast(&text, opts)?))
 }
 
-pub(super) fn parse(text: &str, now: i64, offset: i64) -> Result<LibraryQuery> {
-    let opts = options(now, offset);
-    let (text, ast) = parse_text(text, &opts)?;
-    let text = text.as_str();
-    let mut parts = Vec::new();
-    let mut flat = true;
-    let mut contents = true;
-    fn visit(
-        expr: &Expr,
-        ast: &Ast,
-        opts: &Options,
-        text: &str,
-        now: i64,
-        offset: i64,
-        parts: &mut Vec<String>,
-        flat: &mut bool,
-        contents: &mut bool,
-    ) -> Result<()> {
+/// What a walk over the parsed terms learns: the terms the old planner reads, and whether
+/// the query is only those, ANDed.
+struct Scan<'a> {
+    ast: &'a Ast,
+    opts: &'a Options,
+    text: &'a str,
+    now: i64,
+    offset: i64,
+    parts: Vec<String>,
+    flat: bool,
+    contents: bool,
+}
+
+impl Scan<'_> {
+    fn visit(&mut self, expr: &Expr) -> Result<()> {
         match expr {
             Expr::And(children) => {
                 for child in children {
-                    visit(child, ast, opts, text, now, offset, parts, flat, contents)?;
+                    self.visit(child)?;
                 }
             }
             Expr::Or(children) => {
-                *flat = false;
+                self.flat = false;
                 for child in children {
-                    visit(child, ast, opts, text, now, offset, parts, flat, contents)?;
+                    self.visit(child)?;
                 }
             }
             Expr::Not(child) => {
-                *flat = false;
-                visit(child, ast, opts, text, now, offset, parts, flat, contents)?;
+                self.flat = false;
+                self.visit(child)?;
             }
             Expr::Term(term) => {
-                if let Some(q) = sql_term(term, text, now, offset)? {
+                if let Some(q) = sql_term(term, self.text, self.now, self.offset)? {
                     if term.function.as_ref().is_some_and(|f| f.name == "contents") {
-                        *contents = q.contents;
+                        self.contents = q.contents;
                     }
-                    parts.push(text[term.span.clone()].to_owned());
+                    self.parts.push(self.text[term.span.clone()].to_owned());
                 } else {
-                    compile_native(term, ast, opts)?;
-                    *flat = false;
+                    compile_native(term, self.ast, self.opts)?;
+                    self.flat = false;
                 }
             }
         }
         Ok(())
     }
-    visit(
-        &ast.expr,
-        &ast,
-        &opts,
-        text,
+}
+
+pub(super) fn parse(text: &str, now: i64, offset: i64) -> Result<LibraryQuery> {
+    let opts = options(now, offset);
+    let (text, ast) = parse_text(text, &opts)?;
+    let mut scan = Scan {
+        ast: &ast,
+        opts: &opts,
+        text: &text,
         now,
         offset,
-        &mut parts,
-        &mut flat,
-        &mut contents,
-    )?;
-    if flat {
-        return LibraryQuery::parse_sql_terms(&parts.join(" "), now, offset);
+        parts: Vec::new(),
+        flat: true,
+        contents: true,
+    };
+    scan.visit(&ast.expr)?;
+    if scan.flat {
+        return LibraryQuery::parse_sql_terms(&scan.parts.join(" "), now, offset);
     }
+    let contents = scan.contents;
     Ok(LibraryQuery {
         expression: Some(Expression {
-            text: text.to_owned(),
+            text,
             now,
             offset,
         }),
