@@ -62,10 +62,16 @@ mod tests {
             ..keel_search::Query::default()
         };
         assert!(native_problem(&query("report | ext:pdf !draft", false)).is_none());
-        assert!(native_problem(&query("report notes OR", false)).is_none(), "OR is a word");
+        assert!(
+            native_problem(&query("report notes OR", false)).is_none(),
+            "OR is a word"
+        );
         let p = native_problem(&query("report <notes", false)).unwrap();
         assert!(p.contains('<'), "{p}");
-        assert!(native_problem(&query("(", true)).is_some(), "a regex mode query");
+        assert!(
+            native_problem(&query("(", true)).is_some(),
+            "a regex mode query"
+        );
         assert!(native_problem(&query("", false)).is_none());
     }
 }

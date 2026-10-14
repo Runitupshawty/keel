@@ -493,7 +493,12 @@ pub fn bar(
             && name != Some("Everything");
         if (everything_syntax || native_syntax) && !query.is_empty() {
             let cache_id = id.with("query_problem");
-            let key = format!("{}\u{0}{}{}", query, u8::from(toggles.regex), u8::from(native_syntax));
+            let key = format!(
+                "{}\u{0}{}{}",
+                query,
+                u8::from(toggles.regex),
+                u8::from(native_syntax)
+            );
             let problem = ui.ctx().data_mut(|d| {
                 let cache = d.get_temp_mut_or_default::<(String, Option<String>)>(cache_id);
                 if cache.0 != key {
