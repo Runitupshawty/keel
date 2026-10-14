@@ -59,7 +59,9 @@ pub use index_settings::{
     split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
     VolumeRoot, DEFAULT_JOURNAL_MB,
 };
-pub use language::{backend_query, compile_query, evaluate_hits, Evaluated, EVALUATED_SCAN};
+pub use language::{
+    backend_query, compile_query, evaluate_hits, Evaluated, HitFilter, EVALUATED_SCAN,
+};
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, install_service, is_elevated, request_full_index, request_service_change,
@@ -499,6 +501,7 @@ fn stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
     Some((size, meta.modified().ok()))
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn hit_for_path(path: &Path) -> Option<Hit> {
     let metadata = std::fs::metadata(path).ok()?;
     Some(Hit {

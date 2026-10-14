@@ -10,7 +10,7 @@
 
 use crate::error::{ApiError, Result};
 use crate::types::{SystemSearchParams, SystemSort};
-pub use keel_search::{Hit, Query, Searcher};
+pub use keel_search::{Hit, HitFilter, Query, Searcher};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -57,23 +57,27 @@ pub struct Found {
 /// Searches `searcher` with `p`, reading at most `scan` hits from it. Blocks on the
 /// backend and the disk: worker threads only.
 pub fn run(searcher: &dyn Searcher, p: &SystemSearchParams, scan: usize) -> Result<Found> {
-    let plan = compile(p, searcher.name() == "Everything")?;
+    let everything = searcher.name() == "Everything";
+    let plan = compile(p, everything)?;
     let count = p.count.unwrap_or(DEFAULT_COUNT).min(MAX_COUNT);
     let offset = p.offset.unwrap_or(0);
-    let native = searcher.unified_query() || searcher.name() == "Everything";
-    let mut query = Query {
-        max: u32::try_from(scan).unwrap_or(u32::MAX),
-        meta: !native,
-        ..plan.backend
+    // Everything and Keel's own indexes evaluate the language (with all the options)
+    // themselves, on more properties than a hit keeps. Any other backend is asked for a
+    // superset of the text and its hits are evaluated here.
+    let native = searcher.unified_query() || plan.filter.is_none();
+    let max = u32::try_from(scan).unwrap_or(u32::MAX);
+    let query = match (native, &plan.filter) {
+        (false, Some(_)) => Query {
+            max,
+            ..keel_search::backend_query(&plan.backend)
+                .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?
+        },
+        _ => Query {
+            max,
+            meta: false,
+            ..plan.backend.clone()
+        },
     };
-    if !native {
-        // A backend with a different language must not eliminate an OR branch or a
-        // path match before the shared evaluator sees it. A name regex is safe.
-        if !query.regex || query.match_path {
-            query.text.clear();
-            query.regex = false;
-        }
-    }
     if !searcher.available() {
         searcher.probe();
     }
@@ -81,12 +85,11 @@ pub fn run(searcher: &dyn Searcher, p: &SystemSearchParams, scan: usize) -> Resu
         .query(&query)
         .map_err(|e| ApiError::failed(format!("{}: {e:#}", searcher.name())))?;
     let capped = hits.len() >= scan;
-    let mut hits = if native {
-        // Hits omit properties such as child counts: do not re-evaluate a query
-        // already matched against the full native entry using the smaller Hit.
-        hits
-    } else {
-        plan.filter.select(hits)?
+    let mut hits = match (&plan.filter, native) {
+        (Some(filter), false) => filter
+            .select(hits)
+            .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?,
+        _ => hits,
     };
     let sort = p.sort.unwrap_or_default();
     if matches!(sort, SystemSort::DateModified | SystemSort::Size) {
@@ -139,78 +142,13 @@ fn sort_hits(hits: &mut [Hit], sort: SystemSort, ascending: bool) {
 /// The backend's query and the check of its hits.
 pub(crate) struct Plan {
     pub(crate) backend: Query,
-    pub(crate) filter: Filter,
+    /// None for Everything.
+    pub(crate) filter: Option<HitFilter>,
 }
 
-/// Shared query evaluation for backends without native language support.
-pub(crate) struct Filter(Option<keel_query::Query>);
-
-impl Filter {
-    pub(crate) fn matches(&self, hit: &Hit) -> bool {
-        self.0.as_ref().is_none_or(|query| {
-            query.matches(&HitProps {
-                hit,
-                path: hit.path.display(),
-            })
-        })
-    }
-
-    fn select(&self, hits: Vec<Hit>) -> Result<Vec<Hit>> {
-        let Some(query) = &self.0 else {
-            return Ok(hits);
-        };
-        let props: Vec<_> = hits
-            .iter()
-            .map(|hit| HitProps {
-                hit,
-                path: hit.path.display(),
-            })
-            .collect();
-        let selected = query
-            .select(props.iter(), None)
-            .map_err(|e| ApiError::invalid_params(e.to_string()))?;
-        Ok(selected.into_iter().map(|i| hits[i].clone()).collect())
-    }
-}
-
-/// Only the properties actually supplied by a legacy backend are known here.
-struct HitProps<'a> {
-    hit: &'a Hit,
-    path: String,
-}
-
-impl keel_query::Props for HitProps<'_> {
-    fn name(&self) -> &str {
-        self.hit.path.name()
-    }
-    fn path(&self) -> &str {
-        &self.path
-    }
-    fn is_dir(&self) -> bool {
-        self.hit.is_dir
-    }
-    fn size(&self) -> Option<u64> {
-        Some(self.hit.size)
-    }
-    fn allocated(&self) -> Option<u64> {
-        None
-    }
-    fn date(&self, which: keel_query::DateProp) -> Option<keel_query::Timestamp> {
-        if which != keel_query::DateProp::Modified {
-            return None;
-        }
-        self.hit
-            .modified?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|d| i64::try_from(d.as_millis()).ok())
-    }
-    fn attributes(&self) -> Option<u32> {
-        None
-    }
-}
-
-/// Everything owns its language. All other backends use the native shared compiler.
+/// The query for `p` and the evaluator for the hits of a backend that does not evaluate
+/// the search language itself. Everything is asked for the text as typed (it has its own
+/// language); for every other backend the text must parse here, and the error says where.
 pub(crate) fn compile(p: &SystemSearchParams, everything: bool) -> Result<Plan> {
     if p.query.len() > MAX_QUERY {
         return Err(ApiError::invalid_params(format!(
@@ -231,12 +169,15 @@ pub(crate) fn compile(p: &SystemSearchParams, everything: bool) -> Result<Plan> 
         ..Query::default()
     };
     let filter = if everything {
-        Filter(None)
+        // Everything parses its own text; only a regex is checked here, as it always was.
+        if p.regex {
+            regex::Regex::new(&p.query)
+                .map_err(|e| ApiError::invalid_params(format!("bad regular expression: {e}")))?;
+        }
+        None
     } else {
-        Filter(Some(
-            keel_search::compile_query(&backend)
-                .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?,
-        ))
+        let invalid = |e: anyhow::Error| ApiError::invalid_params(format!("{e:#}"));
+        Some(HitFilter::new(&backend).map_err(invalid)?)
     };
     Ok(Plan { backend, filter })
 }
@@ -244,17 +185,18 @@ pub(crate) fn compile(p: &SystemSearchParams, everything: bool) -> Result<Plan> 
 /// Compiles `p` and checks `paths` (as hits) against it: the fuzz targets' way in.
 #[doc(hidden)]
 pub fn check_paths(p: &SystemSearchParams, paths: &[&str]) -> Result<Vec<bool>> {
-    let plan = compile(p, false)?;
+    let filter = compile(p, false)?.filter;
+    let _ = compile(p, true)?;
     Ok(paths
         .iter()
         .map(|path| {
-            plan.filter.matches(&Hit {
+            filter.as_ref().is_none_or(|f| f.matches(&Hit {
                 path: keel_vfs::VPath::local(path),
                 is_dir: false,
                 size: 0,
                 modified: None,
                 snippet: None,
-            })
+            }))
         })
         .collect())
 }

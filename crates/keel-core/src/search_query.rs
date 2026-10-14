@@ -7,6 +7,7 @@
 
 use super::*;
 use keel_query::{Ast, DateProp, Expr, Modifier, Options, Props, Term};
+use std::cell::OnceCell;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Expression {
@@ -235,23 +236,57 @@ impl Lower<'_> {
     }
 }
 
-struct RowProps {
+/// One record as the evaluator sees it. What costs a query (a folder's total, its child
+/// counts) is read only when a term asks.
+struct RowProps<'a> {
+    conn: &'a rusqlite::Connection,
+    id: i64,
     name: String,
     path: String,
     dir: bool,
+    /// A file's size.
     size: Option<u64>,
     modified: Option<i64>,
     changed: Option<i64>,
     flags: i64,
-    children: keel_query::ChildCounts,
+    total: OnceCell<Option<u64>>,
+    children: OnceCell<Option<keel_query::ChildCounts>>,
 }
 
-impl Props for RowProps {
-    fn name(&self) -> &str { &self.name }
-    fn path(&self) -> &str { &self.path }
-    fn is_dir(&self) -> bool { self.dir }
-    fn size(&self) -> Option<u64> { self.size }
-    fn allocated(&self) -> Option<u64> { None }
+impl Props for RowProps<'_> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn is_dir(&self) -> bool {
+        self.dir
+    }
+
+    /// A folder's is the total of the files below it.
+    fn size(&self) -> Option<u64> {
+        if !self.dir {
+            return self.size;
+        }
+        *self.total.get_or_init(|| {
+            self.conn
+                .query_row(
+                    "SELECT bytes FROM folder_total WHERE record = ?1",
+                    [self.id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok()
+                .and_then(|n| u64::try_from(n).ok())
+        })
+    }
+
+    fn allocated(&self) -> Option<u64> {
+        None
+    }
+
     fn date(&self, which: DateProp) -> Option<i64> {
         match which {
             DateProp::Modified => self.modified,
@@ -259,23 +294,56 @@ impl Props for RowProps {
             _ => None,
         }
     }
+
     fn attributes(&self) -> Option<u32> {
-        Some(if self.dir { keel_query::attr::DIRECTORY } else { 0 }
-            | if self.flags & 2 != 0 { keel_query::attr::HIDDEN } else { 0 }
-            | if self.flags & 4 != 0 { keel_query::attr::REPARSE_POINT } else { 0 })
+        use keel_query::attr;
+        let flag = |on: bool, bit: u32| if on { bit } else { 0 };
+        Some(
+            flag(self.dir, attr::DIRECTORY)
+                | flag(self.flags & crate::index::HIDDEN != 0, attr::HIDDEN)
+                | flag(self.flags & crate::index::LINK != 0, attr::REPARSE_POINT),
+        )
     }
+
     fn child_counts(&self) -> Option<keel_query::ChildCounts> {
-        self.dir.then_some(self.children)
+        if !self.dir {
+            return None;
+        }
+        *self.children.get_or_init(|| {
+            self.conn
+                .query_row(
+                    "SELECT coalesce(sum(kind <> 1), 0), coalesce(sum(kind = 1), 0)
+                     FROM record WHERE parent = ?1",
+                    [self.id],
+                    |r| {
+                        Ok(keel_query::ChildCounts {
+                            files: r.get::<_, i64>(0)?.max(0) as u64,
+                            folders: r.get::<_, i64>(1)?.max(0) as u64,
+                        })
+                    },
+                )
+                .ok()
+        })
     }
 }
 
 pub(super) fn search(
-    src: &Source, q: &LibraryQuery, expression: &Expression, now: i64, contents: bool,
+    src: &Source,
+    q: &LibraryQuery,
+    expression: &Expression,
+    now: i64,
+    contents: bool,
 ) -> Result<Vec<LibraryHit>> {
     let opts = options(expression.now, expression.offset);
     let ast = keel_query::parse_ast(&expression.text, &opts)?;
-    let mut lower = Lower { src, expression, ast: &ast, opts: &opts,
-        contents: contents && q.contents, leaves: Vec::new() };
+    let mut lower = Lower {
+        src,
+        expression,
+        ast: &ast,
+        opts: &opts,
+        contents: contents && q.contents,
+        leaves: Vec::new(),
+    };
     let root = lower.node(&ast.expr)?;
     let mut args = Vec::new();
     let mut truth = String::new();
@@ -285,14 +353,12 @@ pub(super) fn search(
     }
     let candidate = root.candidate(&lower.leaves, false, &mut args);
     // Callers can still add filters (e.g. the pane's folders-only toggle) after parse.
-    let Some((filters, filter_args)) = q.filters() else { return Ok(Vec::new()); };
+    let Some((filters, filter_args)) = q.filters() else {
+        return Ok(Vec::new());
+    };
     args.extend(filter_args);
     let sql = format!(
-        "SELECT {HIT_COLUMNS}, r.ctime, r.flags,
-            CASE WHEN r.kind = 1 THEN (SELECT bytes FROM folder_total WHERE record = r.id) ELSE r.size END,
-            (SELECT count(*) FROM record c WHERE c.parent = r.id AND c.kind <> 1),
-            (SELECT count(*) FROM record c WHERE c.parent = r.id AND c.kind = 1)
-            {truth}
+        "SELECT {HIT_COLUMNS}, r.ctime, r.flags {truth}
          FROM record r WHERE ({candidate}){filters} ORDER BY r.mtime DESC, r.id"
     );
     let c = src.store.get()?;
@@ -301,21 +367,34 @@ pub(super) fn search(
     let mut hits = Vec::new();
     while let Some(row) = rows.next()? {
         let rel: String = row.get(1)?;
-        let props = RowProps {
-            name: row.get(2)?, path: src.absolute(&rel).display(), dir: row.get::<_, i64>(3)? == 1,
-            size: row.get::<_, Option<i64>>(8)?.and_then(|s| u64::try_from(s).ok()),
-            modified: row.get::<_, Option<i64>>(5)?.map(|n| n.div_euclid(1_000_000)),
-            changed: row.get::<_, Option<i64>>(6)?.map(|n| n.div_euclid(1_000_000)),
-            flags: row.get(7)?,
-            children: keel_query::ChildCounts { files: row.get(9)?, folders: row.get(10)? },
+        let dir = row.get::<_, i64>(3)? == crate::fsid::DIR;
+        let ms = |i: usize| -> rusqlite::Result<Option<i64>> {
+            Ok(row.get::<_, Option<i64>>(i)?.map(|n| n.div_euclid(1_000_000)))
         };
-        let truth: Vec<bool> = (0..lower.leaves.len()).map(|i| row.get(11 + i))
+        let props = RowProps {
+            conn: &c,
+            id: row.get(0)?,
+            name: row.get(2)?,
+            path: src.absolute(&rel).display(),
+            dir,
+            size: row.get::<_, Option<i64>>(4)?.and_then(|s| u64::try_from(s).ok()),
+            modified: ms(5)?,
+            changed: ms(6)?,
+            flags: row.get(7)?,
+            total: OnceCell::new(),
+            children: OnceCell::new(),
+        };
+        let truth: Vec<bool> = (0..lower.leaves.len())
+            .map(|i| row.get(8 + i))
             .collect::<rusqlite::Result<_>>()?;
         if root.matches(&truth, &props) {
             let modified = props.modified.unwrap_or(0).div_euclid(1000);
-            let score = -RECENCY / (1.0 + now.saturating_sub(modified).max(0) as f64 / RECENCY_SCALE);
+            let age = now.saturating_sub(modified).max(0) as f64;
+            let score = -RECENCY / (1.0 + age / RECENCY_SCALE);
             hits.push(hit_of(src, row, score)?);
-            if hits.len() >= q.max { break; }
+            if hits.len() >= q.max {
+                break;
+            }
         }
     }
     Ok(hits)

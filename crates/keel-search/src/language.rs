@@ -223,6 +223,47 @@ pub(crate) fn prefilter(q: &Query) -> anyhow::Result<Prefilter> {
     })
 }
 
+/// What to highlight in a result: a plain or wildcard word, or a regular expression.
+pub(crate) enum Mark {
+    Text(String),
+    Regex(String),
+}
+
+/// The words and regular expressions of the query that can be highlighted: the positive
+/// (not negated) plain terms. Functions (`ext:`, `size:`, `in:`) show nothing, and a
+/// query that does not parse has nothing.
+pub(crate) fn marked_terms(q: &Query) -> Vec<Mark> {
+    fn collect(expr: &Expr, out: &mut Vec<Mark>) {
+        match expr {
+            Expr::And(xs) | Expr::Or(xs) => xs.iter().for_each(|x| collect(x, out)),
+            Expr::Not(_) => {}
+            Expr::Term(t) if t.function.is_some() => {}
+            Expr::Term(t) => {
+                let regex = t.modifiers.contains(&Modifier::Regex(true));
+                for item in t.items.iter().filter(|i| !i.text.is_empty()) {
+                    out.push(if regex {
+                        Mark::Regex(item.text.clone())
+                    } else {
+                        Mark::Text(item.text.clone())
+                    });
+                }
+            }
+        }
+    }
+    if q.regex {
+        return if q.text.is_empty() {
+            Vec::new()
+        } else {
+            vec![Mark::Regex(q.text.clone())]
+        };
+    }
+    let mut out = Vec::new();
+    if let Ok(ast) = keel_query::parse_ast(&q.text, &options(q)) {
+        collect(&ast.expr, &mut out);
+    }
+    out
+}
+
 /// FILETIME (100 ns since 1601) to the evaluator's milliseconds since 1970; 0 is unknown.
 pub(crate) fn filetime(t: i64) -> Option<Timestamp> {
     (t != 0).then(|| t / 10_000 - 11_644_473_600_000)
@@ -296,24 +337,57 @@ impl Props for HitProps<'_> {
     }
 }
 
+/// The search language run over the hits of a backend that does not evaluate it.
+pub struct HitFilter {
+    query: keel_query::Query,
+    folders_only: bool,
+}
+
+impl HitFilter {
+    /// Fails with the position of the error in the text when `q` does not parse.
+    pub fn new(q: &Query) -> anyhow::Result<Self> {
+        Ok(Self {
+            query: compile_query(q)?,
+            folders_only: q.folders_only,
+        })
+    }
+
+    /// Whether `hit` matches. Set functions (`dupe:`, `count:`) need the whole result:
+    /// see [`HitFilter::select`].
+    pub fn matches(&self, hit: &Hit) -> bool {
+        (hit.is_dir || !self.folders_only)
+            && self.query.matches(&HitProps {
+                hit,
+                path: hit.path.display(),
+            })
+    }
+
+    /// The hits that match, in order, with the set functions applied.
+    pub fn select(&self, hits: Vec<Hit>) -> anyhow::Result<Vec<Hit>> {
+        let mut hits = hits;
+        if self.folders_only {
+            hits.retain(|h| h.is_dir);
+        }
+        let props: Vec<HitProps> = hits
+            .iter()
+            .map(|hit| HitProps {
+                hit,
+                path: hit.path.display(),
+            })
+            .collect();
+        let selected = self.query.select(props.iter(), None)?;
+        let mut hits: Vec<Option<Hit>> = hits.into_iter().map(Some).collect();
+        Ok(selected
+            .into_iter()
+            .filter_map(|i| hits[i].take())
+            .collect())
+    }
+}
+
 /// The hits of `q` among `hits`, in order (set functions applied): the language run over
 /// what a backend returned.
 pub fn evaluate_hits(q: &Query, hits: Vec<Hit>) -> anyhow::Result<Vec<Hit>> {
-    let query = compile_query(q)?;
-    let props: Vec<HitProps> = hits
-        .iter()
-        .map(|hit| HitProps {
-            hit,
-            path: hit.path.display(),
-        })
-        .collect();
-    let selected = query.select(props.iter(), None)?;
-    let mut hits: Vec<Option<Hit>> = hits.into_iter().map(Some).collect();
-    Ok(selected
-        .into_iter()
-        .filter_map(|i| hits[i].take())
-        .filter(|h| h.is_dir || !q.folders_only)
-        .collect())
+    HitFilter::new(q)?.select(hits)
 }
 
 /// A backend with its own smaller syntax, searched with the shared language: it is asked
