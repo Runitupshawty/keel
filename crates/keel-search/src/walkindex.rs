@@ -12,11 +12,13 @@
 //! last scan stays searchable, nothing is deleted, and it is rescanned when it is back.
 //!
 //! The home index keeps [`crate::walk`]'s skip rules (hidden and git-ignored entries are
-//! left out); configured roots use the Exclude tab's [`ExcludeRules`] instead. Same
-//! query syntax as the NTFS index (substring, `*`/`?` glob, `regex:`, `folder:`, `in:`, and the
-//! search toggles of `terms.rs`).
+//! left out); configured roots use the Exclude tab's [`ExcludeRules`] instead. Queries
+//! are the shared search language ([`crate::language`], `keel-query`): the index scans
+//! its names for the query's longest plain word and lets the compiled query decide each
+//! candidate, with the entry's path, size, dates, attributes and children as properties.
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::ops::Range;
@@ -25,6 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use keel_query::{ChildCounts, DateProp, NodeId, Props, Timestamp, Tree};
 use parking_lot::RwLock;
 use regex::Regex;
 use rusqlite::{params, Connection};
@@ -544,15 +547,18 @@ impl Table {
                 return None;
             }
         }
-        let path = self.path_of(slot)?.to_string_lossy().into_owned();
-        if !m.query.matches_in(&EntryProps { table: self, slot, path }, Some(self)) {
-            return None;
+        let props = EntryProps::new(self, slot);
+        if props.path().is_empty() {
+            return None; // not reachable from a root
         }
         if let Some(within) = &m.within {
-            let path = self.path_of(slot)?.to_string_lossy().replace('\\', "/");
-            if !path.to_lowercase().starts_with(within) {
+            let path = props.path().replace('\\', "/").to_lowercase();
+            if !path.starts_with(within) {
                 return None;
             }
+        }
+        if !m.query.matches_in(&props, Some(self)) {
+            return None;
         }
         Some((m.quality(name), slot))
     }
@@ -601,15 +607,22 @@ impl Table {
 
     fn try_search(&self, m: &Matcher, max: usize) -> anyhow::Result<Vec<(u32, PathBuf)>> {
         let mut found = self.par(|range| self.scan_range(m, range));
+        // Set functions (`dupe:`, `unique:`, `count:`) run over every match, in rank order.
         if let Some(mut pass) = m.query.set_pass() {
             found.sort_by_key(|&(q, slot)| (q, slot));
             for &(_, slot) in &found {
-                if let Some(path) = self.path_of(slot) {
-                    if !pass.push(u64::from(slot), &EntryProps { table: self, slot, path: path.to_string_lossy().into_owned() }, Some(self))? { break; }
+                let props = EntryProps::new(self, slot);
+                if !pass.push(u64::from(slot), &props, Some(self))? {
+                    break;
                 }
             }
-            let selected = pass.finish();
-            found = selected.into_iter().map(|s| (0, s as u32)).collect();
+            found = (pass.finish().into_iter())
+                .map(|slot| {
+                    let slot = slot as u32;
+                    let name = self.name_of(&self.entries[slot as usize]);
+                    (m.quality(name), slot)
+                })
+                .collect();
         }
         if found.len() > max {
             if max == 0 {
@@ -649,25 +662,28 @@ pub(crate) fn eq_case(a: &str, b: &str, match_case: bool) -> bool {
 }
 
 // ---------------------------------------------------------------------------------
-// Query text -> Matcher (mirrors ntfs/pattern.rs, which is Windows-only)
+// Query text -> Matcher. The language is `keel-query`'s (`crate::language`); the index
+// only adds a regex scan of the lead literal over its name buffer and the exact/prefix
+// ranking, and shows the evaluator an entry through [`EntryProps`].
 
 pub(crate) struct Matcher {
     /// Finds candidates over the whole name buffer (multi-line mode).
     pub(crate) scan: Option<Regex>,
-    /// The scan term when it is a plain substring: drives exact/prefix ranking.
+    /// `^` + the scan: every exact and prefix match of the literal, found in one pass.
+    pub(crate) prefix: Option<Regex>,
+    /// The lead literal (a plain word every match contains): drives exact/prefix ranking.
     pub(crate) literal: Option<String>,
     pub(crate) match_case: bool,
     pub(crate) folders_only: bool,
-    /// `in:` path prefix, lowercased with `/` separators.
+    /// The folder to keep to, lowercased with `/` separators.
     pub(crate) within: Option<String>,
+    /// The compiled query; it decides every candidate.
     pub(crate) query: keel_query::Query,
-    pub(crate) prefix: Option<Regex>,
-
 }
 
 impl Matcher {
     /// 0 for an exact name, 1 for a prefix, 2 otherwise.
-    fn quality(&self, name: &str) -> u8 {
+    pub(crate) fn quality(&self, name: &str) -> u8 {
         match &self.literal {
             Some(lit) if eq_case(name, lit, self.match_case) => 0,
             Some(lit)
@@ -684,16 +700,137 @@ impl Matcher {
 
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
     let p = crate::language::prefilter(query)?;
-    let prefix = p.scan.as_ref().map(|r| Regex::new(&format!("(?m)^(?:{})", r.as_str()))).transpose()?;
     Ok(Matcher {
         scan: p.scan,
-        prefix,
+        prefix: p.prefix,
         literal: p.literal,
         match_case: query.match_case,
         folders_only: query.folders_only,
         within: p.within,
         query: p.query,
     })
+}
+
+/// One table entry as the evaluator sees it. The path is built only when a term reads it.
+struct EntryProps<'a> {
+    table: &'a Table,
+    slot: u32,
+    path: OnceCell<String>,
+}
+
+impl<'a> EntryProps<'a> {
+    fn new(table: &'a Table, slot: u32) -> Self {
+        Self {
+            table,
+            slot,
+            path: OnceCell::new(),
+        }
+    }
+
+    fn entry(&self) -> &Entry {
+        &self.table.entries[self.slot as usize]
+    }
+}
+
+impl Props for EntryProps<'_> {
+    fn name(&self) -> &str {
+        self.table.name_of(self.entry())
+    }
+
+    /// Empty when the entry is not reachable from a root.
+    fn path(&self) -> &str {
+        self.path.get_or_init(|| {
+            self.table
+                .path_of(self.slot)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        })
+    }
+
+    fn is_dir(&self) -> bool {
+        self.entry().meta.is_dir
+    }
+
+    /// Folders carry no total here: unknown.
+    fn size(&self) -> Option<u64> {
+        let meta = self.entry().meta;
+        (!meta.is_dir).then_some(meta.size)
+    }
+
+    fn allocated(&self) -> Option<u64> {
+        None
+    }
+
+    fn date(&self, which: DateProp) -> Option<Timestamp> {
+        let meta = self.entry().meta;
+        let ms = match which {
+            DateProp::Modified => meta.mtime,
+            DateProp::Created => meta.created,
+            _ => return None,
+        };
+        (ms != NO_TIME).then_some(ms)
+    }
+
+    fn attributes(&self) -> Option<u32> {
+        let meta = self.entry().meta;
+        Some(meta.attrs | if meta.is_dir { attr::DIRECTORY } else { 0 })
+    }
+
+    fn child_counts(&self) -> Option<ChildCounts> {
+        if !self.entry().meta.is_dir {
+            return None;
+        }
+        let mut counts = ChildCounts::default();
+        for &kid in self.table.children.get(&self.slot).into_iter().flat_map(|k| k.values()) {
+            if self.table.entries[kid as usize].meta.is_dir {
+                counts.folders += 1;
+            } else {
+                counts.files += 1;
+            }
+        }
+        Some(counts)
+    }
+}
+
+/// The parent links the tree functions (`child:`, `sibling:`, `exists:`, ...) walk.
+impl Tree for Table {
+    fn node_of(&self, item: &dyn Props) -> Option<NodeId> {
+        self.lookup(Path::new(item.path())).map(NodeId::from)
+    }
+
+    fn parent(&self, node: NodeId) -> Option<NodeId> {
+        let parent = self.entries.get(node as usize)?.parent;
+        (parent != NONE).then_some(NodeId::from(parent))
+    }
+
+    fn children(&self, node: NodeId, f: &mut dyn FnMut(NodeId) -> bool) {
+        let Some(kids) = u32::try_from(node).ok().and_then(|n| self.children.get(&n)) else {
+            return;
+        };
+        for &kid in kids.values() {
+            if !f(NodeId::from(kid)) {
+                break;
+            }
+        }
+    }
+
+    fn with_props(&self, node: NodeId, f: &mut dyn FnMut(&dyn Props)) {
+        if let Some(slot) = u32::try_from(node).ok().filter(|&n| {
+            self.entries
+                .get(n as usize)
+                .is_some_and(|e| e.live)
+        }) {
+            f(&EntryProps::new(self, slot));
+        }
+    }
+
+    fn find(&self, path: &str) -> Option<NodeId> {
+        #[cfg(windows)]
+        let path = Cow::Borrowed(path);
+        #[cfg(not(windows))]
+        let path = Cow::Owned(path.replace('\', "/"));
+        self.lookup(Path::new(&*path)).map(NodeId::from)
+    }
 }
 
 /// Merges hits of several backends answering `query`: one copy of each path, ranked
@@ -1296,7 +1433,7 @@ impl Searcher for WalkIndexSearcher {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         // A pane's folder outside the roots (another drive, a share): walk it.
         if let Some(dir) = crate::pane_folder(q).filter(|d| !self.covers(d)) {
-            return Ok(crate::walk(dir, q));
+            return crate::try_walk(dir, q);
         }
         anyhow::ensure!(
             self.shared.ready.load(Relaxed),

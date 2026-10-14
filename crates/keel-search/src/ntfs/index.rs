@@ -6,11 +6,14 @@
 //! below them, kept current on every change; and any column can keep a fast-sort order
 //! (a permutation of the slots), merged incrementally in [`Index::settle`].
 
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
+use std::sync::OnceLock;
 
+use keel_query::{ChildCounts, DateProp, NodeId, Props, Timestamp, Tree};
 use regex::Regex;
 
 /// Hash for file reference numbers (already well spread): one multiply.
@@ -1107,6 +1110,7 @@ impl Index {
     fn collect(
         &self,
         m: &Matcher,
+        tree: &IndexTree<'_>,
         scan: Option<&Regex>,
         mut within: Option<Within>,
         segs: Range<usize>,
@@ -1125,7 +1129,8 @@ impl Index {
             let quality = quality(m, name);
             if keep(quality)
                 && !within.as_mut().is_some_and(|w| !w.contains(self, slot))
-                && self.path(slot.frn).is_some_and(|path| m.query.matches(&EntryProps { index: self, slot: i, path }))
+                && m.query
+                    .matches_in(&EntryProps::new(self, i), Some(tree))
             {
                 hits.push((quality, i));
             }
@@ -1162,29 +1167,39 @@ impl Index {
                 None => return Ok(Vec::new()),
             },
         };
+        let tree = IndexTree::new(self);
         let run = |scan: Option<&Regex>, want: usize, keep: &(dyn Fn(u8) -> bool + Sync)| {
-            self.par(|segs| self.collect(m, scan, within.clone(), segs, want, keep))
+            self.par(|segs| self.collect(m, &tree, scan, within.clone(), segs, want, keep))
         };
         let mut hits = if m.query.has_set_functions() {
+            // Set functions (`dupe:`, `unique:`, `count:`) see every match.
             run(m.scan.as_ref(), usize::MAX, &|_| true)
-        } else { match (&m.prefix, &m.scan) {
-            (Some(prefix), Some(scan)) => {
-                let mut best = run(Some(prefix), usize::MAX, &|q| q < 2);
-                if best.len() < max {
-                    best.extend(run(Some(scan), max - best.len(), &|q| q == 2));
+        } else {
+            match (&m.prefix, &m.scan) {
+                (Some(prefix), Some(scan)) => {
+                    let mut best = run(Some(prefix), usize::MAX, &|q| q < 2);
+                    if best.len() < max {
+                        best.extend(run(Some(scan), max - best.len(), &|q| q == 2));
+                    }
+                    best
                 }
-                best
+                (_, scan) => run(scan.as_ref(), max, &|_| true),
             }
-            (_, scan) => run(scan.as_ref(), max, &|_| true),
-        }};
+        };
         hits.sort_by_key(|&(quality, _)| quality);
         if let Some(mut pass) = m.query.set_pass() {
             for &(_, slot) in &hits {
-                if let Some(path) = self.path(self.slots[slot as usize].frn) {
-                    if !pass.push(u64::from(slot), &EntryProps { index: self, slot, path }, None)? { break; }
+                if !pass.push(u64::from(slot), &EntryProps::new(self, slot), Some(&tree))? {
+                    break;
                 }
             }
-            hits = pass.finish().into_iter().map(|s| (0, s as u32)).collect();
+            hits = (pass.finish().into_iter())
+                .map(|slot| {
+                    let slot = slot as u32;
+                    (quality(m, self.name_of(&self.slots[slot as usize])), slot)
+                })
+                .collect();
+            hits.sort_by_key(|&(quality, _)| quality);
         }
         hits.truncate(max);
         let mut found: Vec<Found> = hits
@@ -1267,6 +1282,162 @@ impl Within {
             self.memo.insert(dir, verdict);
         }
         verdict
+    }
+}
+
+/// One slot as the evaluator sees it: the metadata columns are plain reads, the path is
+/// built only when a term reads it.
+struct EntryProps<'a> {
+    index: &'a Index,
+    slot: u32,
+    path: OnceCell<String>,
+}
+
+impl<'a> EntryProps<'a> {
+    fn new(index: &'a Index, slot: u32) -> Self {
+        Self {
+            index,
+            slot,
+            path: OnceCell::new(),
+        }
+    }
+
+    fn entry(&self) -> &Slot {
+        &self.index.slots[self.slot as usize]
+    }
+
+    fn info(&self) -> Info {
+        self.index.columns.get(self.slot as usize)
+    }
+}
+
+impl Props for EntryProps<'_> {
+    fn name(&self) -> &str {
+        self.index.name_of(self.entry())
+    }
+
+    /// Empty when the parent chain does not reach the root.
+    fn path(&self) -> &str {
+        self.path
+            .get_or_init(|| self.index.path(self.entry().frn).unwrap_or_default())
+    }
+
+    fn is_dir(&self) -> bool {
+        self.entry().is_dir
+    }
+
+    /// A folder's is the total of the files below it.
+    fn size(&self) -> Option<u64> {
+        Some(self.info().size)
+    }
+
+    fn allocated(&self) -> Option<u64> {
+        Some(self.info().allocated)
+    }
+
+    fn date(&self, which: DateProp) -> Option<Timestamp> {
+        let info = self.info();
+        crate::language::filetime(match which {
+            DateProp::Modified => info.modified,
+            DateProp::Created => info.created,
+            DateProp::Accessed => info.accessed,
+            DateProp::RecentlyChanged => info.changed,
+            _ => return None,
+        })
+    }
+
+    fn attributes(&self) -> Option<u32> {
+        Some(self.info().attributes)
+    }
+
+    fn file_id(&self) -> Option<u64> {
+        Some(self.entry().frn)
+    }
+
+    fn parent_file_id(&self) -> Option<u64> {
+        Some(self.entry().parent)
+    }
+
+    fn hard_link_count(&self) -> Option<u64> {
+        Some(u64::from(self.info().links.max(1)))
+    }
+
+    fn stream_count(&self) -> Option<u64> {
+        Some(u64::from(self.info().streams))
+    }
+
+    fn child_counts(&self) -> Option<ChildCounts> {
+        None
+    }
+}
+
+/// The parent links of an [`Index`] for the tree functions. Folder totals answer the
+/// descendant counts; the children of a folder come from a table of every entry's parent,
+/// built the first time a query asks (one pass), so queries without tree functions pay
+/// nothing.
+struct IndexTree<'a> {
+    index: &'a Index,
+    kids: OnceLock<FrnMap<Vec<u32>>>,
+}
+
+impl<'a> IndexTree<'a> {
+    fn new(index: &'a Index) -> Self {
+        Self {
+            index,
+            kids: OnceLock::new(),
+        }
+    }
+
+    fn slot(&self, frn: u64) -> Option<u32> {
+        let slot = *self.index.by_frn.get(&frn)?;
+        (self.index.slots[slot as usize].frn != DEAD).then_some(slot)
+    }
+}
+
+impl Tree for IndexTree<'_> {
+    fn node_of(&self, item: &dyn Props) -> Option<NodeId> {
+        item.file_id()
+    }
+
+    fn parent(&self, node: NodeId) -> Option<NodeId> {
+        let slot = &self.index.slots[self.slot(node)? as usize];
+        (slot.frn != self.index.root && slot.parent != slot.frn && self.slot(slot.parent).is_some())
+            .then_some(slot.parent)
+    }
+
+    fn children(&self, node: NodeId, f: &mut dyn FnMut(NodeId) -> bool) {
+        let kids = self.kids.get_or_init(|| {
+            let mut kids: FrnMap<Vec<u32>> = FrnMap::default();
+            for (i, slot) in self.index.slots.iter().enumerate() {
+                if slot.frn != DEAD && slot.frn != self.index.root && slot.parent != slot.frn {
+                    kids.entry(slot.parent).or_default().push(i as u32);
+                }
+            }
+            kids
+        });
+        for &kid in kids.get(&node).into_iter().flatten() {
+            if !f(self.index.slots[kid as usize].frn) {
+                break;
+            }
+        }
+    }
+
+    fn with_props(&self, node: NodeId, f: &mut dyn FnMut(&dyn Props)) {
+        if let Some(slot) = self.slot(node) {
+            f(&EntryProps::new(self.index, slot));
+        }
+    }
+
+    fn find(&self, path: &str) -> Option<NodeId> {
+        self.index.resolve(path)
+    }
+
+    fn descendant_counts(&self, node: NodeId) -> Option<ChildCounts> {
+        let folder = self.index.folder(node)?;
+        Some(ChildCounts {
+            files: u64::from(folder.files),
+            folders: u64::from(folder.folders),
+        })
     }
 }
 

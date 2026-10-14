@@ -521,7 +521,7 @@ impl Searcher for NtfsSearcher {
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         // A pane's folder no index holds (a share, a volume not indexed yet): walk it.
         if let Some(dir) = crate::pane_folder(query).filter(|d| !self.covers(d)) {
-            return Ok(crate::walk(dir, query));
+            return crate::try_walk(dir, query);
         }
         let matcher = pattern::compile(query)?;
         let max = query.max as usize;
