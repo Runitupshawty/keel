@@ -399,12 +399,23 @@ so a query never silently matches the wrong thing:
 | `album:`, `album-artist:`, `artist:`, `authors:`, `composer:`, `conductor:`, `director:`, `producer:`, `writer:`, `genre:`, `mood:`, `title:`, `subtitle:`, `track:`, `year:`, `beats-per-minute:`, `bpm:`, `initial-key:`, `length:`, `duration:`, `audio-bitrate:`, `audio-bits-per-sample:`, `audio-channels:`, `audio-format:`, `audio-sample-rate:`, `audio-track-count:`, `video-bitrate:`, `video-format:`, `video-track-count:`, `subtitle-track-count:`, `total-bitrate:`, `frame-count:`, `frame-rate:`, `fps:`, `language:`, `part-of-a-compilation:`, `part-of-set:`, `period:`, `encoded-by:`, `publisher:`, `parental-rating:`, `parental-rating-reason:` | audio and video properties (Task 73) |
 | `subject:`, `comment:`, `category:`, `tags:`, `tag:`, `rating:`, `people:`, `last-author:`, `software:`, `from:`, `to:` | document properties (Task 73) |
 | `filelist:`, `filelist-filename:`, `filelist-full-path:`, `network-index-host:` | file lists (Phase 16) |
-| `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms; the library keeps its own parser ([Library](library.md#searching)) until it moves to this language |
+| `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms: they work in the library search only ([Library](library.md#searching)); every other search refuses them |
 | `pinyin:`, `pinyin-jian:`, `pinyin-quan:` | Pinyin matching needs a Pinyin table Keel does not ship yet |
 
 ## Where Keel differs from Everything
 
-- `in:` (a folder, at any depth) and `kind:` are Keel's own.
+- In Keel's own searches `AND`, `OR` and `NOT` are words (Everything's **Allow literal
+  operators** is off, its default): use `|`, `!` and `< >`.
+- Keel's own searches turn **Replace forward slashes with backslashes** on, so `docs/x` is a path
+  term on every system, and the pane's **Match path**, **Match whole words**, **Match
+  diacritics** and **Regular expression** toggles, **Match whole filename when using wildcards**
+  (Settings → General → Search) and the API's `prefix`, `suffix`, `ignore_punctuation` and
+  `ignore_whitespace` options are the search options above. A wildcard never crosses `\`
+  (`*\ann\rep*` with Match path does not reach back through `Users\`; `**` does).
+- `in:` (a folder, at any depth) and `kind:` are Keel's own. In Keel's own indexes `in:`
+  reads a folder path as typed, also part of the last name: `in:C:\Users\an` keeps `C:\Users\ann`
+  and everything below it (and `C:\Users\anna`); a pane's **Search here** folder keeps to whole
+  folder names.
 - `exists:` looks in Keel's index, not on disk; `dupe-from:` keeps whole duplicate groups that
   have an item in the folder; set functions skip items whose compared value is `unknown`; tree
   functions and duplicate searches are bounded (above) where Everything is not.
