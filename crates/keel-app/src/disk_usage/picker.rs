@@ -3,9 +3,9 @@
 
 use crate::sidebar::Drive;
 use humansize::{format_size, DECIMAL};
-use keel_vfs::du::Root;
+use keel_vfs::du::{Root, ScannableKind, ScannableRoot};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -18,7 +18,11 @@ pub struct Picker {
     pub choice: Choice,
     /// `(path, name shown, free, total, ticked)`.
     pub drives: Vec<(PathBuf, String, u64, u64, bool)>,
+    /// `(root, name shown, ticked)` for portable-device storages.
+    devices: Vec<(Root, String, bool)>,
     pub folders: Vec<PathBuf>,
+    /// Portable devices are enumerated away from the UI thread.
+    listing_devices: Option<Receiver<Vec<ScannableRoot>>>,
     /// The OS folder dialog, open on a worker.
     browsing: Option<Receiver<Vec<PathBuf>>>,
 }
@@ -46,10 +50,20 @@ impl Picker {
                 (path, text, *free, *total, false)
             })
             .collect();
+        let (tx, rx) = channel();
+        let _ = std::thread::spawn(move || {
+            let roots = keel_vfs::du::list_scannable_roots()
+                .into_iter()
+                .filter(|root| root.kind == ScannableKind::Device)
+                .collect();
+            let _ = tx.send(roots);
+        });
         Picker {
             choice: Choice::AllLocal,
             drives,
+            devices: Vec::new(),
             folders: Vec::new(),
+            listing_devices: Some(rx),
             browsing: None,
         }
     }
@@ -58,9 +72,17 @@ impl Picker {
     pub fn roots(&self) -> Vec<Root> {
         match self.choice {
             Choice::AllLocal => vec![Root::AllLocalDrives],
-            Choice::Drives => (self.drives.iter())
+            Choice::Drives => self
+                .drives
+                .iter()
                 .filter(|d| d.4)
                 .map(|d| Root::Path(d.0.clone()))
+                .chain(
+                    self.devices
+                        .iter()
+                        .filter(|d| d.2)
+                        .map(|d| d.0.clone()),
+                )
                 .collect(),
             Choice::Folders => self.folders.iter().cloned().map(Root::Path).collect(),
         }
@@ -90,6 +112,19 @@ impl Picker {
 
     /// Draws the dialog (a modal); Some once it is answered.
     pub fn ui(&mut self, ctx: &egui::Context, accent: egui::Color32) -> Option<Answer> {
+        if let Some(rx) = &self.listing_devices {
+            match rx.try_recv() {
+                Ok(roots) => {
+                    self.devices = roots
+                        .into_iter()
+                        .map(|root| (root.root, root.label, false))
+                        .collect();
+                    self.listing_devices = None;
+                }
+                Err(TryRecvError::Empty) => ctx.request_repaint(),
+                Err(TryRecvError::Disconnected) => self.listing_devices = None,
+            }
+        }
         if let Some(rx) = &self.browsing {
             if let Ok(picked) = rx.try_recv() {
                 self.browsing = None;
@@ -143,7 +178,34 @@ impl Picker {
                 if let Some(path) = scan_one {
                     answer = Some(Answer::Scan(vec![Root::Path(path)]));
                 }
-                if !drives_on && self.drives.iter().any(|d| d.4) {
+                if self.listing_devices.is_some() || !self.devices.is_empty() {
+                    ui.add_space(6.0);
+                    ui.strong("Phones and cameras");
+                    if self.listing_devices.is_some() {
+                        ui.weak("Looking for devices…");
+                    } else {
+                        let mut scan_one = None;
+                        for (root, label, ticked) in &mut self.devices {
+                            let response = ui.checkbox(ticked, label.as_str());
+                            if response.changed() && *ticked {
+                                self.choice = Choice::Drives;
+                            }
+                            if response.double_clicked() {
+                                scan_one = Some(root.clone());
+                            }
+                            response.on_hover_text(format!(
+                                "Double-click to scan {label}"
+                            ));
+                        }
+                        if let Some(root) = scan_one {
+                            answer = Some(Answer::Scan(vec![root]));
+                        }
+                    }
+                }
+                if !drives_on
+                    && (self.drives.iter().any(|d| d.4)
+                        || self.devices.iter().any(|d| d.2))
+                {
                     ui.weak("Choose Individual drives to scan the ticked ones");
                 }
             });
@@ -195,5 +257,35 @@ impl Picker {
             answer = Some(Answer::Cancel);
         }
         answer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roots_include_only_ticked_drives_and_devices() {
+        let mut picker = Picker::new(&[
+            ("C:".to_owned(), String::new(), 0, 0),
+            ("D:".to_owned(), String::new(), 0, 0),
+        ]);
+        picker.choice = Choice::Drives;
+        picker.drives[0].4 = true;
+        let drive = Root::Path(picker.drives[0].0.clone());
+        let phone = Root::Mtp {
+            device_id: "phone".to_owned(),
+            storage_id: "internal".to_owned(),
+        };
+        let camera = Root::Mtp {
+            device_id: "camera".to_owned(),
+            storage_id: "card".to_owned(),
+        };
+        picker.devices = vec![
+            (phone.clone(), "Phone: Internal".to_owned(), true),
+            (camera, "Camera: Card".to_owned(), false),
+        ];
+
+        assert_eq!(picker.roots(), vec![drive, phone]);
     }
 }
