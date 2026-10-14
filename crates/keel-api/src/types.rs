@@ -216,12 +216,9 @@ pub enum SystemSort {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SystemSearchParams {
-    /// Everything's search language (see docs/search.md): words (all must match),
-    /// "quoted phrases", wildcards (`*.pdf` matches the whole name), `a|b`, `!a`, `<a b>`,
-    /// functions (`ext:pdf`, `size:>1mb`, `dm:today`, `in:<folder>`); with `regex`, one
-    /// regular expression. Everything gets the text as typed; every other backend runs it
-    /// in Keel. A query that does not parse is an invalid-params error with the place in
-    /// the text. At most 4096 bytes.
+    /// Words (all must match), "quoted phrases", wildcards (`*.pdf` matches the whole
+    /// name); with `regex`, one regular expression. Other syntax (`ext:`, `!`, `|`) goes
+    /// to the backend as it is. At most 4096 bytes.
     pub query: String,
     /// Results skipped (default 0).
     #[serde(default)]
