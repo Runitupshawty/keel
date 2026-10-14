@@ -29,7 +29,7 @@ pub(crate) fn options(q: &Query) -> Options {
         ignore_punctuation: q.ignore_punctuation,
         ignore_whitespace: q.ignore_whitespace,
         whole_filename_wildcards: q.whole_filename_wildcards,
-        allow_literal_operators: true,
+        allow_literal_operators: false,
         replace_forward_slashes: true,
         ..Options::default()
     }

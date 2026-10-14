@@ -20,7 +20,7 @@ fn options(now: i64, offset: i64) -> Options {
     Options {
         now: now.saturating_mul(1000),
         utc_offset_secs: offset.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
-        allow_literal_operators: true,
+        allow_literal_operators: false,
         external_functions: [
             "tag", "content", "-content", "contents", "source", "camera", "taken", "w", "width",
             "h", "height", "duration", "length", "has", "modified", "type",
@@ -127,9 +127,38 @@ fn compile_native(term: &Term, ast: &Ast, opts: &Options) -> Result<keel_query::
     Ok(query)
 }
 
+/// Parses `text`. The library never refused a word that ends in a colon (`ferry:` is a
+/// word typed before its value), so such a word the language does not know is quoted and
+/// read as text; `name:value` with an unknown name is an error. Returns the text that
+/// was parsed.
+fn parse_text(text: &str, opts: &Options) -> Result<(String, Ast)> {
+    let mut text = text.to_owned();
+    for _ in 0..32 {
+        let error = match keel_query::parse_ast(&text, opts) {
+            Ok(ast) => return Ok((text, ast)),
+            Err(e) => e,
+        };
+        let start = error.span.start;
+        let end = text
+            .get(start..)
+            .and_then(|rest| rest.find(char::is_whitespace))
+            .map_or(text.len(), |n| start + n);
+        let word = text.get(start..end).unwrap_or("");
+        if error.kind != keel_query::ErrorKind::Unknown
+            || !word.ends_with(':')
+            || word.contains('"')
+        {
+            return Err(error.into());
+        }
+        text = format!("{}\"{}\"{}", &text[..start], word, &text[end..]);
+    }
+    Ok((text.clone(), keel_query::parse_ast(&text, opts)?))
+}
+
 pub(super) fn parse(text: &str, now: i64, offset: i64) -> Result<LibraryQuery> {
     let opts = options(now, offset);
-    let ast = keel_query::parse_ast(text, &opts)?;
+    let (text, ast) = parse_text(text, &opts)?;
+    let text = text.as_str();
     let mut parts = Vec::new();
     let mut flat = true;
     let mut contents = true;
@@ -531,7 +560,7 @@ mod tests {
         };
         for (query, expected) in [
             ("ext:txt | ext:pdf", vec!["alpha.txt", "beta.pdf"]),
-            ("<ext:txt OR ext:pdf> NOT alpha", vec!["beta.pdf"]),
+            ("<ext:txt | ext:pdf> !alpha", vec!["beta.pdf"]),
             ("<ext:txt | ext:pdf> size:>1", vec!["beta.pdf"]),
             (
                 "regex:^alpha\\.txt$ | ext:jpg",

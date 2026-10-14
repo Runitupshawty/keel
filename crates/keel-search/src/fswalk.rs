@@ -76,7 +76,7 @@ impl Props for WalkProps {
 
     fn size(&self) -> Option<u64> {
         let meta = self.meta()?;
-        (!self.is_dir).then(|| meta.len())
+        (!self.is_dir).then_some(meta.len())
     }
 
     fn allocated(&self) -> Option<u64> {

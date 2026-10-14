@@ -6,11 +6,27 @@ and filter macros. This page lists what Keel's own engine (the `keel-query` crat
 today. Everything still receives the text unchanged when it is Keel's search backend, so
 everything Everything supports keeps working there.
 
-> **Status.** The `keel-query` crate parses and evaluates this language and is covered by a
-> conformance test per operator, modifier, constant and function
-> (`crates/keel-query/tests/everything.rs`). The search box, the library search, `keel search`,
-> the API and MCP do not use it yet; they move over in a following change. Until then the pane
-> and the library keep the syntax described in [Files](files.md) and [Library](library.md).
+> **Where it works.** This language is the one query language of Keel's own searches: the
+> search tab and **Search here** box of every pane, `keel search`, the API's `system.search`
+> and `search`, and MCP use it. The table says how each backend runs it.
+
+| Backend | How the language runs |
+|---|---|
+| Keel's own index (the NTFS index, the home-folder and folder/volume name indexes, a file list, the plain walk of a folder no index holds) | Whole: the index scans its names for the query's longest plain word and the compiled query decides each candidate, with the entry's path, size, dates, attributes and folder counts. Parse errors come back with the place in the text. |
+| Everything | Everything receives the text as typed and runs its own language (which has more functions than Keel's engine); the search tab shows Keel's check of the text beside the box. |
+| Spotlight, `locate` | Whole, but evaluated by Keel: the backend is asked for the names that contain the query's longest plain word (all names when it has none), up to 10,000, and Keel checks those. A query with no plain word (`ext:pdf`) therefore reads at most the first 10,000 names the backend gives. |
+| The library | OR, `!`, groups, wildcards, `regex:`, path terms and the other functions work; the library's own terms (`tag:`, `content:`, `camera:`, `kind:`, words that also match document text) keep their meaning. See [Library](library.md#searching). |
+
+What an index knows about an entry is what the language can ask: the NTFS index has size
+(a folder's is the total below it), size on disk, created, modified, accessed and recently
+changed dates, attributes, file ids, hard link and stream counts, and child and descendant
+counts from its folder totals; the home-folder and folder/volume name indexes have size
+(files), modified and created dates, attributes and child counts; a file list has what its
+columns hold; Spotlight and `locate` hits have size and modified date. A property a source does
+not have is `unknown`: it fails every comparison and matches `unknown`. Tree functions work on
+the name indexes and the NTFS index (with a table of parents built when a query first uses
+one); set functions (`dupe:`, `unique:`, `count:`) see the whole result of one index, so on a
+machine with several NTFS volumes each volume is deduplicated on its own.
 
 ## Terms and operators
 

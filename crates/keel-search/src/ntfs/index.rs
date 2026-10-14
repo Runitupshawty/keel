@@ -1107,6 +1107,7 @@ impl Index {
 
     /// Up to `want` matching slots in segments `segs` whose quality passes `keep`,
     /// in buffer order. Without `scan` every entry is a candidate.
+    #[allow(clippy::too_many_arguments)]
     fn collect(
         &self,
         m: &Matcher,

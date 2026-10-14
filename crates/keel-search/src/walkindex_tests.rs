@@ -272,7 +272,7 @@ fn the_shared_language_runs_over_the_index() {
     );
     assert_eq!(run("!report ext:rs"), ["lib.rs", "main.rs"]);
     assert_eq!(
-        run("report OR main NOT ext:txt"),
+        run("report | main !ext:txt"),
         ["Report.PDF", "main.rs", "report.pdf"]
     );
     assert_eq!(run("\"report notes\""), ["report notes.txt"]);
