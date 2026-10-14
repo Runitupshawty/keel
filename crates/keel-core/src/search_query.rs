@@ -221,11 +221,7 @@ pub(super) fn parse(text: &str, now: i64, offset: i64) -> Result<LibraryQuery> {
     }
     let contents = scan.contents;
     Ok(LibraryQuery {
-        expression: Some(Expression {
-            text,
-            now,
-            offset,
-        }),
+        expression: Some(Expression { text, now, offset }),
         contents,
         ..LibraryQuery::default()
     })
