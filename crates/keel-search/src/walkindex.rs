@@ -828,7 +828,7 @@ impl Tree for Table {
         #[cfg(windows)]
         let path = Cow::Borrowed(path);
         #[cfg(not(windows))]
-        let path = Cow::Owned(path.replace('\', "/"));
+        let path = Cow::Owned(path.replace('\\', "/"));
         self.lookup(Path::new(&*path)).map(NodeId::from)
     }
 }
