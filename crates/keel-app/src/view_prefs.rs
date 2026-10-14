@@ -38,12 +38,13 @@ pub enum Arrange {
 impl Arrange {
     pub const ALL: [Arrange; 3] = [Self::SortBy, Self::SnapToGrid, Self::Free];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::SortBy => "Sort by (folder order)",
-            Self::SnapToGrid => "Snap to grid",
-            Self::Free => "None (free arrangement)",
+            Self::SortBy => crate::i18n::tr("view_grid.sort_by_folder"),
+            Self::SnapToGrid => crate::i18n::tr("view_grid.snap_to_grid"),
+            Self::Free => crate::i18n::tr("view_grid.free"),
         }
+        .to_owned()
     }
 
     /// Icons keep the positions they are dragged to.
