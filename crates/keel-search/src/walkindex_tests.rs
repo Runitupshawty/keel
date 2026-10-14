@@ -258,7 +258,10 @@ fn the_shared_language_runs_over_the_index() {
 
     // Operators and groups.
     assert_eq!(run("ext:pdf"), ["Report.PDF", "report.pdf"]);
-    assert_eq!(run("ext:pdf;rs"), ["Report.PDF", "lib.rs", "main.rs", "report.pdf"]);
+    assert_eq!(
+        run("ext:pdf;rs"),
+        ["Report.PDF", "lib.rs", "main.rs", "report.pdf"]
+    );
     assert_eq!(
         run("report | main"),
         ["Report.PDF", "main.rs", "report notes.txt", "report.pdf"]
@@ -268,7 +271,10 @@ fn the_shared_language_runs_over_the_index() {
         ["Report.PDF", "main.rs", "report.pdf"]
     );
     assert_eq!(run("!report ext:rs"), ["lib.rs", "main.rs"]);
-    assert_eq!(run("report OR main NOT ext:txt"), ["Report.PDF", "main.rs", "report.pdf"]);
+    assert_eq!(
+        run("report OR main NOT ext:txt"),
+        ["Report.PDF", "main.rs", "report.pdf"]
+    );
     assert_eq!(run("\"report notes\""), ["report notes.txt"]);
     assert_eq!(run("*.rs"), ["lib.rs", "main.rs"]);
     assert_eq!(run("report?notes*"), ["report notes.txt"]);
@@ -285,13 +291,19 @@ fn the_shared_language_runs_over_the_index() {
         run("startwith:report"),
         ["Report.PDF", "report notes.txt", "report.pdf"]
     );
-    assert_eq!(run("endwith:.txt"), ["caf\u{e9} menu.txt", "report notes.txt"]);
+    assert_eq!(
+        run("endwith:.txt"),
+        ["caf\u{e9} menu.txt", "report notes.txt"]
+    );
     assert_eq!(run("folder: oldies"), ["oldies"]);
     assert_eq!(run("file: oldies"), Vec::<String>::new());
     // Accents, paths and folders.
     assert_eq!(run("cafe"), ["cafe", "caf\u{e9} menu.txt"]);
     assert!(run("diacritics:cafe file:").is_empty());
-    assert_eq!(run(&format!("parent:\"{docs}\"")), ["Report.PDF", "oldies", "report notes.txt"]);
+    assert_eq!(
+        run(&format!("parent:\"{docs}\"")),
+        ["Report.PDF", "oldies", "report notes.txt"]
+    );
     assert_eq!(
         run(&format!("report in:\"{docs}\"")),
         ["Report.PDF", "report notes.txt", "report.pdf"]
@@ -318,7 +330,10 @@ fn the_shared_language_runs_over_the_index() {
         with("reportnotes", |q| q.ignore_whitespace = true),
         ["report notes.txt"]
     );
-    assert_eq!(with("pdf", |q| q.match_suffix = true), ["Report.PDF", "report.pdf"]);
+    assert_eq!(
+        with("pdf", |q| q.match_suffix = true),
+        ["Report.PDF", "report.pdf"]
+    );
     // A pane's folder keeps to it; errors name the place in the text.
     let pane = Query {
         within: Some(d.root.join("docs").join("oldies")),

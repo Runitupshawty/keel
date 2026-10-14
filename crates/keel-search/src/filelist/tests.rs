@@ -314,7 +314,10 @@ fn searching_a_list() {
     );
     assert_eq!(names(&s, "dm:2024"), ["report.pdf"]);
     assert_eq!(names(&s, "attrib:D"), ["Reports"]);
-    assert_eq!(names(&s, "<report | notes> !pdf"), ["report", "Reports", "notes.txt"]);
+    assert_eq!(
+        names(&s, "<report | notes> !pdf"),
+        ["report", "Reports", "notes.txt"]
+    );
     assert!(s
         .query(&Query {
             text: "<report".into(),

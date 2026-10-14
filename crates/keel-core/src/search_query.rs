@@ -22,8 +22,8 @@ fn options(now: i64, offset: i64) -> Options {
         utc_offset_secs: offset.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
         allow_literal_operators: true,
         external_functions: [
-            "tag", "content", "-content", "contents", "source", "camera", "taken", "w",
-            "width", "h", "height", "duration", "length", "has", "modified", "type",
+            "tag", "content", "-content", "contents", "source", "camera", "taken", "w", "width",
+            "h", "height", "duration", "length", "has", "modified", "type",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -37,10 +37,16 @@ fn options(now: i64, offset: i64) -> Options {
 fn sql_term(term: &Term, text: &str, now: i64, offset: i64) -> Result<Option<LibraryQuery>> {
     let raw = text.get(term.span.clone()).unwrap_or("");
     let key = raw.split_once(':').map(|(k, _)| k.to_ascii_lowercase());
-    if term.modifiers.iter().any(|m| !matches!(m, Modifier::File | Modifier::Folder)) {
+    if term
+        .modifiers
+        .iter()
+        .any(|m| !matches!(m, Modifier::File | Modifier::Folder))
+    {
         return Ok(None);
     }
-    if !term.modifiers.is_empty() && !matches!(raw.to_ascii_lowercase().as_str(), "file:" | "folder:") {
+    if !term.modifiers.is_empty()
+        && !matches!(raw.to_ascii_lowercase().as_str(), "file:" | "folder:")
+    {
         return Ok(None);
     }
     let supported = match &term.function {
@@ -48,19 +54,38 @@ fn sql_term(term: &Term, text: &str, now: i64, offset: i64) -> Result<Option<Lib
         Some(function) => {
             // Expanded macros have the original macro's span, not the expanded text.
             key.as_deref() == Some(function.name.as_str())
-                && matches!(function.name.as_str(),
-                    "ext" | "size" | "dm" | "datemodified" | "modified" | "kind" | "type"
-                    | "tag" | "content" | "-content" | "name" | "contents" | "in" | "source"
-                    | "camera" | "taken" | "w" | "width" | "h" | "height" | "duration"
-                    | "length" | "has")
+                && matches!(
+                    function.name.as_str(),
+                    "ext"
+                        | "size"
+                        | "dm"
+                        | "datemodified"
+                        | "modified"
+                        | "kind"
+                        | "type"
+                        | "tag"
+                        | "content"
+                        | "-content"
+                        | "name"
+                        | "contents"
+                        | "in"
+                        | "source"
+                        | "camera"
+                        | "taken"
+                        | "w"
+                        | "width"
+                        | "h"
+                        | "height"
+                        | "duration"
+                        | "length"
+                        | "has"
+                )
         }
     };
     if !supported {
         return Ok(None);
     }
-    if key.as_deref() == Some("in")
-        && term.items.iter().any(|i| i.text.contains(['/', '\\']))
-    {
+    if key.as_deref() == Some("in") && term.items.iter().any(|i| i.text.contains(['/', '\\'])) {
         return Ok(None);
     }
     match LibraryQuery::parse_sql_terms(raw, now, offset) {
@@ -86,12 +111,18 @@ fn named_value(key: Option<&str>, term: &Term) -> bool {
 }
 
 fn compile_native(term: &Term, ast: &Ast, opts: &Options) -> Result<keel_query::Query> {
-    let query = keel_query::compile(Ast {
-        expr: Expr::Term(term.clone()),
-        globals: ast.globals.clone(),
-    }, opts)?;
+    let query = keel_query::compile(
+        Ast {
+            expr: Expr::Term(term.clone()),
+            globals: ast.globals.clone(),
+        },
+        opts,
+    )?;
     if query.has_set_functions() {
-        anyhow::bail!("set functions are not supported by library search (at {})", term.span.start);
+        anyhow::bail!(
+            "set functions are not supported by library search (at {})",
+            term.span.start
+        );
     }
     Ok(query)
 }
@@ -103,8 +134,15 @@ pub(super) fn parse(text: &str, now: i64, offset: i64) -> Result<LibraryQuery> {
     let mut flat = true;
     let mut contents = true;
     fn visit(
-        expr: &Expr, ast: &Ast, opts: &Options, text: &str, now: i64, offset: i64,
-        parts: &mut Vec<String>, flat: &mut bool, contents: &mut bool,
+        expr: &Expr,
+        ast: &Ast,
+        opts: &Options,
+        text: &str,
+        now: i64,
+        offset: i64,
+        parts: &mut Vec<String>,
+        flat: &mut bool,
+        contents: &mut bool,
     ) -> Result<()> {
         match expr {
             Expr::And(children) => {
@@ -136,12 +174,26 @@ pub(super) fn parse(text: &str, now: i64, offset: i64) -> Result<LibraryQuery> {
         }
         Ok(())
     }
-    visit(&ast.expr, &ast, &opts, text, now, offset, &mut parts, &mut flat, &mut contents)?;
+    visit(
+        &ast.expr,
+        &ast,
+        &opts,
+        text,
+        now,
+        offset,
+        &mut parts,
+        &mut flat,
+        &mut contents,
+    )?;
     if flat {
         return LibraryQuery::parse_sql_terms(&parts.join(" "), now, offset);
     }
     Ok(LibraryQuery {
-        expression: Some(Expression { text: text.to_owned(), now, offset }),
+        expression: Some(Expression {
+            text: text.to_owned(),
+            now,
+            offset,
+        }),
         contents,
         ..LibraryQuery::default()
     })
@@ -179,14 +231,20 @@ impl Node {
                 if children.is_empty() {
                     return if and { "1" } else { "0" }.into();
                 }
-                let parts: Vec<_> = children.iter()
-                    .map(|c| c.candidate(leaves, negate, args)).collect();
+                let parts: Vec<_> = children
+                    .iter()
+                    .map(|c| c.candidate(leaves, negate, args))
+                    .collect();
                 format!("({})", parts.join(if and { " AND " } else { " OR " }))
             }
             Self::Not(child) => child.candidate(leaves, !negate, args),
             Self::Sql(i) => {
                 args.extend(leaves[*i].args.clone());
-                format!("{}({})", if negate { "NOT " } else { "" }, leaves[*i].predicate)
+                format!(
+                    "{}({})",
+                    if negate { "NOT " } else { "" },
+                    leaves[*i].predicate
+                )
             }
             Self::Native(_) => "1".into(),
         }
@@ -195,16 +253,23 @@ impl Node {
 
 fn lower_sql(src: &Source, q: &LibraryQuery, contents: bool) -> SqlLeaf {
     if !q.wants(src) {
-        return SqlLeaf { predicate: "0".into(), args: Vec::new() };
+        return SqlLeaf {
+            predicate: "0".into(),
+            args: Vec::new(),
+        };
     }
     let Some((filters, mut args)) = q.filters() else {
-        return SqlLeaf { predicate: "0".into(), args: Vec::new() };
+        return SqlLeaf {
+            predicate: "0".into(),
+            args: Vec::new(),
+        };
     };
     let mut predicate = format!("1{filters}");
     let words = q.text_parts(true);
     if !words.is_empty() {
         let m = words.join(" AND ");
-        let mut text_sql = "r.id IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)".to_owned();
+        let mut text_sql =
+            "r.id IN (SELECT rowid FROM record_fts WHERE record_fts MATCH ?)".to_owned();
         args.push(Value::Text(m.clone()));
         if q.name.is_empty() {
             text_sql.push_str(" OR r.id IN (SELECT rowid FROM media_fts WHERE media_fts MATCH ?)");
@@ -219,7 +284,10 @@ fn lower_sql(src: &Source, q: &LibraryQuery, contents: bool) -> SqlLeaf {
         predicate.push_str(&format!(" AND ({text_sql})"));
     }
     // SQL NULL (unknown metadata) is false before Boolean negation, just as Props.
-    SqlLeaf { predicate: format!("coalesce(({predicate}), 0)"), args }
+    SqlLeaf {
+        predicate: format!("coalesce(({predicate}), 0)"),
+        args,
+    }
 }
 
 struct Lower<'a> {
@@ -234,11 +302,26 @@ struct Lower<'a> {
 impl Lower<'_> {
     fn node(&mut self, expr: &Expr) -> Result<Node> {
         Ok(match expr {
-            Expr::And(children) => Node::And(children.iter().map(|c| self.node(c)).collect::<Result<_>>()?),
-            Expr::Or(children) => Node::Or(children.iter().map(|c| self.node(c)).collect::<Result<_>>()?),
+            Expr::And(children) => Node::And(
+                children
+                    .iter()
+                    .map(|c| self.node(c))
+                    .collect::<Result<_>>()?,
+            ),
+            Expr::Or(children) => Node::Or(
+                children
+                    .iter()
+                    .map(|c| self.node(c))
+                    .collect::<Result<_>>()?,
+            ),
             Expr::Not(child) => Node::Not(Box::new(self.node(child)?)),
             Expr::Term(term) => {
-                if let Some(q) = sql_term(term, &self.expression.text, self.expression.now, self.expression.offset)? {
+                if let Some(q) = sql_term(
+                    term,
+                    &self.expression.text,
+                    self.expression.now,
+                    self.expression.offset,
+                )? {
                     let i = self.leaves.len();
                     self.leaves.push(lower_sql(self.src, &q, self.contents));
                     Node::Sql(i)
@@ -383,7 +466,9 @@ pub(super) fn search(
         let rel: String = row.get(1)?;
         let dir = row.get::<_, i64>(3)? == crate::fsid::DIR;
         let ms = |i: usize| -> rusqlite::Result<Option<i64>> {
-            Ok(row.get::<_, Option<i64>>(i)?.map(|n| n.div_euclid(1_000_000)))
+            Ok(row
+                .get::<_, Option<i64>>(i)?
+                .map(|n| n.div_euclid(1_000_000)))
         };
         let props = RowProps {
             conn: &c,
@@ -391,7 +476,9 @@ pub(super) fn search(
             name: row.get(2)?,
             path: src.absolute(&rel).display(),
             dir,
-            size: row.get::<_, Option<i64>>(4)?.and_then(|s| u64::try_from(s).ok()),
+            size: row
+                .get::<_, Option<i64>>(4)?
+                .and_then(|s| u64::try_from(s).ok()),
             modified: ms(5)?,
             changed: ms(6)?,
             flags: row.get(7)?,
@@ -428,18 +515,28 @@ mod tests {
         write(&files.path().join("Reports/beta.pdf"), "bbbb");
         write(&files.path().join("photo.jpg"), "picture");
         let lib = Library::open(data.path(), "query").unwrap();
-        let src = lib.source(&lib.add_source(folder("Fixture", files.path())).unwrap()).unwrap();
+        let src = lib
+            .source(&lib.add_source(folder("Fixture", files.path())).unwrap())
+            .unwrap();
         walk(&src, &lib.router()).unwrap();
         let names = |query: &str| {
-            let mut names: Vec<_> = lib.search(&LibraryQuery::parse(query, 0).unwrap()).unwrap()
-                .into_iter().map(|h| h.name).collect();
-            names.sort(); names
+            let mut names: Vec<_> = lib
+                .search(&LibraryQuery::parse(query, 0).unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|h| h.name)
+                .collect();
+            names.sort();
+            names
         };
         for (query, expected) in [
             ("ext:txt | ext:pdf", vec!["alpha.txt", "beta.pdf"]),
             ("<ext:txt OR ext:pdf> NOT alpha", vec!["beta.pdf"]),
             ("<ext:txt | ext:pdf> size:>1", vec!["beta.pdf"]),
-            ("regex:^alpha\\.txt$ | ext:jpg", vec!["alpha.txt", "photo.jpg"]),
+            (
+                "regex:^alpha\\.txt$ | ext:jpg",
+                vec!["alpha.txt", "photo.jpg"],
+            ),
             ("ext:pdf !regex:^alpha", vec!["beta.pdf"]),
             ("wfn:alpha.txt", vec!["alpha.txt"]),
             ("file: !<ext:pdf | ext:jpg>", vec!["alpha.txt"]),
@@ -449,9 +546,18 @@ mod tests {
             assert_eq!(names(query), expected, "{query}");
         }
         let path = files.path().join("Reports").to_string_lossy().into_owned();
-        assert_eq!(names(&format!("in:\"{path}\" file:")), ["alpha.txt", "beta.pdf"]);
+        assert_eq!(
+            names(&format!("in:\"{path}\" file:")),
+            ["alpha.txt", "beta.pdf"]
+        );
         for query in ["<ext:txt", "size:wat", "regex:[", "unknownfn:value"] {
-            assert!(LibraryQuery::parse(query, 0).unwrap_err().to_string().contains("at"), "{query}");
+            assert!(
+                LibraryQuery::parse(query, 0)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("at"),
+                "{query}"
+            );
         }
     }
 
@@ -459,9 +565,13 @@ mod tests {
     fn residual_filter_precedes_the_limit_and_negation_is_conservative() {
         let files = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
-        for i in 0..20 { write(&files.path().join(format!("item{i:02}.txt")), "x"); }
+        for i in 0..20 {
+            write(&files.path().join(format!("item{i:02}.txt")), "x");
+        }
         let lib = Library::open(data.path(), "query").unwrap();
-        let src = lib.source(&lib.add_source(folder("Fixture", files.path())).unwrap()).unwrap();
+        let src = lib
+            .source(&lib.add_source(folder("Fixture", files.path())).unwrap())
+            .unwrap();
         walk(&src, &lib.router()).unwrap();
         let mut q = LibraryQuery::parse("ext:txt !regex:\"^item(?:0|1[0-8])\"", 0).unwrap();
         q.max = 1;

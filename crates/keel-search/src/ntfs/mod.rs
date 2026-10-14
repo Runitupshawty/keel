@@ -517,7 +517,9 @@ impl NtfsSearcher {
 }
 
 impl Searcher for NtfsSearcher {
-    fn unified_query(&self) -> bool { true }
+    fn unified_query(&self) -> bool {
+        true
+    }
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         // A pane's folder no index holds (a share, a volume not indexed yet): walk it.
         if let Some(dir) = crate::pane_folder(query).filter(|d| !self.covers(d)) {
@@ -537,7 +539,10 @@ impl Searcher for NtfsSearcher {
             parts
                 .iter()
                 .map(|part| part.index().try_search(&matcher, fetch))
-                .collect::<anyhow::Result<Vec<_>>>()?.into_iter().flatten().collect()
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect()
         };
         found.sort_by(rank);
         if filter {

@@ -162,9 +162,7 @@ fn literal(expr: &Expr) -> Option<&str> {
         })
         .map(|t| t.items[0].text.as_str())
         .filter(|s| {
-            !s.is_empty()
-                && s.is_ascii()
-                && !s.contains(['*', '?', '\\', '/', ':', '$', '\n', '"'])
+            !s.is_empty() && s.is_ascii() && !s.contains(['*', '?', '\\', '/', ':', '$', '\n', '"'])
         })
         .max_by_key(|s| s.len())
 }
@@ -506,7 +504,9 @@ mod tests {
         let p = prefilter(&q("Cafe")).unwrap();
         let (scan, prefix) = (p.scan.unwrap(), p.prefix.unwrap());
         assert!(scan.is_match("my CAFE.txt") && scan.is_match("caf\u{e9}"));
-        assert!(prefix.is_match("cafe.txt") && prefix.is_match("CAFE") && !prefix.is_match("a cafe"));
+        assert!(
+            prefix.is_match("cafe.txt") && prefix.is_match("CAFE") && !prefix.is_match("a cafe")
+        );
         // Several names: `^` is per line.
         assert!(prefix.is_match("zzz\ncafe\n"));
         let mut exact = q("Cafe");
@@ -597,7 +597,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(names("report ext:pdf"), ["report.pdf"]);
-        assert_eq!(names("<report | summary> !ext:txt"), ["report.pdf", "summary.md"]);
+        assert_eq!(
+            names("<report | summary> !ext:txt"),
+            ["report.pdf", "summary.md"]
+        );
         assert_eq!(names("size:>10"), ["report.txt"]);
         assert!(searcher.unified_query());
         assert!(searcher.query(&q("<report")).is_err());
@@ -619,7 +622,12 @@ mod tests {
         assert_eq!((r.text.as_str(), r.regex), ("", false));
         assert_eq!(
             b("report in:/home/me").within,
-            Some(PathBuf::from("/home/me").to_string_lossy().replace('/', std::path::MAIN_SEPARATOR_STR).into())
+            Some(
+                PathBuf::from("/home/me")
+                    .to_string_lossy()
+                    .replace('/', std::path::MAIN_SEPARATOR_STR)
+                    .into()
+            )
         );
         let mut pane = q("report | summary");
         pane.within = Some("/x".into());

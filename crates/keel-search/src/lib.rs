@@ -10,15 +10,15 @@ mod everything;
 mod exclude;
 pub mod filelist;
 mod folders;
+mod fswalk;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzz;
-mod fswalk;
 mod fuzzy;
 mod index_settings;
-mod language;
 pub mod journal;
+mod language;
 #[cfg(target_os = "linux")]
 mod locate;
 /// The raw MFT record parser: used by the Windows index, built everywhere for fuzzing.

@@ -190,13 +190,15 @@ pub fn check_paths(p: &SystemSearchParams, paths: &[&str]) -> Result<Vec<bool>> 
     Ok(paths
         .iter()
         .map(|path| {
-            filter.as_ref().is_none_or(|f| f.matches(&Hit {
-                path: keel_vfs::VPath::local(path),
-                is_dir: false,
-                size: 0,
-                modified: None,
-                snippet: None,
-            }))
+            filter.as_ref().is_none_or(|f| {
+                f.matches(&Hit {
+                    path: keel_vfs::VPath::local(path),
+                    is_dir: false,
+                    size: 0,
+                    modified: None,
+                    snippet: None,
+                })
+            })
         })
         .collect())
 }
@@ -530,7 +532,10 @@ mod tests {
             names(&search(q("ext:pdf | ext:md"))),
             ["Report-Final.pdf", "summary.md"]
         );
-        assert_eq!(names(&search(q("!<report | summary>"))), ["Café del Mar.mp3"]);
+        assert_eq!(
+            names(&search(q("!<report | summary>"))),
+            ["Café del Mar.mp3"]
+        );
         assert_eq!(names(&search(q("size:>400"))), ["Café del Mar.mp3"]);
         assert_eq!(
             names(&search(SystemSearchParams {
@@ -559,7 +564,7 @@ mod tests {
         // Native backend already evaluated child counts, which Hit does not retain.
         let found = run(&native, &q("child-count:>0"), MAX_SCAN).unwrap();
         assert_eq!(found.total, 5);
-        assert_eq!(native.0.1.lock().as_ref().unwrap().text, "child-count:>0");
+        assert_eq!(native.0 .1.lock().as_ref().unwrap().text, "child-count:>0");
         let error = run(&native, &q("<report"), MAX_SCAN).err().unwrap();
         assert_eq!(error.code, ApiError::INVALID_PARAMS);
         assert!(error.message.contains("at "), "{}", error.message);

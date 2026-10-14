@@ -3,7 +3,10 @@ use super::index::Matcher;
 use crate::Query;
 
 pub(crate) fn folder_prefix(dir: &std::path::Path) -> String {
-    format!("{}\\", dir.display().to_string().trim_end_matches(['\\', '/']))
+    format!(
+        "{}\\",
+        dir.display().to_string().trim_end_matches(['\\', '/'])
+    )
 }
 
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
@@ -247,7 +250,10 @@ mod tests {
             found
         };
         assert_eq!(find("file: size:>1000"), [r"C:\Users\ann\report.pdf"]);
-        assert_eq!(find("file: size-on-disk:8192"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(
+            find("file: size-on-disk:8192"),
+            [r"C:\Users\ann\report.pdf"]
+        );
         assert_eq!(find("file: dm:2026"), [r"C:\Users\ann\report.pdf"]);
         assert_eq!(find("file: dm:2025"), Vec::<String>::new());
         assert_eq!(find("attrib:D"), find("folder:"));
@@ -274,7 +280,10 @@ mod tests {
             ]
         );
         // Set functions run over the whole result.
-        assert_eq!(find("dupe:name"), [r"C:\Users\ann\report.pdf", r"C:\Windows\report.pdf"]);
+        assert_eq!(
+            find("dupe:name"),
+            [r"C:\Users\ann\report.pdf", r"C:\Windows\report.pdf"]
+        );
     }
 
     #[test]

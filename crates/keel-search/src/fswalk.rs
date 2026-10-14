@@ -112,7 +112,13 @@ impl Props for WalkProps {
             }
             bits
         };
-        Some(bits | if self.is_dir { keel_query::attr::DIRECTORY } else { 0 })
+        Some(
+            bits | if self.is_dir {
+                keel_query::attr::DIRECTORY
+            } else {
+                0
+            },
+        )
     }
 }
 

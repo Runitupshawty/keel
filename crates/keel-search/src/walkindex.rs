@@ -647,7 +647,8 @@ impl Table {
             })
             .collect();
         out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-        Ok(out.into_iter()
+        Ok(out
+            .into_iter()
             .map(|(_, _, slot, path)| (slot, path))
             .collect())
     }
@@ -781,7 +782,13 @@ impl Props for EntryProps<'_> {
             return None;
         }
         let mut counts = ChildCounts::default();
-        for &kid in self.table.children.get(&self.slot).into_iter().flat_map(|k| k.values()) {
+        for &kid in self
+            .table
+            .children
+            .get(&self.slot)
+            .into_iter()
+            .flat_map(|k| k.values())
+        {
             if self.table.entries[kid as usize].meta.is_dir {
                 counts.folders += 1;
             } else {
@@ -815,11 +822,10 @@ impl Tree for Table {
     }
 
     fn with_props(&self, node: NodeId, f: &mut dyn FnMut(&dyn Props)) {
-        if let Some(slot) = u32::try_from(node).ok().filter(|&n| {
-            self.entries
-                .get(n as usize)
-                .is_some_and(|e| e.live)
-        }) {
+        if let Some(slot) = u32::try_from(node)
+            .ok()
+            .filter(|&n| self.entries.get(n as usize).is_some_and(|e| e.live))
+        {
             f(&EntryProps::new(self, slot));
         }
     }
@@ -1429,7 +1435,9 @@ pub(crate) fn normalize_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 impl Searcher for WalkIndexSearcher {
-    fn unified_query(&self) -> bool { true }
+    fn unified_query(&self) -> bool {
+        true
+    }
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         // A pane's folder outside the roots (another drive, a share): walk it.
         if let Some(dir) = crate::pane_folder(q).filter(|d| !self.covers(d)) {
