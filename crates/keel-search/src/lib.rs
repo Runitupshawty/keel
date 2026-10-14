@@ -16,6 +16,7 @@ mod folders;
 pub mod fuzz;
 mod fuzzy;
 mod index_settings;
+mod language;
 pub mod journal;
 #[cfg(target_os = "linux")]
 mod locate;
@@ -53,6 +54,7 @@ pub use exclude::{attr, ExcludeRules};
 pub use filelist::FileListSearcher;
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
+pub use language::compile_query;
 pub use index_settings::{
     split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
     VolumeRoot, DEFAULT_JOURNAL_MB,
@@ -79,6 +81,10 @@ use std::time::SystemTime;
 /// Parameters accepted by a search backend.
 #[derive(Clone, Debug)]
 pub struct Query {
+    pub match_prefix: bool,
+    pub match_suffix: bool,
+    pub ignore_punctuation: bool,
+    pub ignore_whitespace: bool,
     pub text: String,
     pub folders_only: bool,
     pub max: u32,
@@ -107,6 +113,10 @@ pub struct Query {
 impl Default for Query {
     fn default() -> Self {
         Self {
+            match_prefix: false,
+            match_suffix: false,
+            ignore_punctuation: false,
+            ignore_whitespace: false,
             text: String::new(),
             folders_only: false,
             max: 500,
@@ -154,6 +164,8 @@ pub enum SearchState {
 
 /// A pluggable file search backend.
 pub trait Searcher: Send + Sync {
+    /// The backend evaluates the shared language and all Query match options itself.
+    fn unified_query(&self) -> bool { false }
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>>;
     /// The last known state; never blocks.
     fn available(&self) -> bool;

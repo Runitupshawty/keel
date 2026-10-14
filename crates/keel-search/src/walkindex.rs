@@ -26,14 +26,13 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use rusqlite::{params, Connection};
 
 use crate::exclude::{attr, ExcludeRules};
 use crate::index_settings::ScanOptions;
 use crate::journal::{self, Change, Journal, Stat};
 use crate::schedule::{Clock, SystemClock};
-use crate::terms::{self, split_terms, strip_ci};
 use crate::{Hit, Query, SearchState, Searcher};
 
 const NONE: u32 = u32::MAX;
@@ -545,15 +544,9 @@ impl Table {
                 return None;
             }
         }
-        if !m.rest.iter().all(|re| re.is_match(name)) {
+        let path = self.path_of(slot)?.to_string_lossy().into_owned();
+        if !m.query.matches_in(&EntryProps { table: self, slot, path }, Some(self)) {
             return None;
-        }
-        if !m.path.is_empty() {
-            let path = self.path_of(slot)?;
-            let path = path.to_string_lossy();
-            if !m.path.iter().all(|re| re.is_match(&path)) {
-                return None;
-            }
         }
         if let Some(within) = &m.within {
             let path = self.path_of(slot)?.to_string_lossy().replace('\\', "/");
@@ -601,11 +594,26 @@ impl Table {
     }
 
     /// The best `max` matches, ranked by quality then path.
+    #[cfg(test)]
     fn search(&self, m: &Matcher, max: usize) -> Vec<(u32, PathBuf)> {
+        self.try_search(m, max).unwrap()
+    }
+
+    fn try_search(&self, m: &Matcher, max: usize) -> anyhow::Result<Vec<(u32, PathBuf)>> {
         let mut found = self.par(|range| self.scan_range(m, range));
+        if let Some(mut pass) = m.query.set_pass() {
+            found.sort_by_key(|&(q, slot)| (q, slot));
+            for &(_, slot) in &found {
+                if let Some(path) = self.path_of(slot) {
+                    if !pass.push(u64::from(slot), &EntryProps { table: self, slot, path: path.to_string_lossy().into_owned() }, Some(self))? { break; }
+                }
+            }
+            let selected = pass.finish();
+            found = selected.into_iter().map(|s| (0, s as u32)).collect();
+        }
         if found.len() > max {
             if max == 0 {
-                return Vec::new();
+                return Ok(Vec::new());
             }
             let name = |slot: u32| self.name_of(&self.entries[slot as usize]).bytes();
             found.select_nth_unstable_by(max - 1, |a, b| {
@@ -626,9 +634,9 @@ impl Table {
             })
             .collect();
         out.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-        out.into_iter()
+        Ok(out.into_iter()
             .map(|(_, _, slot, path)| (slot, path))
-            .collect()
+            .collect())
     }
 }
 
@@ -646,16 +654,15 @@ pub(crate) fn eq_case(a: &str, b: &str, match_case: bool) -> bool {
 pub(crate) struct Matcher {
     /// Finds candidates over the whole name buffer (multi-line mode).
     pub(crate) scan: Option<Regex>,
-    /// Further terms every candidate name must match.
-    pub(crate) rest: Vec<Regex>,
     /// The scan term when it is a plain substring: drives exact/prefix ranking.
     pub(crate) literal: Option<String>,
     pub(crate) match_case: bool,
     pub(crate) folders_only: bool,
     /// `in:` path prefix, lowercased with `/` separators.
     pub(crate) within: Option<String>,
-    /// Match Path: every term, matched against the candidate's full path instead.
-    pub(crate) path: Vec<Regex>,
+    pub(crate) query: keel_query::Query,
+    pub(crate) prefix: Option<Regex>,
+
 }
 
 impl Matcher {
@@ -675,121 +682,17 @@ impl Matcher {
     }
 }
 
-enum Term {
-    Literal(String),
-    Pattern(String),
-}
-
-fn term_of(text: &str, query: &Query) -> Term {
-    if text.contains(['*', '?']) {
-        Term::Pattern(terms::glob(text, query))
-    } else {
-        Term::Literal(text.to_owned())
-    }
-}
-
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
-    let mut folders_only = query.folders_only;
-    // A pane's folder, resolved like a typed `in:` (below) and ending in a separator (whole
-    // folder names only); a typed `in:` takes its place.
-    let mut within = query.within.as_ref().map(|dir| {
-        #[cfg(not(windows))]
-        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.clone());
-        let dir = dir.display().to_string().replace('\\', "/").to_lowercase();
-        format!("{}/", dir.trim_end_matches('/'))
-    });
-    let mut terms = Vec::new();
-    if query.regex {
-        if !query.text.is_empty() {
-            terms.push(Term::Pattern(query.text.clone()));
-        }
-    } else {
-        for term in split_terms(&query.text) {
-            if let Some(rest) = strip_ci(&term, "folder:") {
-                folders_only = true;
-                if !rest.is_empty() {
-                    terms.push(term_of(rest, query));
-                }
-            } else if let Some(rest) = strip_ci(&term, "in:") {
-                // The index stores resolved roots (macOS: /private/var for /var), so a typed
-                // folder is resolved the same way when it exists.
-                #[cfg(not(windows))]
-                let rest: String = std::fs::canonicalize(rest)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| rest.to_owned());
-                within = Some(rest.replace('\\', "/").to_lowercase());
-            } else if let Some(rest) = strip_ci(&term, "regex:") {
-                terms.push(Term::Pattern(rest.to_owned()));
-            } else {
-                terms.push(term_of(&term, query));
-            }
-        }
-    }
-    // Scan with the longest substring (most selective), else the first pattern.
-    let lead = terms
-        .iter()
-        .enumerate()
-        .filter_map(|(i, t)| match t {
-            Term::Literal(s) => Some((s.len(), i)),
-            Term::Pattern(_) => None,
-        })
-        .max()
-        .map(|(_, i)| i)
-        .or((!terms.is_empty()).then_some(0));
-    let regex = |src: &str| -> anyhow::Result<Regex> {
-        Ok(RegexBuilder::new(src)
-            .multi_line(true)
-            .case_insensitive(!query.match_case)
-            .build()?)
-    };
-    let build = |t: &Term| match t {
-        Term::Literal(s) => regex(&terms::literal(s, query)),
-        Term::Pattern(p) => regex(p),
-    };
-    // Match Whole Words and Match Path (shared with the NTFS index, `terms.rs`).
-    let literals: Vec<&str> = (terms.iter())
-        .filter_map(|t| match t {
-            Term::Literal(s) => Some(s.as_str()),
-            Term::Pattern(_) => None,
-        })
-        .collect();
-    let words = terms::word_terms(&literals, query, &regex)?;
-    if query.match_path {
-        let mut path = terms
-            .iter()
-            .map(build)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        path.extend(words);
-        return Ok(Matcher {
-            scan: None,
-            rest: Vec::new(),
-            literal: None,
-            match_case: query.match_case,
-            folders_only,
-            within,
-            path,
-        });
-    }
-    let (mut scan, mut literal, mut rest) = (None, None, Vec::new());
-    for (i, t) in terms.iter().enumerate() {
-        if Some(i) == lead {
-            scan = Some(build(t)?);
-            if let Term::Literal(s) = t {
-                literal = Some(s.clone());
-            }
-        } else {
-            rest.push(build(t)?);
-        }
-    }
-    rest.extend(words);
+    let p = crate::language::prefilter(query)?;
+    let prefix = p.scan.as_ref().map(|r| Regex::new(&format!("(?m)^(?:{})", r.as_str()))).transpose()?;
     Ok(Matcher {
-        scan,
-        rest,
-        literal,
+        scan: p.scan,
+        prefix,
+        literal: p.literal,
         match_case: query.match_case,
-        folders_only,
-        within,
-        path: Vec::new(),
+        folders_only: query.folders_only,
+        within: p.within,
+        query: p.query,
     })
 }
 
@@ -1389,6 +1292,7 @@ pub(crate) fn normalize_roots(roots: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 impl Searcher for WalkIndexSearcher {
+    fn unified_query(&self) -> bool { true }
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         // A pane's folder outside the roots (another drive, a share): walk it.
         if let Some(dir) = crate::pane_folder(q).filter(|d| !self.covers(d)) {
@@ -1402,7 +1306,7 @@ impl Searcher for WalkIndexSearcher {
         let matcher = compile(q)?;
         let table = self.shared.table.read();
         Ok(table
-            .search(&matcher, q.max as usize)
+            .try_search(&matcher, q.max as usize)?
             .into_iter()
             .map(|(slot, path)| {
                 let m = table.entries[slot as usize].meta;

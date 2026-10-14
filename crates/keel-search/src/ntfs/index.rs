@@ -278,22 +278,7 @@ pub(crate) fn rank(a: &Found, b: &Found) -> Ordering {
 }
 
 /// A compiled query (see `pattern::compile`).
-pub(crate) struct Matcher {
-    /// Run over the whole name buffer to find candidates (multi-line mode).
-    pub scan: Option<Regex>,
-    /// Further terms every candidate name must match.
-    pub rest: Vec<Regex>,
-    /// The scan term when it is a plain substring: drives exact/prefix ranking.
-    pub literal: Option<String>,
-    /// `^literal`: finds every exact and prefix match in one cheap pass.
-    pub prefix: Option<Regex>,
-    pub match_case: bool,
-    pub folders_only: bool,
-    /// `in:` path prefix.
-    pub within: Option<String>,
-    /// Match Path: every term, matched against the full path instead of the name.
-    pub path: Vec<Regex>,
-}
+pub(crate) use crate::walkindex::Matcher;
 
 impl Index {
     pub fn new(prefix: impl Into<String>, root: u64) -> Self {
@@ -1139,9 +1124,8 @@ impl Index {
             }
             let quality = quality(m, name);
             if keep(quality)
-                && m.rest.iter().all(|re| re.is_match(name))
                 && !within.as_mut().is_some_and(|w| !w.contains(self, slot))
-                && (m.path.is_empty() || self.path_matches(slot.frn, &m.path))
+                && self.path(slot.frn).is_some_and(|path| m.query.matches(&EntryProps { index: self, slot: i, path }))
             {
                 hits.push((quality, i));
             }
@@ -1165,18 +1149,25 @@ impl Index {
     /// or start with it come first (one pass over the `^` form finds all of those),
     /// then other matches in index order until `max`; any other query stops at the
     /// first `max` matches.
+    #[cfg(test)]
     pub fn search(&self, m: &Matcher, max: usize) -> Vec<Found> {
+        self.try_search(m, max).unwrap()
+    }
+
+    pub fn try_search(&self, m: &Matcher, max: usize) -> anyhow::Result<Vec<Found>> {
         let within = match &m.within {
             None => None,
             Some(w) => match self.within(w) {
                 Some(w) => Some(w),
-                None => return Vec::new(),
+                None => return Ok(Vec::new()),
             },
         };
         let run = |scan: Option<&Regex>, want: usize, keep: &(dyn Fn(u8) -> bool + Sync)| {
             self.par(|segs| self.collect(m, scan, within.clone(), segs, want, keep))
         };
-        let mut hits = match (&m.prefix, &m.scan) {
+        let mut hits = if m.query.has_set_functions() {
+            run(m.scan.as_ref(), usize::MAX, &|_| true)
+        } else { match (&m.prefix, &m.scan) {
             (Some(prefix), Some(scan)) => {
                 let mut best = run(Some(prefix), usize::MAX, &|q| q < 2);
                 if best.len() < max {
@@ -1185,8 +1176,16 @@ impl Index {
                 best
             }
             (_, scan) => run(scan.as_ref(), max, &|_| true),
-        };
+        }};
         hits.sort_by_key(|&(quality, _)| quality);
+        if let Some(mut pass) = m.query.set_pass() {
+            for &(_, slot) in &hits {
+                if let Some(path) = self.path(self.slots[slot as usize].frn) {
+                    if !pass.push(u64::from(slot), &EntryProps { index: self, slot, path }, None)? { break; }
+                }
+            }
+            hits = pass.finish().into_iter().map(|s| (0, s as u32)).collect();
+        }
         hits.truncate(max);
         let mut found: Vec<Found> = hits
             .into_iter()
@@ -1201,15 +1200,7 @@ impl Index {
             })
             .collect();
         found.sort_by(rank);
-        found
-    }
-
-    /// `in:` target: the folder holding the prefix's last component, and that
-    /// partial component (entries under the folder whose top name starts with it).
-    /// Match Path: the full path of `frn` matches every one of `res`.
-    fn path_matches(&self, frn: u64, res: &[Regex]) -> bool {
-        self.path(frn)
-            .is_some_and(|p| res.iter().all(|re| re.is_match(&p)))
+        Ok(found)
     }
 
     /// Whether the `in:` target `prefix` names a folder of this index.

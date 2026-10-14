@@ -10,6 +10,9 @@ use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[path = "search_query.rs"]
+mod query;
+
 /// Hits returned when a query names no limit.
 pub const DEFAULT_MAX: usize = 500;
 /// Ctrl+P reads at most this many library file names (`Library::file_names`, `files.names`).
@@ -136,6 +139,9 @@ impl Span {
 /// not in it, `name:word` only in names.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryQuery {
+    /// Shared-language expression when it needs Boolean composition or a Rust filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<query::Expression>,
     pub terms: Vec<String>,
     pub phrases: Vec<String>,
     pub kind: Option<KindFilter>,
@@ -199,6 +205,7 @@ fn snippet_page() -> usize {
 impl Default for LibraryQuery {
     fn default() -> Self {
         LibraryQuery {
+            expression: None,
             terms: Vec::new(),
             phrases: Vec::new(),
             kind: None,
@@ -391,6 +398,11 @@ impl LibraryQuery {
     }
 
     pub(crate) fn parse_at(s: &str, now: i64, utc_offset: i64) -> Result<LibraryQuery> {
+        query::parse(s, now, utc_offset)
+    }
+
+    /// SQL lowering for a term already recognized by the shared parser.
+    fn parse_sql_terms(s: &str, now: i64, utc_offset: i64) -> Result<LibraryQuery> {
         let mut q = LibraryQuery::default();
         for tok in tokens(s) {
             if tok.starts_with('"') {
@@ -957,6 +969,9 @@ pub(crate) fn search_source(
     now: i64,
     contents: bool,
 ) -> Result<Vec<LibraryHit>> {
+    if let Some(expression) = &q.expression {
+        return query::search(src, q, expression, now, contents);
+    }
     let by_content = q.content_match().filter(|_| contents);
     let mut hits = search_names(src, q, now, by_content.is_some())?;
     let Some(m) = by_content else {

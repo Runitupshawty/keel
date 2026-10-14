@@ -14,6 +14,7 @@ path = "src/lib.rs"
 fuzzing = []
 
 [dependencies]
+keel-query = { path = "../keel-query" }
 anyhow.workspace = true
 # Daily rescans at a local time (already in the tree).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

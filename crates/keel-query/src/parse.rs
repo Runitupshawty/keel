@@ -112,7 +112,8 @@ fn parse_at(
     macro_depth: usize,
     remap: Option<Range<usize>>,
 ) -> Result<Ast, Error> {
-    let is_function = |n: &str| functions::lookup(n).is_some();
+    let is_function = |n: &str| functions::lookup(n).is_some()
+        || opts.external_functions.iter().any(|f| f.eq_ignore_ascii_case(n));
     let toks = lex(src, opts.allow_literal_operators, &is_function);
     let mut globals = Globals {
         precedence: opts.precedence,
@@ -434,14 +435,19 @@ impl Parser<'_> {
             };
             // Functions first, then user macros (which may replace the built-in filter
             // macros), then the built-in ones.
-            let kind = functions::lookup(base);
+            let external = self.opts.external_functions.iter().any(|f| f.eq_ignore_ascii_case(base));
+            let kind = if external {
+                Some(FnKind::Unsupported("evaluated by the caller"))
+            } else {
+                functions::lookup(base)
+            };
             let user = self
                 .opts
                 .macros
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(base));
             match (kind, user) {
-                (Some(FnKind::Unsupported(why)), _) => {
+                (Some(FnKind::Unsupported(why)), _) if !external => {
                     return Err(self.err(
                         nspan,
                         ErrorKind::Unsupported,

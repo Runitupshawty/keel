@@ -3,17 +3,15 @@
 //! Spotlight or locate elsewhere) with Everything's match options, sort and paging.
 //! keel-daemon's Everything-compatible HTTP endpoint runs the same [`run`].
 //!
-//! The backend matches names; the options it does not know are applied here, to the hits
-//! it returns: the backend is asked for a superset (the same words, or for
-//! `ignore_punctuation` / `ignore_whitespace` a pattern of the longest word) and each hit
-//! is checked against every plain word with the options. At most [`MAX_SCAN`] hits are
-//! read from the backend per search: the total and the order cover those.
+//! Native indexes evaluate the shared query language against their indexed properties.
+//! Other platform backends supply a bounded candidate set for the same evaluator;
+//! Everything receives its own language unchanged. At most [`MAX_SCAN`] hits are read
+//! per search: the total and the order cover those.
 
 use crate::error::{ApiError, Result};
 use crate::types::{SystemSearchParams, SystemSort};
 pub use keel_search::{Hit, Query, Searcher};
 use parking_lot::Mutex;
-use regex::{Regex, RegexBuilder};
 use std::sync::Arc;
 
 /// Results a search returns when it does not say (`count`).
@@ -24,8 +22,6 @@ pub const MAX_COUNT: usize = 1000;
 pub const MAX_SCAN: usize = 10_000;
 /// Longest search text (bytes).
 pub const MAX_QUERY: usize = 4096;
-/// Size limit of a compiled regular expression.
-const REGEX_LIMIT: usize = 1 << 20;
 
 /// The backend `system.search` uses, made on first use (it probes Everything or loads an
 /// index: seconds at worst, and only once).
@@ -64,11 +60,20 @@ pub fn run(searcher: &dyn Searcher, p: &SystemSearchParams, scan: usize) -> Resu
     let plan = compile(p, searcher.name() == "Everything")?;
     let count = p.count.unwrap_or(DEFAULT_COUNT).min(MAX_COUNT);
     let offset = p.offset.unwrap_or(0);
-    let query = Query {
+    let native = searcher.unified_query() || searcher.name() == "Everything";
+    let mut query = Query {
         max: u32::try_from(scan).unwrap_or(u32::MAX),
-        meta: false,
+        meta: !native,
         ..plan.backend
     };
+    if !native {
+        // A backend with a different language must not eliminate an OR branch or a
+        // path match before the shared evaluator sees it. A name regex is safe.
+        if !query.regex || query.match_path {
+            query.text.clear();
+            query.regex = false;
+        }
+    }
     if !searcher.available() {
         searcher.probe();
     }
@@ -76,10 +81,13 @@ pub fn run(searcher: &dyn Searcher, p: &SystemSearchParams, scan: usize) -> Resu
         .query(&query)
         .map_err(|e| ApiError::failed(format!("{}: {e:#}", searcher.name())))?;
     let capped = hits.len() >= scan;
-    let mut hits: Vec<Hit> = hits
-        .into_iter()
-        .filter(|h| plan.filter.matches(h))
-        .collect();
+    let mut hits = if native {
+        // Hits omit properties such as child counts: do not re-evaluate a query
+        // already matched against the full native entry using the smaller Hit.
+        hits
+    } else {
+        plan.filter.select(hits)?
+    };
     let sort = p.sort.unwrap_or_default();
     if matches!(sort, SystemSort::DateModified | SystemSort::Size) {
         fill(&mut hits);
@@ -134,338 +142,109 @@ pub(crate) struct Plan {
     pub(crate) filter: Filter,
 }
 
-/// How names and words are compared.
-#[derive(Clone, Copy, Debug, Default)]
-struct Norm {
-    case: bool,
-    diacritics: bool,
-    punctuation: bool,
-    whitespace: bool,
-}
-
-impl Norm {
-    fn apply(self, s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for c in s.chars() {
-            if (self.whitespace && c.is_whitespace()) || (self.punctuation && punctuation(c)) {
-                continue;
-            }
-            let c = if self.diacritics { c } else { fold(c) };
-            if self.case {
-                out.push(c);
-            } else {
-                out.extend(c.to_lowercase());
-            }
-        }
-        out
-    }
-}
-
-/// One word of the search, as the filter checks it.
-#[derive(Debug)]
-enum Term {
-    /// Plain text (normalized).
-    Plain { text: String, path: bool },
-    /// A wildcard pattern over the whole name (or path).
-    Glob { re: Regex, path: bool },
-}
-
-/// Checks a backend hit against every plain word with the options.
-pub(crate) struct Filter {
-    norm: Norm,
-    terms: Vec<Term>,
-    regex: Option<(Regex, bool)>,
-    start: bool,
-    end: bool,
-}
+/// Shared query evaluation for backends without native language support.
+pub(crate) struct Filter(Option<keel_query::Query>);
 
 impl Filter {
     pub(crate) fn matches(&self, hit: &Hit) -> bool {
-        let name = hit.path.name();
-        let full = hit.path.display();
-        if let Some((re, path)) = &self.regex {
-            return re.is_match(if *path { &full } else { name });
-        }
-        let (mut norm_name, mut norm_full) = (None, None);
-        self.terms.iter().all(|term| {
-            let on_path = matches!(
-                term,
-                Term::Plain { path: true, .. } | Term::Glob { path: true, .. }
-            );
-            let subject: &str = if on_path {
-                norm_full.get_or_insert_with(|| self.norm.apply(&full))
-            } else {
-                norm_name.get_or_insert_with(|| self.norm.apply(name))
-            };
-            match term {
-                Term::Plain { text, .. } => find(subject, text, self.start, self.end),
-                Term::Glob { re, .. } => re.is_match(subject),
-            }
+        self.0.as_ref().is_none_or(|query| {
+            query.matches(&HitProps {
+                hit,
+                path: hit.path.display(),
+            })
         })
     }
-}
 
-/// `needle` occurs in `hay`, at the start of a word when `start`, at the end of one when
-/// `end` (every occurrence is tried, overlapping ones too).
-fn find(hay: &str, needle: &str, start: bool, end: bool) -> bool {
-    if needle.is_empty() {
-        return true;
+    fn select(&self, hits: Vec<Hit>) -> Result<Vec<Hit>> {
+        let Some(query) = &self.0 else {
+            return Ok(hits);
+        };
+        let props: Vec<_> = hits
+            .iter()
+            .map(|hit| HitProps {
+                hit,
+                path: hit.path.display(),
+            })
+            .collect();
+        let selected = query
+            .select(props.iter(), None)
+            .map_err(|e| ApiError::invalid_params(e.to_string()))?;
+        Ok(selected.into_iter().map(|i| hits[i].clone()).collect())
     }
-    if !start && !end {
-        return hay.contains(needle);
+}
+
+/// Only the properties actually supplied by a legacy backend are known here.
+struct HitProps<'a> {
+    hit: &'a Hit,
+    path: String,
+}
+
+impl keel_query::Props for HitProps<'_> {
+    fn name(&self) -> &str {
+        self.hit.path.name()
     }
-    let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-    hay.char_indices().any(|(i, _)| {
-        hay[i..].starts_with(needle)
-            && (!start || !word(hay[..i].chars().next_back()))
-            && (!end || !word(hay[i + needle.len()..].chars().next()))
-    })
-}
-
-/// Punctuation and symbols `ignore_punctuation` skips: ASCII's and the common typographic
-/// ones.
-fn punctuation(c: char) -> bool {
-    c.is_ascii_punctuation()
-        || matches!(
-            c,
-            '\u{a1}'..='\u{bf}' | '\u{2010}'..='\u{2027}' | '\u{2030}'..='\u{205e}' | '\u{3000}'..='\u{303f}' | '\u{d7}' | '\u{f7}'
-        )
-}
-
-/// A Latin letter without its accent (Latin-1 and Latin Extended-A); others as they are.
-fn fold(c: char) -> char {
-    const FROM: &str = "ÀÁÂÃÄÅàáâãäåĀāĂăĄąÇçĆćĈĉĊċČčĎďĐđÈÉÊËèéêëĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħÌÍÎÏìíîïĨĩĪīĬĭĮįİıĴĵĶķĹĺĻļĽľĿŀŁłÑñŃńŅņŇňÒÓÔÕÖØòóôõöøŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŦŧÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųŴŵÝýÿŶŷŸŹźŻżŽž";
-    const TO: &str = "AAAAAAaaaaaaAaAaAaCcCcCcCcCcDdDdEEEEeeeeEeEeEeEeEeGgGgGgGgHhHhIIIIiiiiIiIiIiIiIiJjKkLlLlLlLlLlNnNnNnNnOOOOOOooooooOoOoOoRrRrRrSsSsSsSsTtTtTtUUUUuuuuUuUuUuUuUuUuWwYyyYyYZzZzZz";
-    if c.is_ascii() {
-        return c;
+    fn path(&self) -> &str {
+        &self.path
     }
-    FROM.chars()
-        .position(|f| f == c)
-        .and_then(|i| TO.chars().nth(i))
-        .unwrap_or(c)
-}
-
-/// The search split into words: spaces separate them, double quotes group. Each word:
-/// its text as typed (quotes kept) and without the quotes.
-fn words(text: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    let (mut raw, mut plain, mut quoted) = (String::new(), String::new(), false);
-    for c in text.chars() {
-        match c {
-            '"' => {
-                quoted = !quoted;
-                raw.push(c);
-            }
-            c if c.is_whitespace() && !quoted => {
-                if !raw.is_empty() {
-                    out.push((std::mem::take(&mut raw), std::mem::take(&mut plain)));
-                }
-            }
-            c => {
-                raw.push(c);
-                plain.push(c);
-            }
+    fn is_dir(&self) -> bool {
+        self.hit.is_dir
+    }
+    fn size(&self) -> Option<u64> {
+        Some(self.hit.size)
+    }
+    fn allocated(&self) -> Option<u64> {
+        None
+    }
+    fn date(&self, which: keel_query::DateProp) -> Option<keel_query::Timestamp> {
+        if which != keel_query::DateProp::Modified {
+            return None;
         }
+        self.hit
+            .modified?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_millis()).ok())
     }
-    if !raw.is_empty() {
-        out.push((raw, plain));
+    fn attributes(&self) -> Option<u32> {
+        None
     }
-    out
 }
 
-/// Syntax the filter leaves to the backend: functions and modifiers (`ext:pdf`), `!`
-/// (not), `|` (or) and `<` `>` (grouping).
-fn backend_syntax(raw: &str) -> bool {
-    let unquoted_colon = {
-        let mut quoted = false;
-        raw.chars().any(|c| {
-            if c == '"' {
-                quoted = !quoted;
-            }
-            c == ':' && !quoted
-        })
-    };
-    // `C:\x` is a path, not a function.
-    let drive = raw.len() >= 2
-        && raw.as_bytes()[1] == b':'
-        && raw.as_bytes()[0].is_ascii_alphabetic()
-        && raw
-            .as_bytes()
-            .get(2)
-            .is_none_or(|b| *b == b'\\' || *b == b'/');
-    (unquoted_colon && !drive) || raw.starts_with('!') || raw.contains(['|', '<', '>'])
-}
-
-fn separator(s: &str) -> bool {
-    s.contains(['\\', '/'])
-}
-
-/// `*` and `?` over the whole (normalized) subject.
-fn glob(pattern: &str, norm: Norm) -> Result<Regex> {
-    let mut re = String::from("^");
-    let mut literal = String::new();
-    let flush = |re: &mut String, literal: &mut String| {
-        re.push_str(&regex::escape(&norm.apply(literal)));
-        literal.clear();
-    };
-    for c in pattern.chars() {
-        match c {
-            '*' | '?' => {
-                flush(&mut re, &mut literal);
-                re.push_str(if c == '*' { "(?s:.*)" } else { "(?s:.)" });
-            }
-            c => literal.push(c),
-        }
-    }
-    flush(&mut re, &mut literal);
-    re.push('$');
-    build(&re, true)
-}
-
-fn build(pattern: &str, case: bool) -> Result<Regex> {
-    RegexBuilder::new(pattern)
-        .case_insensitive(!case)
-        .size_limit(REGEX_LIMIT)
-        .dfa_size_limit(REGEX_LIMIT)
-        .build()
-        .map_err(|e| ApiError::invalid_params(format!("bad regular expression: {e}")))
-}
-
-/// The backend query and the filter for `p`; `everything`: the backend is Everything
-/// (which matches paths with its own `path:`).
+/// Everything owns its language. All other backends use the native shared compiler.
 pub(crate) fn compile(p: &SystemSearchParams, everything: bool) -> Result<Plan> {
     if p.query.len() > MAX_QUERY {
         return Err(ApiError::invalid_params(format!(
             "the search is longer than {MAX_QUERY} bytes"
         )));
     }
-    let norm = Norm {
-        case: p.match_case,
-        diacritics: p.match_diacritics,
-        punctuation: p.ignore_punctuation,
-        whitespace: p.ignore_whitespace,
-    };
-    let mut backend = Query {
-        text: String::new(),
-        regex: false,
+    let backend = Query {
+        text: p.query.clone(),
+        regex: p.regex,
         match_case: p.match_case,
+        match_path: p.match_path,
+        whole_word: p.whole_word,
+        match_diacritics: p.match_diacritics,
+        match_prefix: p.prefix,
+        match_suffix: p.suffix,
+        ignore_punctuation: p.ignore_punctuation,
+        ignore_whitespace: p.ignore_whitespace,
         ..Query::default()
     };
-    if p.regex {
-        let re = build(&p.query, p.match_case)?;
-        // The backends match names only, so a regex meant for the whole path would find
-        // almost nothing there: they send every name (bounded by the scan, which `capped`
-        // reports) and the filter applies the regex to the full path.
-        if !p.match_path {
-            backend.text = p.query.clone();
-            backend.regex = true;
-        }
-        return Ok(Plan {
-            backend,
-            filter: Filter {
-                norm,
-                terms: Vec::new(),
-                regex: Some((re, p.match_path)),
-                start: false,
-                end: false,
-            },
-        });
-    }
-    let squeeze = p.ignore_punctuation || p.ignore_whitespace;
-    let mut terms = Vec::new();
-    let mut passed = Vec::new();
-    let mut longest: Option<(String, bool)> = None;
-    for (raw, plain) in words(&p.query) {
-        if backend_syntax(&raw) {
-            if squeeze {
-                return Err(ApiError::invalid_params(
-                    "ignore_punctuation and ignore_whitespace take plain words only",
-                ));
-            }
-            passed.push(raw);
-            continue;
-        }
-        let path = p.match_path || separator(&plain);
-        let wild = plain.contains(['*', '?']);
-        // Windows paths read with `\`; a `/` typed in a word means the same.
-        let checked = if path && cfg!(windows) {
-            plain.replace('/', "\\")
-        } else {
-            plain.clone()
-        };
-        terms.push(if wild {
-            Term::Glob {
-                re: glob(&checked, norm)?,
-                path,
-            }
-        } else {
-            Term::Plain {
-                text: norm.apply(&checked),
-                path,
-            }
-        });
-        // What the backend gets: the backend matches names, so for a path word the part
-        // after its last separator (Everything: the word with `path:`).
-        let name_part = |s: &str| s.rsplit(['\\', '/']).next().unwrap_or("").to_owned();
-        if squeeze {
-            let part = if path {
-                name_part(&plain)
-            } else {
-                plain.clone()
-            };
-            if !wild && longest.as_ref().is_none_or(|(l, _)| part.len() > l.len()) {
-                longest = Some((part, path));
-            }
-        } else if path && everything {
-            passed.push(format!("path:{raw}"));
-        } else if path && separator(&plain) {
-            let part = name_part(&plain);
-            if !part.is_empty() {
-                passed.push(if part.contains(char::is_whitespace) {
-                    format!("\"{part}\"")
-                } else {
-                    part
-                });
-            }
-        } else {
-            passed.push(raw);
-        }
-    }
-    if squeeze {
-        // Each character of the longest word, with skipped characters allowed between.
-        if let Some((word, _)) = longest {
-            let gap = match (p.ignore_punctuation, p.ignore_whitespace) {
-                (true, true) => r"[\p{P}\p{S}\s]*",
-                (true, false) => r"[\p{P}\p{S}]*",
-                _ => r"\s*",
-            };
-            let chars: Vec<String> = norm_keep_case(&word, norm)
-                .chars()
-                .map(|c| regex::escape(c.encode_utf8(&mut [0; 4])))
-                .collect();
-            backend.text = chars.join(gap);
-            backend.regex = !backend.text.is_empty();
-        }
+    let filter = if everything {
+        Filter(None)
     } else {
-        backend.text = passed.join(" ");
-    }
-    Ok(Plan {
-        backend,
-        filter: Filter {
-            norm,
-            terms,
-            regex: None,
-            start: p.prefix || p.whole_word,
-            end: p.suffix || p.whole_word,
-        },
-    })
+        Filter(Some(
+            keel_search::compile_query(&backend)
+                .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?,
+        ))
+    };
+    Ok(Plan { backend, filter })
 }
 
 /// Compiles `p` and checks `paths` (as hits) against it: the fuzz targets' way in.
 #[doc(hidden)]
 pub fn check_paths(p: &SystemSearchParams, paths: &[&str]) -> Result<Vec<bool>> {
     let plan = compile(p, false)?;
-    let _ = compile(p, true)?;
     Ok(paths
         .iter()
         .map(|path| {
@@ -480,20 +259,11 @@ pub fn check_paths(p: &SystemSearchParams, paths: &[&str]) -> Result<Vec<bool>> 
         .collect())
 }
 
-/// `word` without the characters `norm` skips, case kept (the backend folds case itself).
-fn norm_keep_case(word: &str, norm: Norm) -> String {
-    Norm {
-        case: true,
-        diacritics: true,
-        ..norm
-    }
-    .apply(word)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use keel_vfs::VPath;
+    use regex::Regex;
     use std::time::{Duration, UNIX_EPOCH};
 
     fn hit(path: &str, size: u64, secs: u64) -> Hit {
@@ -733,8 +503,8 @@ mod tests {
             MAX_SCAN
         )
         .is_err());
-        // Backend syntax is passed on and not checked here.
-        assert_eq!(n(q("ext:pdf report")).len(), 3);
+        // Function terms now run through the same evaluator as plain words.
+        assert_eq!(n(q("ext:pdf report")), ["Report-Final.pdf"]);
     }
 
     /// Review 1: `regex=1&path=1` sent the regex to a backend that matches names only, so
@@ -750,7 +520,8 @@ mod tests {
             ..q(&re)
         };
         let b = compile(&params, false).unwrap().backend;
-        assert_eq!((b.text.as_str(), b.regex), ("", false), "every name");
+        assert_eq!((b.text.as_str(), b.regex), (re.as_str(), true));
+        assert!(b.match_path);
         // A backend like the real ones: the query's text against the name only.
         struct Names(Vec<Hit>);
         impl Searcher for Names {
@@ -788,59 +559,67 @@ mod tests {
     }
 
     #[test]
-    fn the_backend_gets_a_superset() {
-        let plan = |q: SystemSearchParams, everything| compile(&q, everything).unwrap().backend;
-        let b = plan(q("report ext:pdf"), false);
-        assert_eq!((b.text.as_str(), b.regex), ("report ext:pdf", false));
-        let b = plan(
-            SystemSearchParams {
-                match_case: true,
-                ..q("\"a b\" docs/x")
-            },
-            false,
-        );
-        assert_eq!(b.text, "\"a b\" x");
-        assert!(b.match_case);
-        let b = plan(q("docs/x"), true);
-        assert_eq!(b.text, "path:docs/x");
-        let b = plan(
-            SystemSearchParams {
-                ignore_punctuation: true,
-                ..q("ab cde")
-            },
-            false,
-        );
-        assert!(b.regex);
-        assert_eq!(b.text, r"c[\p{P}\p{S}]*d[\p{P}\p{S}]*e");
-        assert!(compile(
-            &SystemSearchParams {
-                ignore_whitespace: true,
-                ..q("ext:pdf x")
-            },
-            false
-        )
-        .is_err());
-        let b = plan(
-            SystemSearchParams {
-                regex: true,
-                ..q("^a.*b$")
-            },
-            false,
-        );
-        assert_eq!((b.text.as_str(), b.regex), ("^a.*b$", true));
-        // Drive letters are paths, not functions.
-        assert!(!backend_syntax(r"C:\x") && !backend_syntax("c:") && backend_syntax("ext:pdf"));
+    fn query_options_and_everything_text_are_preserved() {
+        let params = SystemSearchParams {
+            match_case: true,
+            prefix: true,
+            ignore_punctuation: true,
+            ..q("<report | summary> !ext:txt")
+        };
+        let b = compile(&params, false).unwrap().backend;
+        assert_eq!(b.text, params.query);
+        assert!(b.match_case && b.match_prefix && b.ignore_punctuation);
+        // Everything supports terms Keel cannot evaluate; neither reject nor rewrite.
+        let text = "unknown-everything-function:foo | docs/x";
+        let b = compile(&q(text), true).unwrap().backend;
+        assert_eq!(b.text, text);
+        let f = fake();
+        run(&f, &q("report | summary"), MAX_SCAN).unwrap();
+        assert!(f.1.lock().as_ref().unwrap().text.is_empty());
     }
 
     #[test]
-    fn find_respects_word_edges() {
-        assert!(find("aaa", "aa", true, false));
-        assert!(find("x-aa", "aa", true, true));
-        assert!(!find("xaa", "aa", true, false));
-        assert!(find("a aab", "aa", true, false));
-        assert!(!find("baab", "aa", false, true));
-        assert_eq!(fold('É'), 'E');
-        assert_eq!(fold('ž'), 'z');
-        assert_eq!(fold('ß'), 'ß');
+    fn boolean_queries_use_one_evaluator() {
+        assert_eq!(
+            names(&search(q("<report | summary> !ext:txt"))),
+            ["preport.doc", "Report-Final.pdf", "summary.md"]
+        );
+        assert_eq!(
+            names(&search(q("ext:pdf | ext:md"))),
+            ["Report-Final.pdf", "summary.md"]
+        );
+        assert_eq!(names(&search(q("!<report | summary>"))), ["Café del Mar.mp3"]);
+        assert_eq!(names(&search(q("size:>400"))), ["Café del Mar.mp3"]);
+        assert_eq!(
+            names(&search(SystemSearchParams {
+                regex: true,
+                ..q("Report-Final|del Mar")
+            })),
+            ["Café del Mar.mp3", "Report-Final.pdf"]
+        );
+    }
+
+    #[test]
+    fn native_hits_keep_index_only_properties_and_parse_errors_have_positions() {
+        struct Native(Fake);
+        impl Searcher for Native {
+            fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+                self.0.query(q)
+            }
+            fn available(&self) -> bool {
+                true
+            }
+            fn unified_query(&self) -> bool {
+                true
+            }
+        }
+        let native = Native(fake());
+        // Native backend already evaluated child counts, which Hit does not retain.
+        let found = run(&native, &q("child-count:>0"), MAX_SCAN).unwrap();
+        assert_eq!(found.total, 5);
+        assert_eq!(native.0.1.lock().as_ref().unwrap().text, "child-count:>0");
+        let error = run(&native, &q("<report"), MAX_SCAN).err().unwrap();
+        assert_eq!(error.code, ApiError::INVALID_PARAMS);
+        assert!(error.message.contains("at "), "{}", error.message);
     }
 }

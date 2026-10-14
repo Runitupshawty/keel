@@ -63,6 +63,9 @@ pub const DEFAULT_SET_MEMORY_LIMIT: usize = 512 << 20;
 /// The search options (Everything's Search menu and Options → Search) and the clock.
 #[derive(Clone, Debug)]
 pub struct Options {
+    /// Functions parsed for a caller's SQL/property adapter. They must be removed or
+    /// compiled by that adapter before evaluation; the generic evaluator refuses them.
+    pub external_functions: Vec<String>,
     pub match_case: bool,
     pub match_diacritics: bool,
     pub match_whole_words: bool,
@@ -107,6 +110,7 @@ impl Default for Options {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
         Self {
+            external_functions: Vec::new(),
             match_case: false,
             match_diacritics: false,
             match_whole_words: false,
