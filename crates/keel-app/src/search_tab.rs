@@ -506,7 +506,7 @@ pub fn bar(
                     cache.1 = if native_syntax {
                         crate::query_check::native_problem(&settings.query(
                             query.clone(),
-                            toggles,
+                            *toggles,
                             1,
                         ))
                     } else {
