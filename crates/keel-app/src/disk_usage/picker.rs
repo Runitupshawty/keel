@@ -77,12 +77,7 @@ impl Picker {
                 .iter()
                 .filter(|d| d.4)
                 .map(|d| Root::Path(d.0.clone()))
-                .chain(
-                    self.devices
-                        .iter()
-                        .filter(|d| d.2)
-                        .map(|d| d.0.clone()),
-                )
+                .chain(self.devices.iter().filter(|d| d.2).map(|d| d.0.clone()))
                 .collect(),
             Choice::Folders => self.folders.iter().cloned().map(Root::Path).collect(),
         }
@@ -193,9 +188,7 @@ impl Picker {
                             if response.double_clicked() {
                                 scan_one = Some(root.clone());
                             }
-                            response.on_hover_text(format!(
-                                "Double-click to scan {label}"
-                            ));
+                            response.on_hover_text(format!("Double-click to scan {label}"));
                         }
                         if let Some(root) = scan_one {
                             answer = Some(Answer::Scan(vec![root]));
@@ -203,8 +196,7 @@ impl Picker {
                     }
                 }
                 if !drives_on
-                    && (self.drives.iter().any(|d| d.4)
-                        || self.devices.iter().any(|d| d.2))
+                    && (self.drives.iter().any(|d| d.4) || self.devices.iter().any(|d| d.2))
                 {
                     ui.weak("Choose Individual drives to scan the ticked ones");
                 }
