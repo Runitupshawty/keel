@@ -570,6 +570,11 @@ mod tests {
             ("file: !<ext:pdf | ext:jpg>", vec!["alpha.txt"]),
             ("source:Missing | ext:jpg", vec!["photo.jpg"]),
             ("folder: child-file-count:2", vec!["Reports"]),
+            ("*.txt | *.pdf", vec!["alpha.txt", "beta.pdf"]),
+            ("path:reports file:", vec!["alpha.txt", "beta.pdf"]),
+            ("size:>2 !ext:jpg", vec!["beta.pdf"]),
+            ("size:huge | ext:jpg", vec!["photo.jpg"]),
+            ("meeting: | alpha", vec!["alpha.txt"]),
         ] {
             assert_eq!(names(query), expected, "{query}");
         }

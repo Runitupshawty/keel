@@ -221,8 +221,8 @@ mod tests {
     fn the_shared_language_reads_columns_totals_and_parents() {
         use crate::ntfs::index::Info;
         let mut ix = index();
-        // 2026-01-01 00:00 UTC as FILETIME.
-        let modified = 134_116_992_000_000_000;
+        // 2026-06-15 12:00 UTC as FILETIME (the same year in every time zone).
+        let modified = 134_259_984_000_000_000;
         let file = |size: u64, modified: i64| Info {
             size,
             allocated: size.div_ceil(4096) * 4096,
