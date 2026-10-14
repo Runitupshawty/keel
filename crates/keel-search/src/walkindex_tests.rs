@@ -231,6 +231,108 @@ fn search_toggles() {
     );
 }
 
+/// A subset of `keel-query`'s conformance cases through the real index: the same language,
+/// evaluated over the index's entries (path, size, dates, children, parent links).
+#[test]
+fn the_shared_language_runs_over_the_index() {
+    let d = Dirs::sample();
+    d.file("src/lib.rs", b"//");
+    d.file("big/data.bin", &[0u8; 2000]);
+    d.file("photos/a.jpg", b"j");
+    d.file("photos/b.jpg", b"j");
+    d.file("cafe/caf\u{e9} menu.txt", b"x");
+    std::fs::create_dir_all(d.root.join("big").join("empty")).unwrap();
+    let s = d.open();
+    let sorted = |query: &Query| {
+        let mut found = names(&s, query);
+        found.sort();
+        found
+    };
+    let run = |text: &str| sorted(&q(text));
+    let with = |text: &str, set: fn(&mut Query)| {
+        let mut query = q(text);
+        set(&mut query);
+        sorted(&query)
+    };
+    let docs = d.root.join("docs").display().to_string();
+
+    // Operators and groups.
+    assert_eq!(run("ext:pdf"), ["Report.PDF", "report.pdf"]);
+    assert_eq!(run("ext:pdf;rs"), ["Report.PDF", "lib.rs", "main.rs", "report.pdf"]);
+    assert_eq!(
+        run("report | main"),
+        ["Report.PDF", "main.rs", "report notes.txt", "report.pdf"]
+    );
+    assert_eq!(
+        run("<report | main> !ext:txt"),
+        ["Report.PDF", "main.rs", "report.pdf"]
+    );
+    assert_eq!(run("!report ext:rs"), ["lib.rs", "main.rs"]);
+    assert_eq!(run("report OR main NOT ext:txt"), ["Report.PDF", "main.rs", "report.pdf"]);
+    assert_eq!(run("\"report notes\""), ["report notes.txt"]);
+    assert_eq!(run("*.rs"), ["lib.rs", "main.rs"]);
+    assert_eq!(run("report?notes*"), ["report notes.txt"]);
+    // Properties: size, date, regex, modifiers.
+    assert_eq!(run("size:>1000"), ["data.bin"]);
+    assert_eq!(run("size:<=5 ext:pdf"), ["Report.PDF", "report.pdf"]);
+    assert_eq!(run("size:1kb..4kb"), ["data.bin"]);
+    assert_eq!(run("dm:today ext:rs"), ["lib.rs", "main.rs"]);
+    assert!(run("dm:<2001-01-01 ext:rs").is_empty());
+    assert_eq!(run(r"regex:^report\.pdf$"), ["Report.PDF", "report.pdf"]);
+    assert_eq!(run("case:report.pdf"), ["report.pdf"]);
+    assert_eq!(run("wfn:main.rs"), ["main.rs"]);
+    assert_eq!(
+        run("startwith:report"),
+        ["Report.PDF", "report notes.txt", "report.pdf"]
+    );
+    assert_eq!(run("endwith:.txt"), ["caf\u{e9} menu.txt", "report notes.txt"]);
+    assert_eq!(run("folder: oldies"), ["oldies"]);
+    assert_eq!(run("file: oldies"), Vec::<String>::new());
+    // Accents, paths and folders.
+    assert_eq!(run("cafe"), ["cafe", "caf\u{e9} menu.txt"]);
+    assert!(run("diacritics:cafe file:").is_empty());
+    assert_eq!(run(&format!("parent:\"{docs}\"")), ["Report.PDF", "oldies", "report notes.txt"]);
+    assert_eq!(
+        run(&format!("report in:\"{docs}\"")),
+        ["Report.PDF", "report notes.txt", "report.pdf"]
+    );
+    assert_eq!(run(&format!("report !in:\"{docs}\"")), Vec::<String>::new());
+    // Folder counts come from the index's children, tree functions from its parent links.
+    assert_eq!(run("empty:"), ["empty"]);
+    assert_eq!(run("child-file-count:2"), ["docs", "photos", "src"]);
+    assert_eq!(run("child:report.pdf"), ["docs", "oldies"]);
+    assert_eq!(run("sibling:main.rs"), ["lib.rs"]);
+    // Set functions run over the whole result.
+    assert_eq!(run("dupe:name"), ["Report.PDF", "report.pdf"]);
+    // The search toggles.
+    assert!(with("ort", |q| q.match_prefix = true).is_empty());
+    assert_eq!(
+        with("rep", |q| q.match_prefix = true),
+        ["Report.PDF", "report notes.txt", "report.pdf"]
+    );
+    assert_eq!(
+        with("reportpdf", |q| q.ignore_punctuation = true),
+        ["Report.PDF", "report.pdf"]
+    );
+    assert_eq!(
+        with("reportnotes", |q| q.ignore_whitespace = true),
+        ["report notes.txt"]
+    );
+    assert_eq!(with("pdf", |q| q.match_suffix = true), ["Report.PDF", "report.pdf"]);
+    // A pane's folder keeps to it; errors name the place in the text.
+    let pane = Query {
+        within: Some(d.root.join("docs").join("oldies")),
+        ..q("report | main")
+    };
+    assert_eq!(sorted(&pane), ["report.pdf"]);
+    for (text, at) in [("<report", 0), ("report nope:x", 7)] {
+        let err = s.query(&q(text)).unwrap_err().to_string();
+        assert!(err.ends_with(&format!("(at {at})")), "{text}: {err}");
+    }
+    let err = s.query(&q("ext:pdf regex:(")).unwrap_err().to_string();
+    assert!(err.contains("(at "), "{err}");
+}
+
 #[test]
 fn entries_store_created_time_and_attributes() {
     let d = Dirs::sample();

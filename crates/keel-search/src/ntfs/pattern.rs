@@ -200,9 +200,9 @@ mod tests {
             [r"C:\Windows\report.pdf"]
         );
         assert_eq!(
-            with(r"*\ann\rep* folder:", |q| q.match_path = true),
+            with(r"**\ann\rep* folder:", |q| q.match_path = true),
             [r"C:\Users\ann\report"],
-            "a wildcard over the whole path"
+            "a wildcard over the whole path (`**` crosses folders)"
         );
         assert_eq!(find("nOtés"), [r"C:\Users\ann\notes.txt"]);
         assert!(with("notés", |q| q.match_diacritics = true).is_empty());
@@ -211,6 +211,70 @@ mod tests {
             with("*.pd", |q| q.whole_filename_wildcards = false).len(),
             3
         );
+    }
+
+    /// The language reads the index's columns, its folder totals and its parent links.
+    #[test]
+    fn the_shared_language_reads_columns_totals_and_parents() {
+        use crate::ntfs::index::Info;
+        let mut ix = index();
+        // 2026-01-01 00:00 UTC as FILETIME.
+        let modified = 134_116_992_000_000_000;
+        let file = |size: u64, modified: i64| Info {
+            size,
+            allocated: size.div_ceil(4096) * 4096,
+            modified,
+            created: modified,
+            attributes: 0x20,
+            links: 1,
+            ..Info::default()
+        };
+        ix.set_info(12, file(5000, modified));
+        ix.set_info(13, file(10, 0));
+        ix.set_info(21, file(7, 0));
+        ix.settle();
+        let find = |text: &str| {
+            let q = Query {
+                text: text.into(),
+                ..Query::default()
+            };
+            let mut found: Vec<String> = ix
+                .search(&compile(&q).unwrap(), 100)
+                .into_iter()
+                .map(|f| f.path)
+                .collect();
+            found.sort();
+            found
+        };
+        assert_eq!(find("file: size:>1000"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(find("file: size-on-disk:8192"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(find("file: dm:2026"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(find("file: dm:2025"), Vec::<String>::new());
+        assert_eq!(find("attrib:D"), find("folder:"));
+        // A folder's size is the total below it; its counts come from the folder totals.
+        assert_eq!(find("folder: size:5010"), [r"C:\Users", r"C:\Users\ann"]);
+        assert_eq!(
+            find("descendant-file-count:>=5 folder:"),
+            [r"C:\Users", r"C:\Users\ann"]
+        );
+        // Direct children and depth come from the parent links.
+        assert_eq!(find("child-file-count:5"), [r"C:\Users\ann"]);
+        assert_eq!(find("child:notes.txt"), [r"C:\Users\ann"]);
+        assert_eq!(find("depth:2 folder:"), [r"C:\Users\ann"]);
+        assert_eq!(find("file-id:12"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(find("parent-file-id:20"), [r"C:\Windows\report.pdf"]);
+        assert_eq!(
+            find("sibling:notes.txt report"),
+            [
+                r"C:\Users\ann\Report 2026.PDF",
+                r"C:\Users\ann\my report.docx",
+                r"C:\Users\ann\report",
+                r"C:\Users\ann\report.pdf",
+                r"C:\Users\ann\reportage",
+            ]
+        );
+        // Set functions run over the whole result.
+        assert_eq!(find("dupe:name"), [r"C:\Users\ann\report.pdf", r"C:\Windows\report.pdf"]);
     }
 
     #[test]

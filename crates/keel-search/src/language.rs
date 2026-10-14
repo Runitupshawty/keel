@@ -152,7 +152,14 @@ fn literal(expr: &Expr) -> Option<&str> {
     conjuncts(expr, &mut terms);
     terms
         .into_iter()
-        .filter(|t| t.function.is_none() && t.modifiers.is_empty() && t.items.len() == 1)
+        .filter(|t| {
+            t.function.is_none()
+                && t.items.len() == 1
+                // `file:` and `folder:` filter by type; they do not change how text matches.
+                && t.modifiers
+                    .iter()
+                    .all(|m| matches!(m, Modifier::File | Modifier::Folder))
+        })
         .map(|t| t.items[0].text.as_str())
         .filter(|s| {
             !s.is_empty()

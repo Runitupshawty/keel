@@ -65,10 +65,24 @@ fn sql_term(term: &Term, text: &str, now: i64, offset: i64) -> Result<Option<Lib
     }
     match LibraryQuery::parse_sql_terms(raw, now, offset) {
         Ok(q) => Ok(Some(q)),
-        // Shared size/date constants not in the old SQL subset use the evaluator.
-        Err(_) if matches!(key.as_deref(), Some("size" | "dm" | "datemodified")) => Ok(None),
+        // A word the old subset has no meaning for (`size:huge`, `dm:thisweek`) is one of
+        // the shared language's constants: the evaluator reads it. A malformed number or
+        // date (`dm:2026-13`) stays the error it always was.
+        Err(_) if named_value(key.as_deref(), term) => Ok(None),
         Err(e) => Err(e.context(format!("search term at {}", term.span.start))),
     }
+}
+
+/// `size:` or a date term whose values all start with a letter (after any comparison):
+/// constants such as `huge` or `lastweek`, not numbers or dates.
+fn named_value(key: Option<&str>, term: &Term) -> bool {
+    matches!(key, Some("size" | "dm" | "datemodified" | "modified"))
+        && !term.items.is_empty()
+        && term.items.iter().all(|i| {
+            i.text
+                .trim_start_matches(['<', '>', '=', '!'])
+                .starts_with(|c: char| c.is_ascii_alphabetic())
+        })
 }
 
 fn compile_native(term: &Term, ast: &Ast, opts: &Options) -> Result<keel_query::Query> {
@@ -449,7 +463,7 @@ mod tests {
         let lib = Library::open(data.path(), "query").unwrap();
         let src = lib.source(&lib.add_source(folder("Fixture", files.path())).unwrap()).unwrap();
         walk(&src, &lib.router()).unwrap();
-        let mut q = LibraryQuery::parse("ext:txt !regex:^item(?:0|1[0-8])", 0).unwrap();
+        let mut q = LibraryQuery::parse("ext:txt !regex:\"^item(?:0|1[0-8])\"", 0).unwrap();
         q.max = 1;
         let hits = lib.search(&q).unwrap();
         assert_eq!(hits.len(), 1);

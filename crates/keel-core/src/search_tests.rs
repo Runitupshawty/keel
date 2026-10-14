@@ -266,7 +266,7 @@ fn library_searcher_adapter() {
     assert!(hits[0].modified.is_some());
     assert!(searcher
         .query(&keel_search::Query {
-            text: "size:huge".into(),
+            text: "size:wat".into(),
             ..keel_search::Query::default()
         })
         .is_err());

@@ -303,6 +303,26 @@ fn searching_a_list() {
     assert_eq!(names(&s, "in:/other"), ["notes.txt"]);
     assert_eq!(names(&s, "annual pdf"), ["annual report.PDF"]);
     assert!(names(&s, "missing").is_empty());
+    // The shared search language: operators, and the list's sizes, dates and attributes.
+    assert_eq!(
+        names(&s, "ext:txt | ext:pdf size:>15"),
+        ["annual report.PDF", "notes.txt"]
+    );
+    assert_eq!(
+        names(&s, "file: size:<=20"),
+        ["annual report.PDF", "report.pdf"]
+    );
+    assert_eq!(names(&s, "dm:2024"), ["report.pdf"]);
+    assert_eq!(names(&s, "attrib:D"), ["Reports"]);
+    assert_eq!(names(&s, "<report | notes> !pdf"), ["report", "Reports", "notes.txt"]);
+    assert!(s
+        .query(&Query {
+            text: "<report".into(),
+            ..Query::default()
+        })
+        .unwrap_err()
+        .to_string()
+        .ends_with("(at 0)"));
     // An empty query lists everything.
     assert_eq!(names(&s, "").len(), 5);
     let case = Query {
