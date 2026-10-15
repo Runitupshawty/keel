@@ -111,7 +111,8 @@ fn main() -> ExitCode {
     }
     // PDF previews (`preview.render`, the web client): pdfium next to this executable,
     // where the release archives and the build's deps step put it, as for the window.
-    if let Ok(exe) = std::env::current_exe() {
+    // Resolved, as ~/.local/bin/keel-daemon is a symlink.
+    if let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) {
         if let Some(dir) = exe.parent() {
             keel_preview::init_pdfium(dir);
         }

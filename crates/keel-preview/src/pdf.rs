@@ -139,6 +139,7 @@ pub fn pdf_text_child() {
         std::process::exit(64);
     };
     if let Some(dir) = std::env::current_exe()
+        .and_then(|e| e.canonicalize())
         .ok()
         .as_deref()
         .and_then(Path::parent)

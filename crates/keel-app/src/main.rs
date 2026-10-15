@@ -148,8 +148,9 @@ fn main() -> eframe::Result<()> {
     let request = cli.request();
     // --- end Task 24 ---
     // pdfium sits next to the executable (copied there by build.rs); a
-    // command's library reads PDF text with it too (Task 62).
-    if let Ok(exe) = std::env::current_exe() {
+    // command's library reads PDF text with it too (Task 62). Resolved: Keel.app's
+    // executable and ~/.local/bin/keel are symlinks into the folder pdfium is in.
+    if let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) {
         if let Some(dir) = exe.parent() {
             keel_preview::init_pdfium(dir);
         }
