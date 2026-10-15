@@ -1610,16 +1610,19 @@ fn command_palette_every_command() {
         let before = fingerprint(s(&h));
         key(&mut h, CMD_SHIFT, Key::P);
         type_text(&mut h, &label);
-        // The palette lists a selection's commands once the listing has settled: poll.
+        // The palette lists a selection's commands once the listing has settled: poll until
+        // the row stands still for a frame, else the click can land where it no longer is.
         let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut last: Vec<Pos2> = Vec::new();
         let found: Vec<Pos2> = loop {
             let found: Vec<Pos2> = h
                 .query_all_by_label(&label)
                 .map(|n| center_of(&n))
                 .collect();
-            if !found.is_empty() || std::time::Instant::now() > end {
+            if (!found.is_empty() && found == last) || std::time::Instant::now() > end {
                 break found;
             }
+            last = found;
             h.step();
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
