@@ -1347,7 +1347,12 @@ impl Props for EntryProps<'_> {
     }
 
     fn attributes(&self) -> Option<u32> {
-        Some(self.info().attributes)
+        let dir = if self.entry().is_dir {
+            keel_query::attr::DIRECTORY
+        } else {
+            0
+        };
+        Some(self.info().attributes | dir)
     }
 
     fn file_id(&self) -> Option<u64> {
