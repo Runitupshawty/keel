@@ -148,8 +148,10 @@ pub fn link(data: &[u8]) {
         };
         if let Some(path) = path {
             let p = path.to_string_lossy();
-            assert!(!p.starts_with("//") && !p.starts_with(r"\\"), "{p}");
-            assert!(!p.split(['/', '\\']).any(|c| c == ".."), "{p}");
+            // A backslash separates only on Windows; on Unix it is part of a name.
+            let sep = |c: char| c == '/' || (windows && c == '\\');
+            assert!(!(p.starts_with(sep) && p[1..].starts_with(sep)), "{p}");
+            assert!(!p.split(sep).any(|c| c == ".."), "{p}");
         }
         // Encoding can make the URL longer than the link's limit; below it, it reads back.
         let url = link.to_url();

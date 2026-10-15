@@ -403,7 +403,10 @@ mod tests {
 
     #[test]
     fn launches_are_recorded_not_started() {
-        let path = std::env::temp_dir().join("keel-headless-launch.txt");
+        // Linux reveals the parent folder, so the folder carries the marker too.
+        let path = std::env::temp_dir()
+            .join("keel-headless-launch")
+            .join("launch.txt");
         open(&path).unwrap();
         reveal(&path).unwrap();
         open_with("keel-headless-editor", std::slice::from_ref(&path)).unwrap();

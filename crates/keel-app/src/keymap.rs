@@ -347,6 +347,12 @@ const HIDDEN: &[&str] = if cfg!(target_os = "macos") {
     &["Ctrl+H"]
 };
 
+/// The ids of the commands `commands()` registers only on some platforms (the NTFS
+/// compression is Windows-only): the i18n `[command]` tables translate them for every
+/// platform, so the key tests accept them where `commands()` lacks them.
+#[cfg(test)]
+pub const PLATFORM_ONLY_COMMANDS: &[&str] = &["file.compress_ntfs"];
+
 /// Every command, in the palette's order (context ones first, then the global ones), then
 /// the keys the palette does not list.
 pub fn commands() -> Vec<Command> {
