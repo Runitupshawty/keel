@@ -46,6 +46,8 @@ impl Hover {
         if self.at.as_ref().map(|(p, _)| p) != Some(&e.path) {
             self.at = Some((e.path.clone(), Instant::now()));
             self.dismissed = false;
+            // Fresh file: a preview that left the shared cache is re-requested.
+            self.asked = None;
         }
         let interrupted = ctx.input(|i| {
             i.pointer.any_down()
@@ -145,5 +147,44 @@ impl Hover {
                 });
             });
         self.shown = Some(e.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preview_panel::PreviewPanel;
+    use crate::tab::test_entry;
+
+    /// The "asked once" guard must not survive the file leaving the preview
+    /// cache: landing back on a file whose preview was evicted (or wiped by
+    /// `PreviewPanel::reset` on crash-recovery / profile switch) re-requests it.
+    #[test]
+    fn relanding_on_a_missing_preview_rerequests_it() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (jobs, rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(jobs);
+        let ctx = egui::Context::default();
+        let a = test_entry(&dir, "a.png", Kind::File, 10);
+        let mut hover = Hover::default();
+
+        // Land on `a`: not cached, so it is requested once.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(rx.try_recv().is_ok(), "first landing requests the preview");
+        while rx.try_recv().is_ok() {} // drain
+
+        // The shared cache loses the preview (LRU eviction / reset on crash
+        // recovery or profile switch), and the pointer moves off the row.
+        panel.reset();
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+
+        // Landing back on `a` must re-request the now-missing preview.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(
+            rx.try_recv().is_ok(),
+            "relanding on a file that left the cache re-requests its preview"
+        );
     }
 }
