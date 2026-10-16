@@ -702,10 +702,14 @@ fn sizes_view_and_calculate_sizes() {
     }
     sm(&mut h).run(0, Action::Navigate(VPath::local(dir.join("many"))));
     assert!(wait(&mut h, 10, &listed));
+    // The walk can finish 400 small folders before the cancel on a busy machine: it waits
+    // for the gate until the cancel is set.
+    let gate = crate::jobs::JOB_GATE.lock();
     sm(&mut h).run(0, Action::CalculateSizes { fresh: true });
     let job = s(&h).jobs.list.last().unwrap();
     assert!(job.title.starts_with("Calculating sizes"), "{}", job.title);
     job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    drop(gate);
     assert!(wait(&mut h, 20, &job_done));
     let cancelled = s(&h).jobs.list.last().unwrap();
     assert!(

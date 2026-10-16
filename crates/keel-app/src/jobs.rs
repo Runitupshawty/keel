@@ -551,6 +551,8 @@ impl Jobs {
         });
         let ctx = self.ctx.clone();
         let started = spawn("keel-job", move || {
+            #[cfg(test)]
+            drop(JOB_GATE.lock());
             let last = Cell::new(None::<Instant>);
             // The newest report held back by the throttle; sent before JobDone so the
             // final counts (skipped items) always arrive.
@@ -992,6 +994,11 @@ pub fn spawn_plan(
     }
     started
 }
+
+/// Held by a test while it cancels a job it just started: the job's work waits for it,
+/// so the cancel lands before a quick job could finish.
+#[cfg(test)]
+pub static JOB_GATE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// `spawn_plan` threads not yet done, in this process: a walkthrough waits for them before
 /// it resets the window, since their answer can open a dialog afterwards.
