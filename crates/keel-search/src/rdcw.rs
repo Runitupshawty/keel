@@ -1,6 +1,8 @@
 //! A ReadDirectoryChangesW watcher with a chosen buffer size (the `notify` crate's is
 //! fixed at 16 KiB) that reports an overflowed buffer, so the index can rescan instead
-//! of silently missing changes. One thread per watched folder, blocking reads.
+//! of silently missing changes. One thread per watched folder. The first read is queued
+//! (overlapped) before `watch` returns: Windows records a folder's changes only from the
+//! first read on, so a change made right after `watch` is never missed.
 
 use std::ffi::c_void;
 use std::fs::File;
@@ -16,9 +18,12 @@ use std::time::{Duration, Instant};
 const FILE_LIST_DIRECTORY: u32 = 0x1;
 const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 /// File and folder names, attributes, size, last write and creation.
 const FILTER: u32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x40;
 const ERROR_INVALID_PARAMETER: i32 = 87;
+/// A read finished with more changes than its buffer held.
+const ERROR_NOTIFY_ENUM_DIR: i32 = 1022;
 /// The largest buffer a network share accepts.
 const NETWORK_MAX: usize = 64 * 1024;
 pub const MIN_BUFFER: usize = 4 * 1024;
@@ -37,6 +42,73 @@ extern "system" {
         routine: *mut c_void,
     ) -> i32;
     fn CancelIoEx(file: *mut c_void, overlapped: *mut c_void) -> i32;
+    fn GetOverlappedResult(
+        file: *mut c_void,
+        overlapped: *mut Overlapped,
+        transferred: *mut u32,
+        wait: i32,
+    ) -> i32;
+}
+
+/// OVERLAPPED; no event: one read at a time, so the wait is on the folder handle.
+#[repr(C)]
+struct Overlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    event: *mut c_void,
+}
+
+/// A read's buffer and OVERLAPPED, both on the heap: they stay put while a read is queued.
+struct Read {
+    /// u64 words: the buffer must be DWORD-aligned.
+    buf: Vec<u64>,
+    len: usize,
+    ov: Box<Overlapped>,
+}
+
+// SAFETY: `ov.event` is always null; the buffer and OVERLAPPED move between threads only
+// while no read is queued or with the read queued on them (heap addresses do not move).
+unsafe impl Send for Read {}
+
+impl Read {
+    /// Queues the next read; a share that refuses the buffer size gets 64 KiB.
+    fn arm(&mut self, dir: &File) -> std::io::Result<()> {
+        loop {
+            *self.ov = Overlapped {
+                internal: 0,
+                internal_high: 0,
+                offset: 0,
+                offset_high: 0,
+                event: std::ptr::null_mut(),
+            };
+            // SAFETY: the handle is open; `buf` holds `len` bytes and, like `ov`, stays
+            // allocated until the read completes (the caller waits for it or cancels it).
+            let ok = unsafe {
+                ReadDirectoryChangesW(
+                    dir.as_raw_handle(),
+                    self.buf.as_mut_ptr().cast(),
+                    self.len as u32,
+                    1,
+                    FILTER,
+                    std::ptr::null_mut(),
+                    std::ptr::from_mut(&mut *self.ov).cast(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok != 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) && self.len > NETWORK_MAX {
+                self.len = NETWORK_MAX;
+                self.buf.truncate(self.len / 8);
+                continue;
+            }
+            return Err(error);
+        }
+    }
 }
 
 /// What a watch reports.
@@ -71,69 +143,96 @@ pub fn watch(
             .read(true)
             .access_mode(FILE_LIST_DIRECTORY)
             .share_mode(FILE_SHARE_ALL)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED)
             .open(root)?,
     );
     let stop = Arc::new(AtomicBool::new(false));
     let (thread_dir, thread_stop, root) = (dir.clone(), stop.clone(), root.to_path_buf());
+    // The thread starts first and takes the read once it is queued: a thread that cannot
+    // start never leaves a queued read on a freed buffer.
+    let (hand_over, take) = std::sync::mpsc::channel::<Read>();
     let thread = std::thread::Builder::new()
         .name("keel-watch".into())
         .spawn(move || {
-            let mut len = buffer.clamp(MIN_BUFFER, MAX_BUFFER);
-            // u64 words: the buffer must be DWORD-aligned.
-            let mut buf = vec![0u64; len / 8];
-            while !thread_stop.load(Relaxed) {
-                let mut returned = 0u32;
-                // SAFETY: the handle stays open while `thread_dir` lives; `buf` holds
-                // `len` bytes and outlives the synchronous call.
+            let Ok(mut read) = take.recv() else { return };
+            loop {
+                let mut got = 0u32;
+                // SAFETY: the handle stays open while `thread_dir` lives; `read.ov` is the
+                // queued read's OVERLAPPED.
                 let ok = unsafe {
-                    ReadDirectoryChangesW(
-                        thread_dir.as_raw_handle(),
-                        buf.as_mut_ptr().cast(),
-                        len as u32,
-                        1,
-                        FILTER,
-                        &mut returned,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                    )
+                    GetOverlappedResult(thread_dir.as_raw_handle(), &mut *read.ov, &mut got, 1)
                 };
                 if thread_stop.load(Relaxed) {
                     break;
                 }
-                if ok == 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) && len > NETWORK_MAX {
-                        len = NETWORK_MAX;
-                        buf.truncate(len / 8);
-                        continue;
+                let error = (ok == 0).then(std::io::Error::last_os_error);
+                let bytes: Vec<u8> = match &error {
+                    None => (read.buf.iter())
+                        .flat_map(|w| w.to_ne_bytes())
+                        .take((got as usize).min(read.len))
+                        .collect(),
+                    Some(_) => Vec::new(),
+                };
+                // Queued again before the events go out; changes meanwhile are kept.
+                let rearmed = read.arm(&thread_dir);
+                match error {
+                    Some(e) if e.raw_os_error() != Some(ERROR_NOTIFY_ENUM_DIR) => {
+                        send(Event::Lost);
+                        if rearmed.is_ok() {
+                            // SAFETY: the handle is open; the read just queued is cancelled
+                            // and waited for before its buffer goes.
+                            unsafe {
+                                CancelIoEx(thread_dir.as_raw_handle(), std::ptr::null_mut());
+                                GetOverlappedResult(
+                                    thread_dir.as_raw_handle(),
+                                    &mut *read.ov,
+                                    &mut got,
+                                    1,
+                                );
+                            }
+                        }
+                        break;
                     }
+                    Some(_) => send(Event::Overflow),
+                    None if bytes.is_empty() => send(Event::Overflow),
+                    None => {
+                        let records: Vec<(u32, PathBuf)> = parse_actions(&bytes)
+                            .into_iter()
+                            .map(|(action, name)| {
+                                (action, root.join(std::ffi::OsString::from_wide(&name)))
+                            })
+                            .collect();
+                        let renames = rename_pairs(&records);
+                        let paths: Vec<PathBuf> = records.into_iter().map(|(_, p)| p).collect();
+                        if !paths.is_empty() {
+                            send(Event::Paths(paths));
+                        }
+                        if !renames.is_empty() {
+                            send(Event::Renamed(renames));
+                        }
+                    }
+                }
+                if rearmed.is_err() {
                     send(Event::Lost);
                     break;
                 }
-                if returned == 0 {
-                    send(Event::Overflow);
-                    continue;
-                }
-                let bytes: Vec<u8> = buf
-                    .iter()
-                    .flat_map(|w| w.to_ne_bytes())
-                    .take((returned as usize).min(len))
-                    .collect();
-                let records: Vec<(u32, PathBuf)> = parse_actions(&bytes)
-                    .into_iter()
-                    .map(|(action, name)| (action, root.join(std::ffi::OsString::from_wide(&name))))
-                    .collect();
-                let renames = rename_pairs(&records);
-                let paths: Vec<PathBuf> = records.into_iter().map(|(_, p)| p).collect();
-                if !paths.is_empty() {
-                    send(Event::Paths(paths));
-                }
-                if !renames.is_empty() {
-                    send(Event::Renamed(renames));
-                }
             }
         })?;
+    let len = buffer.clamp(MIN_BUFFER, MAX_BUFFER);
+    let mut read = Read {
+        buf: vec![0u64; len / 8],
+        len,
+        ov: Box::new(Overlapped {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            event: std::ptr::null_mut(),
+        }),
+    };
+    // On error `hand_over` drops with nothing queued and the thread ends.
+    read.arm(&dir)?;
+    let _ = hand_over.send(read);
     Ok(Watch {
         dir,
         stop,
@@ -147,7 +246,7 @@ impl Drop for Watch {
         let Some(thread) = self.thread.take() else {
             return;
         };
-        // The thread may be about to enter the blocking read: cancel until it is out.
+        // Cancel the queued read until the thread is out of its wait.
         let end = Instant::now() + Duration::from_secs(2);
         while !thread.is_finished() && Instant::now() < end {
             // SAFETY: the handle is open (this struct holds the file).
@@ -298,12 +397,12 @@ mod tests {
             let _ = tx.send(e);
         })
         .unwrap();
+        // Written once, right away: the first read is queued before `watch` returns.
+        std::fs::write(root.join("sub").join("new.txt"), b"x").unwrap();
         let mut seen = Vec::new();
         let end = Instant::now() + Duration::from_secs(10);
         while !seen.contains(&root.join("sub").join("new.txt")) {
             assert!(Instant::now() < end, "no event, got {seen:?}");
-            // Changes before the thread's first read are not reported: write until seen.
-            std::fs::write(root.join("sub").join("new.txt"), b"x").unwrap();
             if let Ok(Event::Paths(p)) = rx.recv_timeout(Duration::from_millis(100)) {
                 seen.extend(p);
             }

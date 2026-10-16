@@ -702,10 +702,14 @@ fn sizes_view_and_calculate_sizes() {
     }
     sm(&mut h).run(0, Action::Navigate(VPath::local(dir.join("many"))));
     assert!(wait(&mut h, 10, &listed));
+    // The walk can finish 400 small folders before the cancel on a busy machine: it waits
+    // for the gate until the cancel is set.
+    let gate = crate::jobs::JOB_GATE.lock();
     sm(&mut h).run(0, Action::CalculateSizes { fresh: true });
     let job = s(&h).jobs.list.last().unwrap();
     assert!(job.title.starts_with("Calculating sizes"), "{}", job.title);
     job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    drop(gate);
     assert!(wait(&mut h, 20, &job_done));
     let cancelled = s(&h).jobs.list.last().unwrap();
     assert!(
@@ -1557,10 +1561,18 @@ fn command_palette_every_command() {
         Action::NewWindow,
     ];
     let mut ran = 0;
+    let mut prev = String::new();
     for (label, action) in items {
         if launches.contains(&action) {
             continue;
         }
+        // The last command's planning thread (an extract, a paste) answers later, under load
+        // after the reset below: its conflict dialog then took the palette's keys and click.
+        let planned = wait(&mut h, 20, &|_| {
+            crate::jobs::PLANS.load(std::sync::atomic::Ordering::SeqCst) == 0
+        });
+        assert!(planned, "{prev:?}: its planning finishes");
+        h.run_steps(2);
         // A clean start: one pane on `a` (except Back / Forward: the history), two panes,
         // nothing open.
         {
@@ -1626,14 +1638,48 @@ fn command_palette_every_command() {
             h.step();
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
-        let at = *found.last().unwrap_or_else(|| panic!("{label:?} listed"));
+        let at = *found
+            .last()
+            .unwrap_or_else(|| panic!("{label:?} listed\n{}", palette_diag(&h, Pos2::ZERO, &prev)));
+        let diag = palette_diag(&h, at, &prev);
         click_at(&mut h, at, NONE, PointerButton::Primary);
-        assert!(!s(&h).palette.open, "{label}: the palette closes");
+        assert!(
+            !s(&h).palette.open,
+            "{label}: the palette closes\nbefore click: {diag}\nafter: {}",
+            palette_diag(&h, at, &prev)
+        );
+        prev = label.clone();
         let changed = wait(&mut h, 10, &|s| fingerprint(s) != before);
         assert!(changed, "{label:?} did nothing visible");
         ran += 1;
     }
     assert!(ran > 45, "{ran} commands run");
+}
+
+/// What might stand over the palette when a click on its row misses (CI flake hunt).
+fn palette_diag(h: &H, at: Pos2, prev: &str) -> String {
+    let st = s(h);
+    let (top, under, area) = st.ctx.memory(|m| {
+        let area = m.area_rect(egui::Id::new("keel-palette"));
+        (m.top_modal_layer(), m.layer_id_at(at), area)
+    });
+    let found: Vec<Pos2> = (h.query_all_by_label(&st.palette.text))
+        .map(|n| center_of(&n))
+        .collect();
+    let toasts: Vec<_> = st.toasts.list.iter().map(|t| t.text.clone()).collect();
+    format!(
+        "prev={prev:?} at={at:?} found={found:?} palette_rect={area:?} top_modal={top:?} \
+         layer_at={under:?} dialog={} settings={} jump={} info_windows={} toasts={toasts:?} \
+         focus={:?} text={:?} shown={} selected={}",
+        st.dialog.is_some(),
+        st.settings_open,
+        st.jump.open,
+        st.info.windows.len(),
+        st.ctx.memory(|m| m.focused()),
+        st.palette.text,
+        st.palette.shown.len(),
+        st.tab(0).selected.len(),
+    )
 }
 
 /// Settings → Keyboard (Phase 16 Task 76): Record a key for a command and use it; a key
