@@ -1562,6 +1562,13 @@ fn command_palette_every_command() {
         if launches.contains(&action) {
             continue;
         }
+        // The last command's planning thread (an extract, a paste) answers later, under load
+        // after the reset below: its conflict dialog then took the palette's keys and click.
+        let planned = wait(&mut h, 20, &|_| {
+            crate::jobs::PLANS.load(std::sync::atomic::Ordering::SeqCst) == 0
+        });
+        assert!(planned, "{prev:?}: its planning finishes");
+        h.run_steps(2);
         // A clean start: one pane on `a` (except Back / Forward: the history), two panes,
         // nothing open.
         {

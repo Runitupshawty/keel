@@ -956,7 +956,11 @@ pub fn spawn_plan(
     tx: Sender<Msg>,
     ctx: egui::Context,
 ) -> bool {
-    spawn("keel-plan", move || {
+    #[cfg(test)]
+    PLANS.fetch_add(1, Ordering::SeqCst);
+    let started = spawn("keel-plan", move || {
+        #[cfg(test)]
+        let _done = PlanDone;
         let from_clipboard = matches!(
             source,
             Source::Clipboard(_)
@@ -981,7 +985,28 @@ pub fn spawn_plan(
                 },
             );
         }
-    })
+    });
+    #[cfg(test)]
+    if !started {
+        PLANS.fetch_sub(1, Ordering::SeqCst);
+    }
+    started
+}
+
+/// `spawn_plan` threads not yet done, in this process: a walkthrough waits for them before
+/// it resets the window, since their answer can open a dialog afterwards.
+#[cfg(test)]
+pub static PLANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a plan thread done once it has sent its answer (also when it panicked).
+#[cfg(test)]
+struct PlanDone;
+
+#[cfg(test)]
+impl Drop for PlanDone {
+    fn drop(&mut self) {
+        PLANS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// A caught panic's message.
