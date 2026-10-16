@@ -1582,7 +1582,9 @@ fn a_change_feed_brings_creates_changes_and_removes_without_a_walk() {
     mem.put("/elsewhere/y.txt", "not ours");
     // The poller saves the cursor after it applies a page, and a poll can land between the
     // puts above: wait for the cursor past all four changes, not only their records.
-    eventually("cursor advanced", || cursor_of(&src).as_deref() == Some("8"));
+    eventually("cursor advanced", || {
+        cursor_of(&src).as_deref() == Some("8")
+    });
     assert!(id_of(&src, "d/e/new.txt").is_some());
     assert!(id_of(&src, "gone.txt").is_none());
     assert_eq!(size_of(&src, "a.txt"), Some(7));
