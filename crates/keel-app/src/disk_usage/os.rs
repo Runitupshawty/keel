@@ -1,15 +1,16 @@
-//! What the scan does not keep, asked of the OS on a worker: an item's owner and its last
-//! access and creation times (metadata only, never the file's contents), and the
-//! description the OS gives a file extension (Windows `AssocQueryStringW`, macOS UTType,
-//! Linux shared-mime-info).
+//! What the scan does not keep, asked of the OS on a worker: an item's owner (named through
+//! [`Owners`]' cache, once per SID or user id) and its last access and creation times
+//! (metadata only, never the file's contents), and the description the OS gives a file
+//! extension (Windows `AssocQueryStringW`, macOS UTType, Linux shared-mime-info).
 
 use super::model::Metadata;
+use keel_vfs::du::owner::Owners;
 use std::collections::HashMap;
 use std::path::Path;
 
 /// The owner and times of `path` (the link itself for a link). Empty when it cannot be
 /// read.
-pub fn metadata(path: &Path) -> Metadata {
+pub fn metadata(path: &Path, owners: &Owners) -> Metadata {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Metadata::default();
     };
@@ -19,7 +20,7 @@ pub fn metadata(path: &Path) -> Metadata {
             .and_then(|d| i64::try_from(d.as_nanos()).ok())
     };
     Metadata {
-        owner: owner(path, &meta),
+        owner: owners.owner(path),
         accessed: time(meta.accessed()),
         created: time(meta.created()),
     }
@@ -34,8 +35,6 @@ pub fn descriptions<'a>(exts: impl IntoIterator<Item = &'a str>) -> HashMap<Stri
 
 #[cfg(windows)]
 mod win {
-    use std::ffi::c_void;
-
     #[link(name = "shlwapi")]
     extern "system" {
         fn AssocQueryStringW(
@@ -48,38 +47,8 @@ mod win {
         ) -> i32;
     }
 
-    #[link(name = "advapi32")]
-    extern "system" {
-        fn GetNamedSecurityInfoW(
-            name: *const u16,
-            kind: i32,
-            info: u32,
-            owner: *mut *mut c_void,
-            group: *mut *mut c_void,
-            dacl: *mut *mut c_void,
-            sacl: *mut *mut c_void,
-            descriptor: *mut *mut c_void,
-        ) -> u32;
-        fn LookupAccountSidW(
-            system: *const u16,
-            sid: *const c_void,
-            name: *mut u16,
-            name_len: *mut u32,
-            domain: *mut u16,
-            domain_len: *mut u32,
-            kind: *mut i32,
-        ) -> i32;
-    }
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn LocalFree(memory: *mut c_void) -> *mut c_void;
-    }
-
     const ASSOCF_NOTRUNCATE: u32 = 0x20;
     const ASSOCSTR_FRIENDLYDOCNAME: u32 = 3;
-    const SE_FILE_OBJECT: i32 = 1;
-    const OWNER_SECURITY_INFORMATION: u32 = 1;
 
     /// The registered type name of `.ext` ("Text Document"), None when unregistered.
     pub fn description(ext: &str) -> Option<String> {
@@ -104,87 +73,6 @@ mod win {
         let text = text.trim();
         (!text.is_empty()).then(|| text.to_owned())
     }
-
-    /// `DOMAIN\user` owning `path`.
-    pub fn owner(path: &std::path::Path) -> Option<String> {
-        use std::os::windows::ffi::OsStrExt;
-        let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let (mut sid, mut descriptor) = (std::ptr::null_mut(), std::ptr::null_mut());
-        // SAFETY: `name` is NUL-terminated; the out pointers are valid or null; the
-        // descriptor the OS allocates is freed below.
-        let status = unsafe {
-            GetNamedSecurityInfoW(
-                name.as_ptr(),
-                SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION,
-                &mut sid,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut descriptor,
-            )
-        };
-        if status != 0 {
-            return None;
-        }
-        let mut user = vec![0u16; 256];
-        let mut domain = vec![0u16; 256];
-        let (mut ul, mut dl, mut kind) = (user.len() as u32, domain.len() as u32, 0);
-        // SAFETY: `sid` points into `descriptor`, still alive; the buffers match their
-        // lengths.
-        let ok = unsafe {
-            LookupAccountSidW(
-                std::ptr::null(),
-                sid,
-                user.as_mut_ptr(),
-                &mut ul,
-                domain.as_mut_ptr(),
-                &mut dl,
-                &mut kind,
-            )
-        };
-        // SAFETY: the descriptor GetNamedSecurityInfoW allocated, freed once.
-        unsafe { LocalFree(descriptor) };
-        if ok == 0 || ul as usize > user.len() || dl as usize > domain.len() {
-            return None;
-        }
-        let user = String::from_utf16_lossy(&user[..ul as usize]);
-        let domain = String::from_utf16_lossy(&domain[..dl as usize]);
-        Some(if domain.is_empty() {
-            user
-        } else {
-            format!("{domain}\\{user}")
-        })
-    }
-}
-
-#[cfg(windows)]
-fn owner(path: &Path, _: &std::fs::Metadata) -> Option<String> {
-    win::owner(path)
-}
-
-#[cfg(unix)]
-fn owner(_: &Path, meta: &std::fs::Metadata) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    let uid = meta.uid();
-    Some(user_name(uid).unwrap_or_else(|| uid.to_string()))
-}
-
-/// The login name of `uid` from `/etc/passwd` (no NSS lookup).
-#[cfg(unix)]
-fn user_name(uid: u32) -> Option<String> {
-    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-    passwd.lines().find_map(|line| {
-        let mut parts = line.split(':');
-        let name = parts.next()?;
-        let id = parts.nth(1)?.parse::<u32>().ok()?;
-        (id == uid).then(|| name.to_owned())
-    })
-}
-
-#[cfg(not(any(windows, unix)))]
-fn owner(_: &Path, _: &std::fs::Metadata) -> Option<String> {
-    None
 }
 
 #[cfg(windows)]

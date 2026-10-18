@@ -708,6 +708,8 @@ pub enum Page {
     /// Phase 15: the folders and volumes Keel's own index walks, and its Exclude rules.
     SearchIndex,
     Cleanups,
+    /// Task 76: every setting, import, export and reset.
+    Advanced,
 }
 
 /// Settings → Appearance (Task 64): the style and the accent color. The look follows
@@ -791,7 +793,7 @@ fn appearance_page(ui: &mut egui::Ui, s: &mut Settings) {
 }
 
 /// The Settings window (Ctrl+,): General, Appearance, Remotes, Cloud, Profiles, Icons,
-/// Library, Devices and Keyboard pages.
+/// Library, Devices, Keyboard, Search index, Search, Cleanups and Advanced pages.
 /// Returns true when the theme was changed.
 #[allow(clippy::too_many_arguments)]
 pub fn window(
@@ -811,6 +813,7 @@ pub fn window(
     keyboard: &mut crate::keymap::KeymapUi, // Phase 16 Task 76
     find: &mut Vec<crate::bookmarks::FindCmd>, // Task 76
     search: &mut crate::search_settings::SearchPage,
+    advanced: &mut crate::settings_io::AdvancedUi, // Task 76
 ) -> bool {
     let mut theme_changed = false;
     // Recording a key: the press is the new key, and Esc only stops the recording.
@@ -819,7 +822,7 @@ pub fn window(
     }
     let recording = keyboard.recording.is_some();
     keyboard.capture(ctx, &mut s.keymap);
-    if !recording {
+    if !recording && !(remotes.page == Page::Advanced && advanced.editing()) {
         crate::a11y::esc_closes(ctx, "Settings", open);
     }
     // The id stays "Settings" in every language (window position, `esc_closes`).
@@ -843,6 +846,7 @@ pub fn window(
                     (Page::SearchIndex, "settings.search_index"),
                     (Page::Search, "settings.search"),
                     (Page::Cleanups, "settings.cleanups"),
+                    (Page::Advanced, "settings_io.advanced"),
                 ] {
                     ui.selectable_value(&mut remotes.page, page, tr(key));
                 }
@@ -860,6 +864,7 @@ pub fn window(
                     Page::Search => crate::bookmarks::settings_page(ui, s, find),
                     Page::SearchIndex => crate::search_settings::settings_page(ui, s, search),
                     Page::Cleanups => crate::cleanups::settings_page(ui, &mut s.cleanups),
+                    Page::Advanced => theme_changed |= advanced.page(ui, s),
                     _ => clouds.settings_page(ui, s, tx),
                 }
                 ui.add_space(4.0);
@@ -1019,6 +1024,7 @@ pub fn window(
                     ui.end_row();
                     // --- Task 76 ---
                     crate::search_tab::settings_rows(ui, &mut s.search, &mut s.quote_copied_paths);
+                    crate::search_columns::settings_rows(ui, &mut s.views.search);
                     if cfg!(windows) {
                         // --- Task 85 ---
                         ui.label(tr("settings.explorer_menu"));

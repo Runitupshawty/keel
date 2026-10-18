@@ -342,8 +342,10 @@ fn build(doc: DocIn) -> Result<Tree> {
             unreadable: doc.unreadable,
             excluded: doc.excluded,
             timed_out: doc.timed_out,
+            denied: 0,
         },
     };
     tree.recompute();
+    tree.info.denied = tree.count_denied();
     Ok(tree)
 }

@@ -37,6 +37,10 @@ pub struct Cli {
     /// with Keel" does.
     #[arg(long, value_name = "FOLDER", conflicts_with = "folder")]
     pub disk_usage: Option<PathBuf>,
+    /// Scan this folder or drive in the Disk Usage window (repeat it for several); the
+    /// window's "Relaunch elevated" starts Keel with it.
+    #[arg(long = "du-scan", value_name = "FOLDER", hide = true)]
+    pub du_scan: Vec<PathBuf>,
     /// Internal: the elevated NTFS index service (`keel_search::request_full_index`).
     #[arg(long, value_name = "DIR", hide = true)]
     pub index_service: Option<PathBuf>,
@@ -680,6 +684,10 @@ pub struct Request {
     /// Show `folder` in the Sizes view (`--disk-usage`).
     #[serde(default)]
     pub disk_usage: bool,
+    /// Folders and drives to scan in the Disk Usage window (`--du-scan`, absolute). Left
+    /// out of the wire format when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub du_scan: Vec<PathBuf>,
     /// Set by `checked`: the file in `folder` to select. Never sent.
     #[serde(skip)]
     pub select: Option<String>,
@@ -785,6 +793,9 @@ impl Cli {
             search: self.search.clone(),
             filelist: (self.filelist.as_ref()).and_then(|p| std::path::absolute(p).ok()),
             disk_usage: self.disk_usage.is_some(),
+            du_scan: (self.du_scan.iter())
+                .filter_map(|p| std::path::absolute(shell_arg(p)).ok())
+                .collect(),
             select: None,
         }
     }
@@ -871,6 +882,7 @@ const TAKE_VALUE: &[&str] = &[
     "--system-cleanup",
     "--cleanup-report",
     "--disk-usage",
+    "--du-scan",
     "--url",
 ];
 
@@ -959,6 +971,12 @@ impl AppState {
             if req.disk_usage {
                 self.run(p, Action::View(crate::pane::ViewMode::Sizes));
             }
+        }
+        // "Relaunch elevated" (`--du-scan`): the same scan in this window.
+        if !req.du_scan.is_empty() {
+            let roots = (req.du_scan.into_iter()).map(keel_vfs::du::Root::Path);
+            let cmd = crate::disk_usage::DuCmd::Scan(roots.collect());
+            self.run(p, Action::DiskUsage(cmd));
         }
         // Task 77: `--filelist FILE` (read on a worker, then a tab).
         if let Some(list) = req.filelist {
@@ -1262,6 +1280,7 @@ mod tests {
                 profile: None,
                 search: None,
                 disk_usage: None,
+                du_scan: Vec::new(),
                 index_service: None,
                 filelist: None,
                 install_service: false,
@@ -1413,6 +1432,28 @@ mod tests {
         let name = file.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(tab.dir, VPath::local(file.parent().unwrap()));
         assert!(tab.selected.contains(&name) && tab.cursor.as_ref() == Some(&name));
+    }
+
+    /// "Relaunch elevated": `--du-scan FOLDER` (repeatable) opens the Disk Usage window
+    /// scanning the folders.
+    #[test]
+    fn du_scan_scans_in_the_disk_usage_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let cli = parse(&["--new-window", "--du-scan", path, "--du-scan", path]).unwrap();
+        let req = cli.request();
+        assert_eq!(req.du_scan.len(), 2);
+        assert_eq!(req.du_scan[0], dir.path());
+        assert!(req.folder.is_none());
+        let ctx = egui::Context::default();
+        let start = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(ctx, std::sync::Arc::new(keel_vfs::Router::new()), start);
+        state.external(req);
+        assert!(state.disk_usage.open);
+        assert!(state.disk_usage.scanning().is_some());
+        // Left out of what is sent to a running Keel when not asked for.
+        let wire = serde_json::to_string(&Request::default()).unwrap();
+        assert!(!wire.contains("du_scan"), "{wire}");
     }
 
     /// Task 85: `--disk-usage FOLDER` (Explorer's "Analyze disk usage with Keel") opens

@@ -13,11 +13,22 @@
 //!   unregistered extensions grouped on request; double-click lists only that type in
 //!   the tree.
 //!
+//! - **File Watcher** ([`watcher`]): after a scan the folders are watched and what changes
+//!   is applied to the tree live; the **Changes** tab lists it.
+//! - **Owner** column: read for the rows shown only, names cached per account.
+//! - **Relaunch elevated** ([`elevate`]): offered when folders refused to be listed.
+//! - **Scan priority**: the CPU and I/O priority of the scan's threads (Options).
+//! - **Recent scans** ([`history`]): the previous scans, to run again.
+//! - A **Disk usage** view mode in a pane ([`view`]) shows the same tree list for the
+//!   pane's folder.
+//!
 //! Scans run with the scanner's safe defaults (links not followed, hard links counted
 //! once, cloud placeholders never read). A newer scan replaces an older one: the older
 //! one is cancelled and its result, should it still arrive, is dropped with its channel.
 
 pub mod chart;
+pub mod elevate;
+pub mod history;
 pub mod model;
 mod os;
 pub mod picker;
@@ -25,10 +36,13 @@ pub mod steps;
 #[cfg(test)]
 mod tests;
 pub mod ui;
+pub mod view;
+pub mod watcher;
 
 pub use model::{Column, FileType, Model};
 
-use keel_vfs::du::{self, NodeId, Root, ScanHandle, ScanOptions, Tree};
+use keel_vfs::du::owner::Owners;
+use keel_vfs::du::{self, NodeId, Priority, Root, ScanHandle, ScanOptions, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
@@ -63,16 +77,19 @@ pub enum Tab {
     Search,
     Storage,
     Permissions,
+    /// The File Watcher's change list.
+    Changes,
 }
 
 impl Tab {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Tree,
         Self::Largest,
         Self::Duplicates,
         Self::Search,
         Self::Storage,
         Self::Permissions,
+        Self::Changes,
     ];
 
     pub fn label(self) -> &'static str {
@@ -83,6 +100,7 @@ impl Tab {
             Self::Search => "Search",
             Self::Storage => "Storage analytics",
             Self::Permissions => "Permissions",
+            Self::Changes => crate::i18n::tr("disk_usage.changes_tab"),
         }
     }
 }
@@ -152,6 +170,12 @@ pub struct DuSettings {
     /// Each drive's free space and unknown space as tiles of the chart.
     pub chart_free: bool,
     pub chart_unknown: bool,
+    /// The CPU and I/O priority of scans.
+    pub priority: Priority,
+    /// Watch the scanned folders and apply their changes (the File Watcher).
+    pub watch: bool,
+    /// The previous scans, newest first.
+    pub history: Vec<history::Entry>,
 }
 
 impl Default for DuSettings {
@@ -172,6 +196,9 @@ impl Default for DuSettings {
             chart_options: Default::default(),
             chart_free: true,
             chart_unknown: true,
+            priority: Priority::Normal,
+            watch: true,
+            history: Vec::new(),
         }
     }
 }
@@ -219,13 +246,90 @@ struct Scanned {
 
 /// Owner and times read for some rows, on a worker.
 struct MetaFetch {
-    /// The scan these ids belong to.
+    /// The tree these ids belong to.
     generation: u64,
     rx: Receiver<Vec<(NodeId, model::Metadata)>>,
 }
 
 /// Rows read per metadata batch.
 const META_BATCH: usize = 200;
+
+/// Reads the owners and times of the rows shown (Owner, Last accessed, Created columns),
+/// a batch at a time on a worker; owners are named through one cache.
+#[derive(Default)]
+pub struct MetaReader {
+    /// The tree shown: a batch read for an older one is dropped.
+    generation: u64,
+    fetch: Option<MetaFetch>,
+    /// Rows asked for (this generation).
+    asked: HashSet<NodeId>,
+    owners: Arc<Owners>,
+}
+
+impl MetaReader {
+    /// A new tree is shown: what was asked is asked again.
+    pub fn reset(&mut self, generation: u64) {
+        self.generation = generation;
+        self.asked.clear();
+        self.fetch = None;
+    }
+
+    /// Reads the metadata of `rows` not read yet (one batch at a time).
+    pub fn want(&mut self, model: &Model, rows: impl IntoIterator<Item = NodeId>) {
+        if self.fetch.is_some() {
+            return;
+        }
+        let ids: Vec<NodeId> = (rows.into_iter())
+            .filter(|id| !self.asked.contains(id))
+            .take(META_BATCH)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.asked.extend(ids.iter().copied());
+        let jobs: Vec<(NodeId, std::path::PathBuf)> = (ids.into_iter())
+            .filter(|&id| !model.tree.on_device(id))
+            .filter_map(|id| Some((id, model.tree.path(id)?)))
+            .collect();
+        let (tx, rx) = channel();
+        let owners = self.owners.clone();
+        crate::worker::spawn("keel-du-meta", move || {
+            let batch = (jobs.into_iter())
+                .map(|(id, path)| (id, os::metadata(&path, &owners)))
+                .collect();
+            let _ = tx.send(batch);
+        });
+        self.fetch = Some(MetaFetch {
+            generation: self.generation,
+            rx,
+        });
+    }
+
+    /// Takes in a finished batch.
+    pub fn poll(&mut self, ctx: &egui::Context, model: Option<&mut Model>) {
+        let Some(m) = &self.fetch else { return };
+        match m.rx.try_recv() {
+            Ok(batch) => {
+                let current = m.generation == self.generation;
+                self.fetch = None;
+                if let Some(model) = model.filter(|_| current) {
+                    model.metadata.extend(batch);
+                    if model.sort.0.metadata() {
+                        model.rebuild();
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(100)),
+            Err(TryRecvError::Disconnected) => self.fetch = None,
+        }
+    }
+
+    /// Owner names looked up so far (each once).
+    #[cfg(test)]
+    pub fn owner_lookups(&self) -> u64 {
+        self.owners.cache.lookups()
+    }
+}
 
 #[derive(Default)]
 pub struct DiskUsage {
@@ -244,11 +348,17 @@ pub struct DiskUsage {
     types: Vec<FileType>,
     /// Each extension's row in `types` (its color rank).
     ranks: HashMap<String, usize>,
-    /// Bumped per scan shown: metadata read for an older one is dropped.
+    /// Bumped per tree shown (a scan, or the File Watcher's changes): the chart is built
+    /// again, metadata read for an older tree is dropped.
     generation: u64,
-    meta: Option<MetaFetch>,
-    /// Rows whose metadata was asked for (this generation).
-    meta_asked: HashSet<NodeId>,
+    /// Bumped per scan shown (the File Watcher's batches belong to one).
+    scan_id: u64,
+    pub meta: MetaReader,
+    /// The File Watcher.
+    pub watch: watcher::FileWatch,
+    /// The scan priority and whether to watch, as last set (`ui::window` copies them from
+    /// the settings each frame).
+    pub priority: Priority,
     /// Scroll the tree to the cursor next frame.
     pub scroll_tree: bool,
     /// Scroll the file types list to its selected row next frame.
@@ -308,8 +418,12 @@ impl DiskUsage {
         let handle = ScanHandle::new();
         let (tx, rx) = channel();
         let (h, r) = (handle.clone(), roots.clone());
+        let options = ScanOptions {
+            priority: self.priority,
+            ..ScanOptions::default()
+        };
         crate::worker::spawn("keel-du-scan", move || {
-            let result = du::scan(&r, &ScanOptions::default(), &h).map(|tree| {
+            let result = du::scan(&r, &options, &h).map(|tree| {
                 let descriptions = os::descriptions(tree.exts().iter().map(|e| &**e));
                 Scanned { tree, descriptions }
             });
@@ -346,9 +460,10 @@ impl DiskUsage {
         }
     }
 
-    /// Takes in a finished scan and finished metadata reads. Called every frame the
-    /// window is open; repaints while a scan runs.
-    pub fn poll(&mut self, ctx: &egui::Context, settings: &DuSettings) {
+    /// Takes in a finished scan, finished metadata reads and the File Watcher's changes.
+    /// Called every frame; repaints while a scan runs.
+    pub fn poll(&mut self, ctx: &egui::Context, settings: &mut DuSettings) {
+        self.priority = settings.priority;
         if let Some(s) = &self.scan {
             match s.rx.try_recv() {
                 Ok(result) => {
@@ -365,25 +480,29 @@ impl DiskUsage {
                 }
             }
         }
-        if let Some(m) = &self.meta {
-            match m.rx.try_recv() {
-                Ok(batch) => {
-                    let current = m.generation == self.generation;
-                    self.meta = None;
-                    if let Some(model) = self.model.as_mut().filter(|_| current) {
-                        model.metadata.extend(batch);
-                        if model.sort.0.metadata() {
-                            model.rebuild();
-                        }
-                    }
+        self.meta.poll(ctx, self.model.as_mut());
+        if !settings.watch && (self.watch.watching() || self.watch.starting()) {
+            self.watch.stop();
+        } else if settings.watch && !self.watch.watching() && !self.watch.starting() {
+            if let Some(m) = &self.model {
+                // Turned on after the scan: watch it from now.
+                if self.watch.error.is_none() {
+                    self.watch.start(watch_roots(&m.tree), self.scan_id);
                 }
-                Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(100)),
-                Err(TryRecvError::Disconnected) => self.meta = None,
+            }
+        }
+        let tree = self.model.as_ref().map(|m| m.tree.clone());
+        if let Some(u) = self.watch.poll(ctx, tree.as_ref(), self.scan_id) {
+            if let Some(m) = &mut self.model {
+                m.replace_tree(Arc::new(u.tree), u.applied.remap.as_deref());
+                self.generation += 1;
+                self.meta.reset(self.generation);
+                self.types_key = None;
             }
         }
     }
 
-    fn show(&mut self, scanned: Scanned, roots: Vec<Root>, settings: &DuSettings) {
+    fn show(&mut self, scanned: Scanned, roots: Vec<Root>, settings: &mut DuSettings) {
         let mut model = Model::new(Arc::new(scanned.tree));
         model.physical = settings.physical;
         model.relative = settings.relative;
@@ -393,10 +512,36 @@ impl DiskUsage {
         }
         self.model = Some(model);
         self.descriptions = scanned.descriptions;
-        self.roots = roots;
         self.types_key = None;
         self.generation += 1;
-        self.meta_asked.clear();
+        self.scan_id += 1;
+        self.meta.reset(self.generation);
+        if let Some(m) = &self.model {
+            if let Some(paths) = history::folder_roots(&roots) {
+                let top = m.tree.node(du::TOP);
+                let entry = history::Entry {
+                    roots: paths,
+                    scanned: chrono::Utc::now().timestamp(),
+                    bytes: top.size,
+                    files: top.files,
+                };
+                history::remember(&mut settings.history, entry);
+            }
+            self.watch.stop();
+            if settings.watch {
+                self.watch.start(watch_roots(&m.tree), self.scan_id);
+            }
+        }
+        self.roots = roots;
+    }
+
+    /// The folders of the scan shown an elevated scan may read more of (some refused to be
+    /// listed), when this Keel can relaunch elevated.
+    pub fn denied_roots(&self) -> Vec<std::path::PathBuf> {
+        match &self.model {
+            Some(m) if elevate::available() => m.tree.denied_roots(),
+            _ => Vec::new(),
+        }
     }
 
     /// The file types list (built again when the grouping or the size kind changes).
@@ -422,38 +567,16 @@ impl DiskUsage {
     }
 
     /// Each extension's color rank, as last built by [`types`](Self::types).
+    #[cfg(test)]
     pub fn ranks(&self) -> &HashMap<String, usize> {
         &self.ranks
     }
+}
 
-    /// Reads the owner and times of `rows` that have not been read (one batch at a time,
-    /// on a worker).
-    pub fn want_metadata(&mut self, rows: impl Iterator<Item = NodeId>) {
-        if self.meta.is_some() {
-            return;
-        }
-        let Some(model) = &self.model else { return };
-        let ids: Vec<NodeId> = rows
-            .filter(|id| !self.meta_asked.contains(id))
-            .take(META_BATCH)
-            .collect();
-        if ids.is_empty() {
-            return;
-        }
-        self.meta_asked.extend(ids.iter().copied());
-        let jobs: Vec<(NodeId, std::path::PathBuf)> = (ids.into_iter())
-            .filter_map(|id| Some((id, model.tree.path(id)?)))
-            .collect();
-        let (tx, rx) = channel();
-        crate::worker::spawn("keel-du-meta", move || {
-            let batch = (jobs.into_iter())
-                .map(|(id, path)| (id, os::metadata(&path)))
-                .collect();
-            let _ = tx.send(batch);
-        });
-        self.meta = Some(MetaFetch {
-            generation: self.generation,
-            rx,
-        });
-    }
+/// The folders of `tree` the File Watcher watches (not portable devices).
+fn watch_roots(tree: &Tree) -> Vec<std::path::PathBuf> {
+    (tree.roots().iter())
+        .filter(|r| r.device.is_none())
+        .map(|r| r.path.clone())
+        .collect()
 }

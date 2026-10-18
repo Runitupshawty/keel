@@ -19,6 +19,7 @@ heic = ["dep:libheif-rs"]
 fuzzing = ["dep:tempfile"]
 
 [dependencies]
+keel-query = { path = "../keel-query" }
 anyhow.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
 keel-search = { path = "../keel-search" }

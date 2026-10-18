@@ -1,18 +1,20 @@
 //! Drawing the Disk Usage window: the toolbar, the scan's progress, the layout (tree list,
 //! file types list and the treemap's slot) and the status line.
 
+use super::history;
 use super::model::{attributes, Column, FileType, Model};
 use super::picker::Answer;
 use super::{DiskUsage, DuSettings, Layout, Tab, TITLE};
 use crate::a11y::Named;
+use crate::i18n::tr;
 use crate::keys::Action;
 use crate::theme::Theme;
 use egui::{Align, Color32, Key, Modifiers, Sense, Ui};
 use egui_extras::{Column as Col, TableBuilder};
 use humansize::{format_size, DECIMAL};
-use keel_vfs::du::{NodeId, NodeKind, Root, UNKNOWN_TIME};
+use keel_vfs::du::{NodeId, NodeKind, Priority, Root, UNKNOWN_TIME};
 use keel_vfs::VPath;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 const ROW_H: f32 = 22.0;
 const INDENT: f32 = 14.0;
@@ -80,6 +82,8 @@ pub fn window(
 ) {
     du.poll(ctx, settings);
     du.palette.clone_from(&settings.chart_options.palette);
+    let tree = (du.model.as_ref()).map(|m| (du.generation, m.tree.clone()));
+    super::view::share(ctx, super::view::Shared::from_settings(settings, tree));
     if let Some(f) = &mut du.fallback {
         if let Some(done) = f.ui(ctx) {
             du.fallback = None;
@@ -198,6 +202,13 @@ fn body(
                 if ui.button("Select drives…").clicked() {
                     du.picker = Some(super::picker::Picker::new(drives));
                 }
+                if !settings.history.is_empty() {
+                    ui.add_space(12.0);
+                    ui.strong(tr("disk_usage.recent"));
+                    if let Some(roots) = recent_list(ui, &settings.history) {
+                        du.start(roots);
+                    }
+                }
             });
         }
         return;
@@ -291,12 +302,31 @@ fn toolbar(
         }
         let can_rescan = !du.roots.is_empty() && du.scanning().is_none();
         if ui
-            .add_enabled(can_rescan, egui::Button::new("Rescan"))
+            .add_enabled(can_rescan, egui::Button::new(tr("disk_usage.rescan")))
             .on_hover_text("Scan the same drives and folders again")
             .clicked()
         {
             du.rescan();
         }
+        ui.menu_button(tr("disk_usage.recent"), |ui| {
+            // Scans of folders that are gone are dropped when the menu opens.
+            history::prune(&mut settings.history, |p| p.exists());
+            if settings.history.is_empty() {
+                ui.weak(tr("disk_usage.recent_none"));
+                return;
+            }
+            if let Some(roots) = recent_list(ui, &settings.history) {
+                du.start(roots);
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button(tr("disk_usage.recent_forget")).clicked() {
+                settings.history.clear();
+                ui.close_menu();
+            }
+        });
+        ui.separator();
+        watch_controls(ui, du, settings);
         ui.separator();
         let mut physical = settings.physical;
         ui.selectable_value(&mut physical, false, "Size")
@@ -339,8 +369,199 @@ fn toolbar(
             ui.checkbox(&mut settings.grid, "Grid lines");
             ui.checkbox(&mut settings.stripes, "Striped rows");
             ui.checkbox(&mut settings.seconds, "Seconds in times");
+            ui.separator();
+            ui.label(tr("disk_usage.priority"))
+                .on_hover_text(tr("disk_usage.priority_tip"));
+            for p in Priority::ALL {
+                ui.radio_value(&mut settings.priority, p, priority_label(p))
+                    .on_hover_text(tr("disk_usage.priority_tip"));
+            }
         });
     });
+}
+
+/// The scan priority's name.
+pub fn priority_label(p: Priority) -> &'static str {
+    tr(match p {
+        Priority::Normal => "disk_usage.priority_normal",
+        Priority::Low => "disk_usage.priority_low",
+        Priority::Background => "disk_usage.priority_background",
+    })
+}
+
+/// The previous scans as buttons; the roots of the one clicked.
+fn recent_list(ui: &mut Ui, history: &[history::Entry]) -> Option<Vec<Root>> {
+    let mut picked = None;
+    for e in history {
+        let when = time_text(e.scanned.saturating_mul(1_000_000_000), false);
+        let r = ui.button(e.label()).on_hover_text(format!(
+            "{}\n{when}: {}, {} {}",
+            tr("disk_usage.recent_tip"),
+            size_text(e.bytes),
+            e.files,
+            tr("disk_usage.files"),
+        ));
+        if r.clicked() {
+            picked = Some(e.scan_roots());
+        }
+    }
+    picked
+}
+
+/// The File Watcher's toolbar part: on or off, pause, clear.
+fn watch_controls(ui: &mut Ui, du: &mut DiskUsage, settings: &mut DuSettings) {
+    ui.checkbox(&mut settings.watch, tr("disk_usage.watch"))
+        .on_hover_text(tr("disk_usage.watch_tip"));
+    let w = &mut du.watch;
+    let on = settings.watch && (w.watching() || w.starting());
+    let (label, tip) = match w.paused {
+        true => ("disk_usage.watch_resume", "disk_usage.watch_resume_tip"),
+        false => ("disk_usage.watch_pause", "disk_usage.watch_pause_tip"),
+    };
+    if ui
+        .add_enabled(on, egui::Button::new(tr(label)))
+        .on_hover_text(tr(tip))
+        .clicked()
+    {
+        let paused = !w.paused;
+        w.set_paused(paused);
+    }
+    if ui
+        .add_enabled(
+            !w.log.is_empty(),
+            egui::Button::new(tr("disk_usage.watch_clear")),
+        )
+        .on_hover_text(tr("disk_usage.watch_clear_tip"))
+        .clicked()
+    {
+        w.clear();
+    }
+}
+
+/// The File Watcher's state for the status line ("" when it is off).
+fn watch_status(du: &DiskUsage) -> String {
+    let w = &du.watch;
+    if let Some(e) = &w.error {
+        return tr("disk_usage.watch_error").replace("{error}", e);
+    }
+    if w.starting() {
+        return tr("disk_usage.watch_starting").to_owned();
+    }
+    if !w.watching() {
+        return String::new();
+    }
+    let mut text = if w.paused {
+        tr("disk_usage.watch_paused").replace("{n}", &w.waiting().to_string())
+    } else {
+        tr("disk_usage.watching").replace("{n}", &w.roots().len().to_string())
+    };
+    if w.added + w.removed + w.updated > 0 {
+        text.push_str(", ");
+        text.push_str(
+            &tr("disk_usage.watch_totals")
+                .replace("{added}", &w.added.to_string())
+                .replace("{removed}", &w.removed.to_string())
+                .replace("{updated}", &w.updated.to_string()),
+        );
+    }
+    if w.overflowed {
+        text.push_str(". ");
+        text.push_str(tr("disk_usage.watch_behind"));
+    }
+    text
+}
+
+/// The **Changes** tab: the File Watcher's changes, newest first, narrowed by a regular
+/// expression on the path.
+fn changes_tab(ui: &mut Ui, du: &mut DiskUsage, settings: &DuSettings, out: &mut Vec<Action>) {
+    let w = &mut du.watch;
+    ui.horizontal(|ui| {
+        ui.label(tr("disk_usage.changes_filter"));
+        let mut text = w.filter_text.clone();
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .hint_text(tr("disk_usage.changes_filter_hint"))
+                .desired_width(320.0),
+        );
+        let r = r.named(tr("disk_usage.changes_filter"));
+        if r.changed() {
+            w.set_filter(text);
+        }
+        if let Some(e) = &w.filter_error {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                e.lines().last().unwrap_or(e.as_str()),
+            );
+        }
+    });
+    if !settings.watch {
+        ui.weak(tr("disk_usage.changes_off"));
+    }
+    let shown: Vec<&keel_vfs::du::watch::Change> = w.log.newest_first(&w.filter).collect();
+    ui.weak(
+        tr("disk_usage.changes_count")
+            .replace("{shown}", &shown.len().to_string())
+            .replace("{total}", &w.log.total.to_string()),
+    );
+    if shown.is_empty() {
+        ui.weak(tr("disk_usage.changes_none"));
+        return;
+    }
+    let seconds = settings.seconds;
+    let mut open = None;
+    TableBuilder::new(ui)
+        .id_salt("keel-du-changes")
+        .striped(true)
+        .resizable(true)
+        .sense(Sense::click())
+        .auto_shrink([false, false])
+        .cell_layout(egui::Layout::left_to_right(Align::Center))
+        .column(Col::initial(140.0).at_least(60.0).clip(true))
+        .column(Col::initial(90.0).at_least(50.0).clip(true))
+        .column(Col::remainder().at_least(80.0).clip(true))
+        .header(ROW_H, |mut h| {
+            for key in [
+                "disk_usage.col_time",
+                "disk_usage.col_change",
+                "disk_usage.col_path",
+            ] {
+                h.col(|ui| {
+                    ui.strong(tr(key));
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(ROW_H, shown.len(), |mut row| {
+                let c = shown[row.index()];
+                row.col(|ui| {
+                    ui.label(time_text(c.at, seconds));
+                });
+                row.col(|ui| {
+                    ui.label(change_label(c.kind));
+                });
+                row.col(|ui| {
+                    ui.add(egui::Label::new(c.path.display().to_string()).truncate());
+                });
+                let r = row.response();
+                if r.double_clicked() {
+                    open = Some(c.path.clone());
+                }
+                r.on_hover_text(c.path.display().to_string());
+            });
+        });
+    if let Some(path) = open {
+        out.push(Action::OpenPath(VPath::local(path)));
+    }
+}
+
+pub fn change_label(k: keel_vfs::du::watch::ChangeKind) -> &'static str {
+    use keel_vfs::du::watch::ChangeKind as K;
+    tr(match k {
+        K::Created => "disk_usage.kind_created",
+        K::Deleted => "disk_usage.kind_deleted",
+        K::Modified => "disk_usage.kind_modified",
+        K::Renamed => "disk_usage.kind_renamed",
+    })
 }
 
 /// Show or hide each column of the tree list (also on a right-click on its header).
@@ -358,7 +579,8 @@ fn column_chooser(ui: &mut Ui, settings: &mut DuSettings) {
     }
 }
 
-fn status(ui: &mut Ui, du: &DiskUsage) {
+fn status(ui: &mut Ui, du: &mut DiskUsage) {
+    let mut relaunch_error = None;
     let Some(m) = &du.model else { return };
     ui.horizontal(|ui| {
         let what = if m.physical { "on disk" } else { "" };
@@ -380,12 +602,35 @@ fn status(ui: &mut Ui, du: &DiskUsage) {
             text.push_str(&format!(", {} folders could not be read", info.unreadable));
         }
         ui.weak(text);
+        let denied = du.denied_roots();
+        if !denied.is_empty() {
+            ui.label(tr("disk_usage.denied").replace("{n}", &info.denied.to_string()));
+            if ui
+                .button(tr("disk_usage.relaunch"))
+                .on_hover_text(tr("disk_usage.relaunch_tip"))
+                .clicked()
+            {
+                if let Err(e) = super::elevate::relaunch(&denied) {
+                    relaunch_error = Some(
+                        tr("disk_usage.relaunch_failed").replace("{error}", &format!("{e:#}")),
+                    );
+                }
+            }
+        }
+        let watching = watch_status(du);
+        if !watching.is_empty() {
+            ui.separator();
+            ui.weak(watching);
+        }
         if let Some(f) = &m.filter {
             ui.separator();
             let list: Vec<String> = f.iter().map(|e| format!(".{e}")).collect();
             ui.label(format!("Showing only {}", list.join(" ")));
         }
     });
+    if let Some(e) = relaunch_error {
+        du.error = Some(e);
+    }
 }
 
 /// The treemap's place: the chart of the scan ([`super::chart`]). An item picked in it is
@@ -599,13 +844,16 @@ fn main_area(
     if du.tab == Tab::Tree {
         return tree_area(ui, du, settings, theme, keys, out);
     }
+    if du.tab == Tab::Changes {
+        return changes_tab(ui, du, settings, out);
+    }
     let Some(tree) = du.model.as_ref().map(|m| m.tree.clone()) else {
         return;
     };
     use crate::du_tabs::{self as tabs, Outcome};
     let t = &mut du.tabs;
     let outcome = match du.tab {
-        Tab::Tree => None,
+        Tab::Tree | Tab::Changes => None,
         Tab::Largest => tabs::largest::ui(ui, &tree, &mut t.largest),
         Tab::Duplicates => tabs::duplicates::ui(ui, &tree, &mut t.duplicates),
         Tab::Search => tabs::search::ui(ui, &tree, &mut t.search),
@@ -642,6 +890,46 @@ enum TreeEvent {
     Column(Column),
 }
 
+/// How a tree list is drawn: the window's settings, or a pane's own.
+pub struct ListStyle<'a> {
+    /// The list's egui id (the window's and each pane's are apart).
+    pub salt: egui::Id,
+    pub columns: Vec<Column>,
+    pub stripes: bool,
+    pub grid: bool,
+    pub seconds: bool,
+    /// Each extension's color rank, and the colors.
+    pub ranks: &'a HashMap<String, usize>,
+    pub palette: &'a [[u8; 3]],
+    /// Scroll to the cursor this frame.
+    pub scroll: bool,
+}
+
+/// What happened in a tree list besides what it did to the model.
+#[derive(Default)]
+pub struct ListOutcome {
+    /// A row was clicked (its window or pane takes the keys).
+    pub clicked: bool,
+    /// Columns shown or hidden from the header's menu.
+    pub columns: Vec<Column>,
+}
+
+/// Rows a page of the list holds.
+pub fn page_rows(ui: &Ui) -> isize {
+    ((ui.available_height() / ROW_H) as isize - 2).max(1)
+}
+
+/// The rows of `model` likely visible in the list `salt` (from where it was scrolled last
+/// frame), to read their owners and times.
+pub fn visible_rows(ui: &Ui, salt: egui::Id, model: &Model, page: usize) -> Vec<NodeId> {
+    let start = ui.data(|d| d.get_temp::<usize>(salt.with("first-row")));
+    let from = start.unwrap_or(0).min(model.rows.len());
+    (model.rows[from..].iter())
+        .take(page + 8)
+        .map(|r| r.0)
+        .collect()
+}
+
 fn tree_area(
     ui: &mut Ui,
     du: &mut DiskUsage,
@@ -652,7 +940,7 @@ fn tree_area(
 ) {
     let group = settings.group_unregistered;
     du.types(group);
-    let page = ((ui.available_height() / ROW_H) as isize - 2).max(1);
+    let page = page_rows(ui);
     if keys {
         if let Some(m) = &mut du.model {
             if tree_keys(ui.ctx(), m, page) {
@@ -661,305 +949,340 @@ fn tree_area(
             }
         }
     }
+    let salt = egui::Id::new("keel-du-tree-table");
     let columns = settings.shown_columns();
-    if let Some(m) = &du.model {
-        if columns.iter().any(|c| c.metadata()) {
-            let start = ui.data(|d| d.get_temp::<usize>(egui::Id::new("keel-du-first-row")));
-            let from = start.unwrap_or(0).min(m.rows.len());
-            let ids: Vec<NodeId> = (m.rows[from..].iter())
-                .take(page as usize + 8)
-                .map(|r| r.0)
-                .collect();
-            du.want_metadata(ids.into_iter());
+    if columns.iter().any(|c| c.metadata()) {
+        if let Some(m) = &du.model {
+            let ids = visible_rows(ui, salt, m, page as usize);
+            du.meta.want(m, ids);
         }
     }
     let scroll = std::mem::take(&mut du.scroll_tree);
-    let ranks = du.ranks();
-    let palette = &du.palette;
-    let Some(model) = &du.model else { return };
+    let DiskUsage {
+        model,
+        ranks,
+        palette,
+        ..
+    } = du;
+    let Some(model) = model.as_mut() else { return };
+    let style = ListStyle {
+        salt,
+        columns,
+        stripes: settings.stripes,
+        grid: settings.grid,
+        seconds: settings.seconds,
+        ranks,
+        palette,
+        scroll,
+    };
+    let o = tree_list(ui, model, &style, theme, out);
+    if o.clicked {
+        du.keys = true;
+        du.scroll_types = true;
+    }
+    for c in o.columns {
+        settings.toggle_column(c);
+    }
+}
+
+/// The tree list of `model` (sortable columns, expandable rows, multi-select, tooltips and
+/// a context menu per row); clicks, sorting and opening act on `model`.
+pub fn tree_list(
+    ui: &mut Ui,
+    model: &mut Model,
+    style: &ListStyle,
+    theme: &Theme,
+    out: &mut Vec<Action>,
+) -> ListOutcome {
+    let columns = style.columns.clone();
+    let ranks = style.ranks;
+    let palette = style.palette;
     let mut events = Vec::new();
-    let muted = theme.muted();
-    let text_color = ui.visuals().text_color();
-    let accent = theme.accent();
-    let grid = settings.grid;
-    let seconds = settings.seconds;
-    let grid_stroke =
-        egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
-    let mut table = TableBuilder::new(ui)
-        .id_salt("keel-du-tree-table")
-        .striped(settings.stripes)
-        .resizable(true)
-        .sense(Sense::click())
-        .auto_shrink([false, false])
-        .cell_layout(egui::Layout::left_to_right(Align::Center));
-    for c in &columns {
-        let width = match c {
-            Column::Name => 280.0,
-            Column::Subtree => 120.0,
-            Column::Changed | Column::Accessed | Column::Created => 130.0,
-            Column::Owner => 150.0,
-            Column::Attributes => 70.0,
-            Column::Allocated | Column::Size => 86.0,
-            _ => 66.0,
-        };
-        table = table.column(Col::initial(width).at_least(36.0).clip(true));
-    }
-    if let Some(row) = scroll
-        .then(|| model.cursor.and_then(|c| model.row_of(c)))
-        .flatten()
-    {
-        table = table.scroll_to_row(row, None);
-    }
-    let mut first_row = None;
-    table
-        .header(ROW_H, |mut h| {
-            for &c in &columns {
-                h.col(|ui| {
-                    let arrow = match model.sort {
-                        (k, true) if k == c => " ⏶",
-                        (k, false) if k == c => " ⏷",
-                        _ => "",
-                    };
-                    let text = egui::RichText::new(format!("{}{arrow}", c.label())).strong();
-                    let r = ui
-                        .add(egui::Button::new(text).frame(false))
-                        .on_hover_text("Click to sort, right-click to choose the columns");
-                    let name = match model.sort {
-                        (k, true) if k == c => format!("{}, sorted ascending", c.label()),
-                        (k, false) if k == c => format!("{}, sorted descending", c.label()),
-                        _ => c.label().to_owned(),
-                    };
-                    let r = r.named(&name);
-                    if r.clicked() {
-                        events.push(TreeEvent::Sort(c));
-                    }
-                    r.context_menu(|ui| {
-                        for col in Column::ALL {
-                            let mut on = col == Column::Name || columns.contains(&col);
-                            let r = ui.add_enabled(
-                                col != Column::Name,
-                                egui::Checkbox::new(&mut on, col.label()),
-                            );
-                            if r.changed() {
-                                events.push(TreeEvent::Column(col));
-                            }
-                        }
-                    });
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(ROW_H, model.rows.len(), |mut row| {
-                let index = row.index();
-                first_row = Some(first_row.map_or(index, |f: usize| f.min(index)));
-                let (id, depth) = model.rows[index];
-                let n = model.tree.node(id);
-                let selected = model.selected.contains(&id);
-                row.set_selected(selected);
-                let muted = if selected { text_color } else { muted };
-                let ext = (n.kind == NodeKind::File).then(|| model.tree.ext(id));
-                let highlighted = ext.is_some_and(|e| model.highlight_extensions.contains(e));
-                let line = |ui: &mut Ui| {
-                    if grid {
-                        let r = ui.max_rect();
-                        ui.painter()
-                            .vline(r.right() + 2.0, r.y_range(), grid_stroke);
-                    }
-                };
+    let first_row = {
+        let model: &Model = model;
+        let muted = theme.muted();
+        let text_color = ui.visuals().text_color();
+        let accent = theme.accent();
+        let grid = style.grid;
+        let seconds = style.seconds;
+        let grid_stroke =
+            egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color);
+        let mut table = TableBuilder::new(ui)
+            .id_salt(style.salt)
+            .striped(style.stripes)
+            .resizable(true)
+            .sense(Sense::click())
+            .auto_shrink([false, false])
+            .cell_layout(egui::Layout::left_to_right(Align::Center));
+        for c in &columns {
+            let width = match c {
+                Column::Name => 280.0,
+                Column::Subtree => 120.0,
+                Column::Changed | Column::Accessed | Column::Created => 130.0,
+                Column::Owner => 150.0,
+                Column::Attributes => 70.0,
+                Column::Allocated | Column::Size => 86.0,
+                _ => 66.0,
+            };
+            table = table.column(Col::initial(width).at_least(36.0).clip(true));
+        }
+        if let Some(row) = style
+            .scroll
+            .then(|| model.cursor.and_then(|c| model.row_of(c)))
+            .flatten()
+        {
+            table = table.scroll_to_row(row, None);
+        }
+        let mut first_row = None;
+        table
+            .header(ROW_H, |mut h| {
                 for &c in &columns {
-                    row.col(|ui| {
-                        line(ui);
-                        match c {
-                            Column::Name => {
-                                ui.add_space(depth as f32 * INDENT);
-                                if model.expandable(id) {
-                                    let open =
-                                        model.expanded.contains(&id) || model.filter.is_some();
-                                    let r = ui
-                                        .add(
-                                            egui::Button::new(if open { "⏷" } else { "⏵" })
-                                                .frame(false)
-                                                .small(),
-                                        )
-                                        .named(if open { "Collapse" } else { "Expand" });
-                                    if r.clicked() {
-                                        events.push(TreeEvent::Toggle(id));
-                                    }
-                                } else {
-                                    ui.add_space(INDENT);
-                                }
-                                match n.kind {
-                                    NodeKind::Free | NodeKind::Unknown => {
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(14.0, 14.0),
-                                            Sense::hover(),
-                                        );
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            2.0,
-                                            muted.gamma_multiply(0.6),
-                                        );
-                                    }
-                                    NodeKind::File => {
-                                        let rank = ranks
-                                            .get(ext.unwrap_or(""))
-                                            .copied()
-                                            .unwrap_or(usize::MAX);
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(6.0, 14.0),
-                                            Sense::hover(),
-                                        );
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            1.0,
-                                            type_color(palette, rank),
-                                        );
-                                        ui.add(
-                                            egui::Image::new(crate::icons::file_icon(&n.name))
-                                                .fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                        );
-                                    }
-                                    _ => {
-                                        let icon = if model.expanded.contains(&id) {
-                                            crate::icons::folder_open()
-                                        } else {
-                                            crate::icons::folder()
-                                        };
-                                        ui.add(
-                                            egui::Image::new(icon)
-                                                .fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                        );
-                                    }
-                                }
-                                let mut name = egui::RichText::new(&*n.name);
-                                if n.is_pseudo() {
-                                    name = name.italics().color(muted);
-                                } else if highlighted && !selected {
-                                    name = name.color(accent);
-                                }
-                                ui.add(egui::Label::new(name).truncate().selectable(false));
-                            }
-                            Column::Subtree => {
-                                let share = model.fraction(id, true) as f32;
-                                let width = (ui.available_width() - 4.0).max(8.0);
-                                let (rect, _) =
-                                    ui.allocate_exact_size(egui::vec2(width, 10.0), Sense::hover());
-                                ui.painter()
-                                    .rect_filled(rect, 2.0, muted.gamma_multiply(0.2));
-                                let mut done = rect;
-                                done.set_width(rect.width() * share.clamp(0.0, 1.0));
-                                let color = if n.is_pseudo() {
-                                    muted
-                                } else {
-                                    depth_color(depth)
-                                };
-                                ui.painter().rect_filled(done, 2.0, color);
-                            }
-                            Column::Percentage => {
-                                let share = 100.0 * model.fraction(id, model.relative);
-                                right_in(ui, &format!("{share:.1} %"), None);
-                            }
-                            Column::Size => right_in(ui, &size_text(model.bytes(id)), None),
-                            Column::Allocated => right_in(ui, &size_text(n.allocated), Some(muted)),
-                            Column::Items | Column::Files | Column::Folders => {
-                                if n.is_container() {
-                                    let v = match c {
-                                        Column::Items => n.items,
-                                        Column::Files => n.files,
-                                        _ => n.folders,
-                                    };
-                                    right_in(ui, &v.to_string(), Some(muted));
-                                }
-                            }
-                            Column::Changed => {
-                                ui.label(
-                                    egui::RichText::new(time_text(n.newest, seconds)).color(muted),
-                                );
-                            }
-                            Column::Attributes => {
-                                ui.label(
-                                    egui::RichText::new(attributes(n.attributes))
-                                        .color(muted)
-                                        .monospace(),
-                                );
-                            }
-                            Column::Owner | Column::Accessed | Column::Created => {
-                                let meta = model.metadata.get(&id);
-                                let text = match c {
-                                    Column::Owner => {
-                                        meta.and_then(|m| m.owner.clone()).unwrap_or_default()
-                                    }
-                                    Column::Accessed => meta
-                                        .and_then(|m| m.accessed)
-                                        .map(|t| time_text(t, seconds))
-                                        .unwrap_or_default(),
-                                    _ => meta
-                                        .and_then(|m| m.created)
-                                        .map(|t| time_text(t, seconds))
-                                        .unwrap_or_default(),
-                                };
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(text).color(muted))
-                                        .truncate(),
-                                );
-                            }
+                    h.col(|ui| {
+                        let arrow = match model.sort {
+                            (k, true) if k == c => " ⏶",
+                            (k, false) if k == c => " ⏷",
+                            _ => "",
+                        };
+                        let text = egui::RichText::new(format!("{}{arrow}", c.label())).strong();
+                        let r = ui
+                            .add(egui::Button::new(text).frame(false))
+                            .on_hover_text("Click to sort, right-click to choose the columns");
+                        let name = match model.sort {
+                            (k, true) if k == c => format!("{}, sorted ascending", c.label()),
+                            (k, false) if k == c => format!("{}, sorted descending", c.label()),
+                            _ => c.label().to_owned(),
+                        };
+                        let r = r.named(&name);
+                        if r.clicked() {
+                            events.push(TreeEvent::Sort(c));
                         }
+                        r.context_menu(|ui| {
+                            for col in Column::ALL {
+                                let mut on = col == Column::Name || columns.contains(&col);
+                                let r = ui.add_enabled(
+                                    col != Column::Name,
+                                    egui::Checkbox::new(&mut on, col.label()),
+                                );
+                                if r.changed() {
+                                    events.push(TreeEvent::Column(col));
+                                }
+                            }
+                        });
                     });
                 }
-                let r = row.response();
-                if r.double_clicked() {
-                    if model.expandable(id) {
-                        events.push(TreeEvent::Toggle(id));
-                    } else if let Some(path) = model.tree.path(id) {
-                        out.push(Action::OpenPath(VPath::local(path)));
+            })
+            .body(|body| {
+                body.rows(ROW_H, model.rows.len(), |mut row| {
+                    let index = row.index();
+                    first_row = Some(first_row.map_or(index, |f: usize| f.min(index)));
+                    let (id, depth) = model.rows[index];
+                    let n = model.tree.node(id);
+                    let selected = model.selected.contains(&id);
+                    row.set_selected(selected);
+                    let muted = if selected { text_color } else { muted };
+                    let ext = (n.kind == NodeKind::File).then(|| model.tree.ext(id));
+                    let highlighted = ext.is_some_and(|e| model.highlight_extensions.contains(e));
+                    let line = |ui: &mut Ui| {
+                        if grid {
+                            let r = ui.max_rect();
+                            ui.painter()
+                                .vline(r.right() + 2.0, r.y_range(), grid_stroke);
+                        }
+                    };
+                    for &c in &columns {
+                        row.col(|ui| {
+                            line(ui);
+                            match c {
+                                Column::Name => {
+                                    ui.add_space(depth as f32 * INDENT);
+                                    if model.expandable(id) {
+                                        let open =
+                                            model.expanded.contains(&id) || model.filter.is_some();
+                                        let r = ui
+                                            .add(
+                                                egui::Button::new(if open { "⏷" } else { "⏵" })
+                                                    .frame(false)
+                                                    .small(),
+                                            )
+                                            .named(if open { "Collapse" } else { "Expand" });
+                                        if r.clicked() {
+                                            events.push(TreeEvent::Toggle(id));
+                                        }
+                                    } else {
+                                        ui.add_space(INDENT);
+                                    }
+                                    match n.kind {
+                                        NodeKind::Free | NodeKind::Unknown => {
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(14.0, 14.0),
+                                                Sense::hover(),
+                                            );
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                2.0,
+                                                muted.gamma_multiply(0.6),
+                                            );
+                                        }
+                                        NodeKind::File => {
+                                            let rank = ranks
+                                                .get(ext.unwrap_or(""))
+                                                .copied()
+                                                .unwrap_or(usize::MAX);
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(6.0, 14.0),
+                                                Sense::hover(),
+                                            );
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                1.0,
+                                                type_color(palette, rank),
+                                            );
+                                            ui.add(
+                                                egui::Image::new(crate::icons::file_icon(&n.name))
+                                                    .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                            );
+                                        }
+                                        _ => {
+                                            let icon = if model.expanded.contains(&id) {
+                                                crate::icons::folder_open()
+                                            } else {
+                                                crate::icons::folder()
+                                            };
+                                            ui.add(
+                                                egui::Image::new(icon)
+                                                    .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                            );
+                                        }
+                                    }
+                                    let mut name = egui::RichText::new(&*n.name);
+                                    if n.is_pseudo() {
+                                        name = name.italics().color(muted);
+                                    } else if highlighted && !selected {
+                                        name = name.color(accent);
+                                    }
+                                    ui.add(egui::Label::new(name).truncate().selectable(false));
+                                }
+                                Column::Subtree => {
+                                    let share = model.fraction(id, true) as f32;
+                                    let width = (ui.available_width() - 4.0).max(8.0);
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(width, 10.0),
+                                        Sense::hover(),
+                                    );
+                                    ui.painter()
+                                        .rect_filled(rect, 2.0, muted.gamma_multiply(0.2));
+                                    let mut done = rect;
+                                    done.set_width(rect.width() * share.clamp(0.0, 1.0));
+                                    let color = if n.is_pseudo() {
+                                        muted
+                                    } else {
+                                        depth_color(depth)
+                                    };
+                                    ui.painter().rect_filled(done, 2.0, color);
+                                }
+                                Column::Percentage => {
+                                    let share = 100.0 * model.fraction(id, model.relative);
+                                    right_in(ui, &format!("{share:.1} %"), None);
+                                }
+                                Column::Size => right_in(ui, &size_text(model.bytes(id)), None),
+                                Column::Allocated => {
+                                    right_in(ui, &size_text(n.allocated), Some(muted))
+                                }
+                                Column::Items | Column::Files | Column::Folders => {
+                                    if n.is_container() {
+                                        let v = match c {
+                                            Column::Items => n.items,
+                                            Column::Files => n.files,
+                                            _ => n.folders,
+                                        };
+                                        right_in(ui, &v.to_string(), Some(muted));
+                                    }
+                                }
+                                Column::Changed => {
+                                    ui.label(
+                                        egui::RichText::new(time_text(n.newest, seconds))
+                                            .color(muted),
+                                    );
+                                }
+                                Column::Attributes => {
+                                    ui.label(
+                                        egui::RichText::new(attributes(n.attributes))
+                                            .color(muted)
+                                            .monospace(),
+                                    );
+                                }
+                                Column::Owner | Column::Accessed | Column::Created => {
+                                    let meta = model.metadata.get(&id);
+                                    let text = match c {
+                                        Column::Owner => {
+                                            meta.and_then(|m| m.owner.clone()).unwrap_or_default()
+                                        }
+                                        Column::Accessed => meta
+                                            .and_then(|m| m.accessed)
+                                            .map(|t| time_text(t, seconds))
+                                            .unwrap_or_default(),
+                                        _ => meta
+                                            .and_then(|m| m.created)
+                                            .map(|t| time_text(t, seconds))
+                                            .unwrap_or_default(),
+                                    };
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(text).color(muted))
+                                            .truncate(),
+                                    );
+                                }
+                            }
+                        });
                     }
-                } else if r.clicked() {
-                    let m = r.ctx.input(|i| i.modifiers);
-                    events.push(TreeEvent::Click {
-                        id,
-                        toggle: m.command,
-                        range: m.shift,
+                    let r = row.response();
+                    if r.double_clicked() {
+                        if model.expandable(id) {
+                            events.push(TreeEvent::Toggle(id));
+                        } else if let Some(path) = model.tree.path(id) {
+                            out.push(Action::OpenPath(VPath::local(path)));
+                        }
+                    } else if r.clicked() {
+                        let m = r.ctx.input(|i| i.modifiers);
+                        events.push(TreeEvent::Click {
+                            id,
+                            toggle: m.command,
+                            range: m.shift,
+                        });
+                    } else if r.secondary_clicked() && !selected {
+                        events.push(TreeEvent::Click {
+                            id,
+                            toggle: false,
+                            range: false,
+                        });
+                    }
+                    let r = r.on_hover_ui(|ui| {
+                        ui.label(row_hover(model, id));
                     });
-                } else if r.secondary_clicked() && !selected {
-                    events.push(TreeEvent::Click {
-                        id,
-                        toggle: false,
-                        range: false,
-                    });
-                }
-                let r = r.on_hover_ui(|ui| {
-                    ui.label(row_hover(model, id));
+                    row_menu(&r, model, id, ext, out, &mut events);
                 });
-                row_menu(&r, model, id, ext, out, &mut events);
             });
-        });
+        first_row
+    };
     if let Some(f) = first_row {
-        ui.data_mut(|d| d.insert_temp(egui::Id::new("keel-du-first-row"), f));
+        ui.data_mut(|d| d.insert_temp(style.salt.with("first-row"), f));
     }
+    let mut outcome = ListOutcome::default();
     for e in events {
         match e {
-            TreeEvent::Column(c) => settings.toggle_column(c),
-            TreeEvent::Sort(c) => {
-                if let Some(m) = &mut du.model {
-                    m.set_sort(c);
-                }
-            }
+            TreeEvent::Column(c) => outcome.columns.push(c),
+            TreeEvent::Sort(c) => model.set_sort(c),
             TreeEvent::Toggle(id) => {
-                if let Some(m) = &mut du.model {
-                    if m.filter.is_none() {
-                        m.toggle(id);
-                    }
+                if model.filter.is_none() {
+                    model.toggle(id);
                 }
             }
             TreeEvent::Click { id, toggle, range } => {
-                du.keys = true;
-                if let Some(m) = &mut du.model {
-                    m.select(id, toggle, range);
-                }
-                du.scroll_types = true;
+                outcome.clicked = true;
+                model.select(id, toggle, range);
             }
         }
     }
+    outcome
 }
 
 fn right_in(ui: &mut Ui, text: &str, color: Option<Color32>) {
@@ -1064,7 +1387,7 @@ fn row_menu(
 }
 
 /// The tree list's keys while the window has them; true when the cursor moved.
-fn tree_keys(ctx: &egui::Context, m: &mut Model, page: isize) -> bool {
+pub(super) fn tree_keys(ctx: &egui::Context, m: &mut Model, page: isize) -> bool {
     let shift = ctx.input(|i| i.modifiers.shift);
     let mut moved = false;
     let mut step = |m: &mut Model, key: Key, delta: isize| {

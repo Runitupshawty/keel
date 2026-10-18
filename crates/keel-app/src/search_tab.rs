@@ -24,13 +24,17 @@ pub const PAGE: u32 = 1_000;
 /// The Most results setting's range.
 pub const MAX_RESULTS: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;
 
+/// The search bar's width after the box and its toggles: the Search menu, the filter,
+/// bookmarks, the spinner and the result count.
+const BAR_REST: f32 = 380.0;
+
 #[cfg(test)]
 pub const NOT_RUNNING: &str =
     "Everything is not running. Start Everything.exe (voidtools) to search.";
 
 /// The query box's hint for the backend that answers it (the System backend's `name`):
-/// Everything takes its own syntax; Keel's index takes names, wildcards, quotes,
-/// `folder:`, `in:` and `regex:` (not `ext:` or `dm:`); the library its own terms.
+/// Everything takes its own syntax; Keel's indexes take the same language (`keel-query`);
+/// the library its own terms.
 pub fn hint(backend: Option<&str>, library: bool) -> String {
     match backend {
         _ if library => crate::i18n::tr("search_tab.hint_library").to_owned(),
@@ -49,6 +53,12 @@ pub struct Toggles {
     pub match_path: bool,
     pub match_diacritics: bool,
     pub regex: bool,
+    /// Match Prefix, Match Suffix, Ignore Punctuation and Ignore White-space (Everything's
+    /// Search menu; no default keys there).
+    pub prefix: bool,
+    pub suffix: bool,
+    pub ignore_punctuation: bool,
+    pub ignore_whitespace: bool,
 }
 
 /// The toggles as a bookmark or filter keeps them (`keel_core::MatchToggles`).
@@ -59,12 +69,14 @@ pub fn match_toggles(t: Toggles) -> keel_core::MatchToggles {
         path: t.match_path,
         diacritics: t.match_diacritics,
         regex: t.regex,
-        ..Default::default()
+        prefix: t.prefix,
+        suffix: t.suffix,
+        ignore_punctuation: t.ignore_punctuation,
+        ignore_whitespace: t.ignore_whitespace,
     }
 }
 
-/// The tab's toggles for a bookmark's or filter's (`prefix`, `suffix`, `ignore_punctuation`
-/// and `ignore_whitespace` are the HTTP search's and not the search tab's).
+/// The tab's toggles for a bookmark's or filter's.
 pub fn toggles_of(m: keel_core::MatchToggles) -> Toggles {
     Toggles {
         match_case: m.case,
@@ -72,6 +84,10 @@ pub fn toggles_of(m: keel_core::MatchToggles) -> Toggles {
         match_path: m.path,
         match_diacritics: m.diacritics,
         regex: m.regex,
+        prefix: m.prefix,
+        suffix: m.suffix,
+        ignore_punctuation: m.ignore_punctuation,
+        ignore_whitespace: m.ignore_whitespace,
     }
 }
 
@@ -84,10 +100,28 @@ pub enum Toggle {
     Path,
     Diacritics,
     Regex,
+    Prefix,
+    Suffix,
+    Punctuation,
+    Whitespace,
 }
 
 impl Toggle {
-    pub const ALL: [Toggle; 5] = [
+    pub const ALL: [Toggle; 9] = [
+        Toggle::Case,
+        Toggle::WholeWord,
+        Toggle::Path,
+        Toggle::Diacritics,
+        Toggle::Regex,
+        Toggle::Prefix,
+        Toggle::Suffix,
+        Toggle::Punctuation,
+        Toggle::Whitespace,
+    ];
+
+    /// The toggles with a default key (Everything's Ctrl+I, B, U, M and R).
+    #[cfg(test)]
+    pub const KEYED: [Toggle; 5] = [
         Toggle::Case,
         Toggle::WholeWord,
         Toggle::Path,
@@ -102,6 +136,10 @@ impl Toggle {
             Toggle::Path => crate::i18n::tr("search_tab.match_path").to_owned(),
             Toggle::Diacritics => crate::i18n::tr("search_tab.match_diacritics").to_owned(),
             Toggle::Regex => crate::i18n::tr("bookmarks.regex").to_owned(),
+            Toggle::Prefix => crate::i18n::tr("search_tab.match_prefix").to_owned(),
+            Toggle::Suffix => crate::i18n::tr("search_tab.match_suffix").to_owned(),
+            Toggle::Punctuation => crate::i18n::tr("search_tab.ignore_punctuation").to_owned(),
+            Toggle::Whitespace => crate::i18n::tr("search_tab.ignore_whitespace").to_owned(),
         }
     }
 
@@ -113,11 +151,15 @@ impl Toggle {
             Toggle::Path => "\\",
             Toggle::Diacritics => "\u{e9}",
             Toggle::Regex => ".*",
+            Toggle::Prefix => "^a",
+            Toggle::Suffix => "a$",
+            Toggle::Punctuation => ".,",
+            Toggle::Whitespace => "[ ]",
         }
     }
 
     /// Everything's shortcuts, the default keys (`keymap::commands`; in a search tab,
-    /// Ctrl+I is the Inspector elsewhere).
+    /// Ctrl+I is the Inspector elsewhere); "" for the toggles without one.
     pub fn shortcut(self) -> &'static str {
         match self {
             Toggle::Case => "Ctrl+I",
@@ -125,6 +167,7 @@ impl Toggle {
             Toggle::Path => "Ctrl+U",
             Toggle::Diacritics => "Ctrl+M",
             Toggle::Regex => "Ctrl+R",
+            Toggle::Prefix | Toggle::Suffix | Toggle::Punctuation | Toggle::Whitespace => "",
         }
     }
 
@@ -135,6 +178,10 @@ impl Toggle {
             Toggle::Path => &mut t.match_path,
             Toggle::Diacritics => &mut t.match_diacritics,
             Toggle::Regex => &mut t.regex,
+            Toggle::Prefix => &mut t.prefix,
+            Toggle::Suffix => &mut t.suffix,
+            Toggle::Punctuation => &mut t.ignore_punctuation,
+            Toggle::Whitespace => &mut t.ignore_whitespace,
         }
     }
 
@@ -157,6 +204,9 @@ pub struct SearchSettings {
     pub whole_filename_wildcards: bool,
     /// Load more stops at this many results.
     pub max_results: u32,
+    /// Network indexes: system searches also ask the paired devices that let this one
+    /// search their files (`net_search`). Off by default.
+    pub include_devices: bool,
 }
 
 impl Default for SearchSettings {
@@ -167,6 +217,7 @@ impl Default for SearchSettings {
             delay_ms: DEBOUNCE.as_millis() as u64,
             whole_filename_wildcards: true,
             max_results: 10_000,
+            include_devices: false,
         }
     }
 }
@@ -206,6 +257,10 @@ impl SearchSettings {
             whole_word: t.whole_word,
             match_path: t.match_path,
             match_diacritics: t.match_diacritics,
+            match_prefix: t.prefix,
+            match_suffix: t.suffix,
+            ignore_punctuation: t.ignore_punctuation,
+            ignore_whitespace: t.ignore_whitespace,
             whole_filename_wildcards: self.whole_filename_wildcards,
             ..Query::default()
         }
@@ -281,7 +336,11 @@ fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Ac
             ui.close_menu();
         }
     };
+    // Everything's five with keys, then Match prefix, suffix and the two Ignore toggles.
     for t in Toggle::ALL {
+        if t == Toggle::Prefix {
+            ui.separator();
+        }
         let button = egui::Button::new(t.label())
             .selected(t.get(toggles))
             .shortcut_text(crate::keymap::shortcut(
@@ -342,6 +401,7 @@ pub fn bar(
     pane: &mut Pane,
     platform: Option<&str>,
     lib: &crate::library::LibraryUi,
+    results: &crate::search_columns::ResultsOptions,
     out: &mut Vec<Action>,
 ) {
     let library = lib.is_open();
@@ -352,6 +412,11 @@ pub fn bar(
     let focus = std::mem::take(&mut pane.focus_filter);
     let tab = pane.tab_mut();
     let (count, busy) = (tab.entries().len(), tab.loading);
+    // Task 76: Ctrl+Space completes a word from the history and the result names.
+    let complete_names: Option<Vec<String>> = ui
+        .input(|i| i.modifiers.command && i.key_pressed(Key::Space))
+        .then(|| crate::search_view::result_names(tab));
+    let refining = tab.results.refine.is_some();
     let TabKind::Search {
         query,
         due,
@@ -469,6 +534,19 @@ pub fn bar(
                 }
             });
         }
+        if let Some(names) = complete_names.as_ref().filter(|_| focused) {
+            if crate::search_view::complete_pressed(ui) {
+                let names = names.iter().map(String::as_str);
+                let words = crate::search_view::candidates(&shared.history, names);
+                if crate::search_view::complete_key(ui, id, query, &words) {
+                    *limit = 0;
+                    if let Some(delay) = settings.delay() {
+                        *due = Some(Instant::now() + delay);
+                        ui.ctx().request_repaint_after(delay);
+                    }
+                }
+            }
+        }
         if let Some(name) = &scoped {
             ui.weak(crate::i18n::tr("search_tab.in_scope").replace("{name}", name));
         }
@@ -477,23 +555,60 @@ pub fn bar(
         } else {
             hint(name, tab.library_search)
         };
+        // Room for the rest of the row: the toggles (measured, all nine), then the Search
+        // menu, the filter, bookmarks and the count (`BAR_REST`).
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+        let toggles_width: f32 = (Toggle::ALL.iter())
+            .map(|t| {
+                let text = t.icon().to_owned();
+                ui.fonts(|f| f.layout_no_wrap(text, font.clone(), egui::Color32::WHITE))
+                    .size()
+                    .x
+                    + pad
+            })
+            .sum();
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
-                .desired_width((ui.available_width() - 520.0).max(120.0))
+                .desired_width((ui.available_width() - BAR_REST - toggles_width).max(120.0))
                 .hint_text(&hint_text),
         );
-        // A query Everything's search language rejects shows its problem beside the box. Only for
-        // the Everything backend: Keel's index, locate and the library read their own terms
-        // (`in:` is a source there) until keel-query is wired into them.
+        // A query the search language rejects shows its problem beside the box: with the
+        // Everything backend (checked as typed), and with Keel's own index and file lists
+        // (checked with the tab's toggles, as the backend reads it). The library reads its
+        // own terms on top of the language and reports errors with its results.
         let everything_syntax = name == Some("Everything") && !tab.library_search && !toggles.regex;
-        if list.is_none() && everything_syntax && !query.is_empty() {
+        let native_syntax = !tab.library_search
+            && (list.is_some() || name == Some("Keel index"))
+            && name != Some("Everything");
+        if (everything_syntax || native_syntax) && !query.is_empty() {
             let cache_id = id.with("query_problem");
+            // The language is in the key: the problem is worded in it.
+            let key = format!(
+                "{}\u{0}{}{}\u{0}{}",
+                query,
+                u8::from(toggles.regex),
+                u8::from(native_syntax),
+                crate::i18n::tr("language.name")
+            );
             let problem = ui.ctx().data_mut(|d| {
                 let cache = d.get_temp_mut_or_default::<(String, Option<String>)>(cache_id);
-                if cache.0 != *query {
-                    cache.0 = query.clone();
-                    cache.1 = crate::query_check::problem(query);
+                if cache.0 != key {
+                    cache.0 = key;
+                    // The search tab reads `network-index-host:` itself (net_search.rs) before
+                    // the query reaches the system index; a file list refuses it.
+                    let checked = match list.is_none() {
+                        true => crate::net_search::split_hosts(query).1,
+                        false => query.clone(),
+                    };
+                    cache.1 = match checked.trim().is_empty() {
+                        true => None,
+                        false if native_syntax => crate::query_check::native_problem(
+                            &settings.query(checked, *toggles, 1),
+                        ),
+                        false => crate::query_check::problem(&checked),
+                    };
                 }
                 cache.1.clone()
             });
@@ -607,7 +722,9 @@ pub fn bar(
         let capped = *limit > 0 && count as u32 >= *limit;
         let can_more = capped && *more && !tab.library_search;
         ui.menu_button(crate::i18n::tr("tab.search"), |ui| {
-            search_menu(ui, *toggles, can_more, out)
+            search_menu(ui, *toggles, can_more, out);
+            ui.separator();
+            crate::search_view::menu_items(ui, refining, results, out);
         });
         // Task 76: the filter (Everything, Audio, …, the profile's own) and bookmarks.
         let before = tab.search_filter.clone();
@@ -725,6 +842,13 @@ pub fn settings_rows(ui: &mut egui::Ui, s: &mut SearchSettings, quote_paths: &mu
             ui.checkbox(t.of(&mut s.toggles), t.label());
         }
     });
+    ui.end_row();
+    ui.label("");
+    ui.checkbox(
+        &mut s.include_devices,
+        crate::i18n::tr("search_tab.include_devices"),
+    )
+    .on_hover_text(crate::i18n::tr("search_tab.include_devices_tip"));
     ui.end_row();
     ui.label(crate::i18n::tr("menu.copy_path"));
     ui.checkbox(quote_paths, crate::i18n::tr("search_tab.in_double_quotes"))
@@ -1018,6 +1142,7 @@ mod tests {
                 match_path: true,
                 match_diacritics: true,
                 regex: true,
+                ..Toggles::default()
             },
             7,
         );
@@ -1030,13 +1155,13 @@ mod tests {
         assert!(!old.quote_copied_paths);
     }
 
-    /// The hint names only what the backend understands (Keel's index has no `ext:`).
+    /// Keel's index takes Everything's syntax, like Everything itself.
     #[test]
     fn hint_matches_the_backend() {
         assert!(hint(Some("Everything"), false).contains("ext:"));
         let native = hint(Some("Keel index"), false);
-        assert!(!native.contains("ext:") && !native.contains("dm:"));
-        assert!(native.contains("in:") && native.contains("regex:"));
+        assert!(native.contains("ext:") && native.contains("dm:"));
+        assert!(native.contains("in:"));
         assert!(hint(Some("Library"), true).contains("tag:"));
         assert_eq!(hint(None, false), "Search file names");
     }
@@ -1046,7 +1171,7 @@ mod tests {
     fn toggle_shortcuts() {
         let ctx = egui::Context::default();
         let keys = crate::keymap::Bindings::default();
-        for t in Toggle::ALL {
+        for t in Toggle::KEYED {
             let chord = crate::keymap::Chord::parse(t.shortcut()).unwrap();
             let mut out = Vec::new();
             let _ = ctx.run(

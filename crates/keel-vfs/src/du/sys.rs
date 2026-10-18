@@ -291,6 +291,7 @@ mod imp {
 
     pub(crate) fn list(dir: &Path) -> io::Result<Listing> {
         let h = open(dir, FILE_LIST_DIRECTORY.0)?;
+        super::super::priority::hint_handle(h.0);
         let id = file_id(&h);
         let volume = id.map(|i| (i >> 64) as u64);
         let mut entries = Vec::new();

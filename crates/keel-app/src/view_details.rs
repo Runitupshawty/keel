@@ -9,6 +9,7 @@ use crate::a11y::Named;
 use crate::keys::Action;
 use crate::list_view::{self, ListColumn, GROUP_H};
 use crate::pane::{context_menu, drag_and_drop, handle_click, ViewCx};
+use crate::search_columns::{ResultCol, ResultsOptions};
 use crate::tab::{NodeState, SortKey, Tab};
 use egui::{Align, Key, Layout, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -50,27 +51,68 @@ enum Col {
     Name,
     /// Ext; Folder in search results, Original location in the Recycle Bin, Share in Sizes.
     Second,
+    /// Network indexes: the paired device a search hit came from.
+    Host,
     Kind,
     Size,
     Modified,
     Created,
     Opened,
+    /// The run history's count and last open.
+    RunCount,
+    DateRun,
     /// Sizes view only.
     Files,
     OfUsed,
     Copies,
     Tags,
+    /// Task 76: a search results column read from the disk (size on disk, dates created
+    /// and accessed, attributes), the extension or the folder size; the others map to the
+    /// columns above (`col_of`).
+    Result(ResultCol),
 }
 
-/// The columns shown: the Sizes view keeps its own set; elsewhere the chosen ones.
+/// Task 76: a search results column as the table draws it.
+fn col_of(c: ResultCol) -> Col {
+    match c {
+        ResultCol::Name => Col::Name,
+        ResultCol::Path => Col::Second,
+        ResultCol::Size => Col::Size,
+        ResultCol::Type => Col::Kind,
+        ResultCol::Modified => Col::Modified,
+        ResultCol::Opened => Col::Opened,
+        c => Col::Result(c),
+    }
+}
+
+/// The search results column a table column of a search tab shows.
+fn result_col(c: Col) -> Option<ResultCol> {
+    Some(match c {
+        Col::Name => ResultCol::Name,
+        Col::Second => ResultCol::Path,
+        Col::Size => ResultCol::Size,
+        Col::Kind => ResultCol::Type,
+        Col::Modified => ResultCol::Modified,
+        Col::Opened => ResultCol::Opened,
+        Col::Result(c) => c,
+        _ => return None,
+    })
+}
+
+/// The columns shown: the Sizes view keeps its own set; search results theirs
+/// (`search_columns`); elsewhere the chosen ones.
 fn columns(
     (search, trash, sizes): (bool, bool, bool),
-    list: &list_view::ListOptions,
-    copies: bool,
-    tags: bool,
+    (list, results): (&list_view::ListOptions, &[ResultCol]),
+    (copies, tags, hosts): (bool, bool, bool),
 ) -> Vec<Col> {
     let mut cols = vec![Col::Name];
-    if sizes {
+    if search {
+        cols.extend(results.iter().map(|&c| col_of(c)));
+        if hosts {
+            cols.push(Col::Host);
+        }
+    } else if sizes {
         cols.extend([
             Col::Second,
             Col::Size,
@@ -88,6 +130,8 @@ fn columns(
             (ListColumn::Modified, Col::Modified),
             (ListColumn::Created, Col::Created),
             (ListColumn::Opened, Col::Opened),
+            (ListColumn::RunCount, Col::RunCount),
+            (ListColumn::DateRun, Col::DateRun),
         ] {
             if list.shows(c) {
                 cols.push(col);
@@ -188,7 +232,17 @@ pub fn ui(
     // --- Task 33 ---: copies badge (library on).
     let copies_col = lib.is_open();
     // --- Task 66 ---
-    let cols = columns((search, trash, sizes), cx.list, copies_col, tags_col);
+    let results_cols = match search {
+        true => crate::search_columns::columns_of(tab, &cx.views.search).to_vec(),
+        false => Vec::new(),
+    };
+    // Network indexes: hits from paired devices name their host.
+    let hosts_col = search && tab.entries().iter().any(|e| e.path.scheme == "node");
+    let cols = columns(
+        (search, trash, sizes),
+        (&*cx.list, &results_cols[..]),
+        (copies_col, tags_col, hosts_col),
+    );
     let relative = cx.list.relative_dates;
     let now = chrono::Local::now();
     let disclosure = tab.disclosure;
@@ -246,14 +300,17 @@ pub fn ui(
             .at_least(30.0)
             .clip(true),
             Col::Kind => Column::initial(130.0).at_least(50.0).clip(true),
+            Col::Host => Column::initial(110.0).at_least(40.0).clip(true),
             Col::Size => Column::initial(80.0).at_least(50.0),
             // Room for "Yesterday at 14:05".
-            Col::Modified | Col::Created | Col::Opened => {
+            Col::Modified | Col::Created | Col::Opened | Col::DateRun => {
                 Column::initial(140.0).at_least(60.0).clip(true)
             }
+            Col::RunCount => Column::initial(70.0).at_least(40.0).clip(true),
             Col::Files | Col::OfUsed => Column::initial(70.0).at_least(40.0).clip(true),
             Col::Copies => Column::initial(64.0).at_least(40.0).clip(true),
             Col::Tags => Column::initial(120.0).at_least(40.0).clip(true),
+            Col::Result(_) => Column::initial(110.0).at_least(40.0).clip(true),
         });
     }
     if let Some(pos) = tab.scroll_to.take() {
@@ -281,9 +338,49 @@ pub fn ui(
     let lib_open = lib.is_open();
     let list = &mut *cx.list;
     let tags_setting = &mut *cx.tags_column;
+    // Task 76: a search tab's headers sort by any of its columns and open its chooser.
+    let results_opts: &mut ResultsOptions = &mut cx.views.search;
+    let results_sort = tab.results.sort(tab.sort);
+    let own_columns = tab.results.columns.is_some();
+    let mut results_click = None;
+    let mut chooser = crate::search_columns::ChooserOut::default();
     let scrolled = table
         .header(ROW_H, |mut header| {
             for &c in &cols {
+                if let Some(rc) = result_col(c).filter(|_| search) {
+                    header.col(|ui| {
+                        let label = rc.label();
+                        let at = results_sort.iter().position(|(k, _)| *k == rc);
+                        let arrow = match at.map(|i| (i, results_sort[i].1)) {
+                            Some((0, true)) => " ⏶",
+                            Some((0, false)) => " ⏷",
+                            Some((_, true)) => " ▵",
+                            Some((_, false)) => " ▿",
+                            None => "",
+                        };
+                        let text = egui::RichText::new(format!("{label}{arrow}")).strong();
+                        let name = match at.map(|i| results_sort[i].1) {
+                            Some(true) => crate::i18n::tr("search_results.sorted_ascending")
+                                .replace("{name}", &label),
+                            Some(false) => crate::i18n::tr("search_results.sorted_descending")
+                                .replace("{name}", &label),
+                            None => label.clone(),
+                        };
+                        let r = ui.add(egui::Button::new(text).frame(false)).named(&name);
+                        if r.clicked() {
+                            results_click = Some(rc);
+                        }
+                        crate::search_columns::header_chooser(
+                            ui,
+                            &r,
+                            results_opts,
+                            &results_sort,
+                            own_columns,
+                            &mut chooser,
+                        );
+                    });
+                    continue;
+                }
                 let (label, key) = match c {
                     Col::Name => ("Name", Some(SortKey::Name)),
                     Col::Second if search => ("Folder", None),
@@ -291,6 +388,7 @@ pub fn ui(
                     Col::Second if trash => ("Original location", None),
                     Col::Second => ("Ext", Some(SortKey::Ext)),
                     Col::Kind => ("Kind", None),
+                    Col::Host => (crate::i18n::tr("search_tab.host"), None),
                     // Always biggest first.
                     Col::Size if sizes => ("Size ⏷", None),
                     Col::Size => ("Size", Some(SortKey::Size)),
@@ -299,10 +397,14 @@ pub fn ui(
                     Col::Modified => ("Modified", Some(SortKey::Modified)),
                     Col::Created => ("Created", None),
                     Col::Opened => ("Last opened", None),
+                    Col::RunCount => (crate::i18n::tr("columns.run_count"), None),
+                    Col::DateRun => (crate::i18n::tr("columns.date_run"), None),
                     Col::Files => ("Files", None),
                     Col::OfUsed => ("Of used", None),
                     Col::Copies => ("Copies", None),
                     Col::Tags => ("Tags", None),
+                    // Search tabs only, drawn above.
+                    Col::Result(_) => ("", None),
                 };
                 header.col(|ui| {
                     let Some(key) = key.filter(|_| !sizes) else {
@@ -532,8 +634,9 @@ pub fn ui(
                             row.col(|ui| {
                                 tint(ui);
                                 if search {
-                                    let mut folder =
-                                        e.path.parent().map(|d| d.display()).unwrap_or_default();
+                                    let mut folder = crate::devices::node_folder(&e.path)
+                                        .or_else(|| e.path.parent().map(|d| d.display()))
+                                        .unwrap_or_default();
                                     if let Some(s) = source.filter(|_| tab.library_search) {
                                         folder = format!("{} · {folder}", s.label);
                                     }
@@ -564,6 +667,13 @@ pub fn ui(
                                 } else {
                                     ui.label(cell(&e.ext, Some(muted)));
                                 }
+                            });
+                        }
+                        Col::Host => {
+                            row.col(|ui| {
+                                tint(ui);
+                                let host = crate::devices::node_host(&e.path).unwrap_or_default();
+                                ui.add(egui::Label::new(cell(&host, Some(muted))).truncate());
                             });
                         }
                         Col::Kind => {
@@ -608,6 +718,26 @@ pub fn ui(
                                 ui.label(cell(&d, Some(muted)));
                             });
                         }
+                        Col::RunCount => {
+                            row.col(|ui| {
+                                tint(ui);
+                                let n = list_view::run_count_text(list_view::run_of(e));
+                                ui.label(cell(&n, Some(muted)));
+                            });
+                        }
+                        Col::DateRun => {
+                            row.col(|ui| {
+                                tint(ui);
+                                let at = list_view::run_of(e).map(|r| {
+                                    std::time::UNIX_EPOCH
+                                        + std::time::Duration::from_millis(
+                                            u64::try_from(r.last_run).unwrap_or(0),
+                                        )
+                                });
+                                let d = list_view::date_label(at, relative, now);
+                                ui.label(cell(&d, Some(muted)));
+                            });
+                        }
                         Col::Files | Col::OfUsed => {
                             let total = match crate::sizes::size_of(lib, walked, e) {
                                 Some(crate::sizes::Size::Known(t)) => Some(t),
@@ -645,6 +775,36 @@ pub fn ui(
                                         muted
                                     };
                                     ui.label(cell(&b.text, Some(color))).on_hover_text(&b.hover);
+                                }
+                            });
+                        }
+                        Col::Result(rc) => {
+                            row.col(|ui| {
+                                tint(ui);
+                                let text = match rc {
+                                    ResultCol::FolderSize if e.kind == Kind::Dir => {
+                                        crate::sizes::size_text(lib, walked, e)
+                                    }
+                                    ResultCol::Extension => e.ext.clone(),
+                                    rc => crate::search_columns::meta_text(
+                                        rc,
+                                        e,
+                                        &tab.results.meta,
+                                        relative,
+                                    ),
+                                };
+                                match rc {
+                                    ResultCol::FolderSize | ResultCol::SizeOnDisk => {
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| ui.label(cell(&text, Some(muted))),
+                                        );
+                                    }
+                                    _ => {
+                                        ui.add(
+                                            egui::Label::new(cell(&text, Some(muted))).truncate(),
+                                        );
+                                    }
                                 }
                             });
                         }
@@ -706,6 +866,18 @@ pub fn ui(
     }
     if let Some(key) = sort_click {
         tab.sort = (key, if tab.sort.0 == key { !tab.sort.1 } else { true });
+    }
+    // --- Task 76 ---
+    if let Some(rc) = results_click {
+        crate::search_columns::header_click(tab, rc, &cx.views.search);
+    }
+    if chooser.clear_then_by {
+        let primary = tab.results.sort(tab.sort)[..1].to_vec();
+        let tab_sort = tab.sort;
+        tab.results.set_sort(primary, tab_sort);
+    }
+    if chooser.own_columns_off {
+        tab.results.columns = None;
     }
     for (name, all) in toggles {
         tab.toggle_expanded(&name, all);

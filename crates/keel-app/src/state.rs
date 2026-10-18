@@ -361,6 +361,10 @@ pub struct AppState {
     pub find: crate::bookmarks::Find,
     /// Settings → Search index: the page's edits and the offline roots it marks.
     pub search_page: crate::search_settings::SearchPage,
+    /// Task 76: Settings → Advanced.
+    pub advanced: crate::settings_io::AdvancedUi,
+    /// Task 77: the File List Editor window.
+    pub filelist_editor: crate::filelist_editor::FileListEditor,
 }
 
 impl AppState {
@@ -472,6 +476,8 @@ impl AppState {
             color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
             info: Default::default(),
             search_page: Default::default(),
+            advanced: Default::default(),
+            filelist_editor: Default::default(),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
@@ -564,6 +570,7 @@ impl AppState {
             &mut self.keyboard,
             &mut find,
             &mut self.search_page,
+            &mut self.advanced,
         );
         if s.search_index != index_before {
             crate::search_settings::push(self.searcher.clone(), &s.search_index);
@@ -1011,6 +1018,8 @@ impl AppState {
             Msg::Inspected { req, result } => self.preview.inspector.answered(req, *result),
             Msg::Search { id, result } => self.searched(id, result),
             Msg::Searcher { searcher, reason } => {
+                // Network indexes: what paired devices' searches run on.
+                *self.devices.searcher.write() = Some(searcher.clone());
                 crate::search_settings::push(Some(searcher.clone()), &self.settings.search_index);
                 self.searcher = Some(searcher);
                 self.search_reason = reason;
@@ -1200,7 +1209,14 @@ impl AppState {
             }
             _ if library.is_some() => library,
             _ if remote => None,
-            Some(s) => Some(s),
+            // Network indexes: the paired devices too, with Include paired devices on
+            // (`network-index-host:` is read either way).
+            Some(s) => {
+                let net = (settings.include_devices && within.is_none())
+                    .then(|| self.devices.net())
+                    .flatten();
+                Some(Arc::new(crate::net_search::NetSearcher::new(s, net)) as Arc<dyn Searcher>)
+            }
             None => {
                 // Still loading: try again shortly.
                 *due = Some(Instant::now() + DEBOUNCE);
@@ -1243,7 +1259,11 @@ impl AppState {
         );
         q.folders_only = applied.folders_only;
         q.within = within.as_ref().and_then(VPath::to_local_path);
-        tab.highlight = keel_search::Highlighter::new(&q);
+        // Task 76: `no-highlight:` terms are found but not highlighted.
+        tab.highlight = keel_search::Highlighter::new(&keel_search::Query {
+            text: crate::search_view::without_no_highlight(&q.text, q.regex),
+            ..q.clone()
+        });
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
             Some(searcher) => self.search.search(
@@ -2174,6 +2194,11 @@ impl AppState {
                 self.theme.apply(&self.ctx);
             }
             Action::Settings => self.settings_open = !self.settings_open,
+            Action::SettingsIo(cmd) => {
+                self.settings_open = true;
+                self.remotes.page = crate::settings::Page::Advanced;
+                self.advanced.pending = Some(cmd);
+            }
             Action::NewWindow => {
                 if let Err(e) = crate::single_instance::new_window() {
                     self.toasts
@@ -2886,6 +2911,7 @@ impl AppState {
             Action::FileList(cmd) => self.filelist_cmd(p, cmd),
             Action::Finder(cmd) => crate::finder::run(self, p, cmd),
             Action::Find(cmd) => self.find_cmd(p, cmd), // Task 76
+            Action::Results(cmd) => self.results_cmd(p, cmd), // Task 76
             // --- Task 65 ---
             Action::ToggleSidebar => self.settings.show_sidebar = !self.settings.show_sidebar,
             Action::CustomizeToolbar => crate::toolbar::open_customize(&self.ctx),

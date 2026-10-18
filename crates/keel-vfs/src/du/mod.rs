@@ -25,8 +25,14 @@
 //!   own, alongside the folder walk, within [`ScanOptions::device_time_limit_secs`]
 //!   (see [`mtp`]). [`list_scannable_roots`] offers drives and device storages.
 //!
-//! Node ids are stable until [`Tree::compact`] (saving and loading compact). Refreshing a
-//! branch marks its old items [`NodeKind::Dead`] and appends the new ones.
+//! - **Priority:** the scan's threads run at the CPU and I/O priority of
+//!   [`ScanOptions::priority`] (see [`priority`]).
+//! - **File Watcher:** after a scan, [`watch::Watcher`] reports what changes in the roots
+//!   and [`Tree::apply_changes`] applies it (see [`watch`]).
+//!
+//! Node ids are stable until [`Tree::compact`] (saving and loading compact, and so does
+//! applying watched changes that add or remove items). Refreshing a branch marks its old
+//! items [`NodeKind::Dead`] and appends the new ones.
 
 pub mod export;
 #[cfg(test)]
@@ -34,6 +40,8 @@ mod export_tests;
 mod file;
 mod filter;
 pub mod mtp;
+pub mod owner;
+pub mod priority;
 pub mod report;
 mod sys;
 #[cfg(test)]
@@ -41,6 +49,9 @@ mod tests;
 #[cfg(test)]
 mod tests_mtp;
 mod walk;
+pub mod watch;
+#[cfg(test)]
+mod watch_tests;
 // The Disk Usage window's analysis tabs (Task 84).
 pub mod analysis;
 #[cfg(test)]
@@ -53,6 +64,7 @@ pub mod storage;
 
 pub use file::{load, load_from, save, save_to, FORMAT, VERSION};
 pub use filter::Filters;
+pub use priority::Priority;
 
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
@@ -146,8 +158,11 @@ pub mod flag {
     pub const MOUNT: u16 = 1 << 11;
     /// A link that was followed: the item is what it leads to.
     pub const FOLLOWED: u16 = 1 << 12;
+    /// An unreadable folder whose listing was refused (access denied): an elevated scan
+    /// may read it.
+    pub const DENIED: u16 = 1 << 13;
     /// Every known bit (a loaded scan keeps only these).
-    pub const ALL: u16 = (1 << 13) - 1;
+    pub const ALL: u16 = (1 << 14) - 1;
 }
 
 /// File attributes, Windows' bits; synthesized elsewhere (read-only from the write bits,
@@ -301,6 +316,8 @@ pub struct ScanOptions {
     /// flagged [`flag::INCOMPLETE`] and [`ScanInfo::timed_out`] is set); 0: no limit.
     /// Devices list slowly (one request per item), so a full phone can take minutes.
     pub device_time_limit_secs: u64,
+    /// The CPU and I/O priority of the scan's threads (default normal).
+    pub priority: Priority,
 }
 
 impl Default for ScanOptions {
@@ -315,6 +332,7 @@ impl Default for ScanOptions {
             threads: 0,
             free_and_unknown: true,
             device_time_limit_secs: 30 * 60,
+            priority: Priority::Normal,
         }
     }
 }
@@ -354,6 +372,9 @@ pub struct ScanInfo {
     pub excluded: u64,
     /// A portable device's walk ran out of [`ScanOptions::device_time_limit_secs`].
     pub timed_out: bool,
+    /// Of the folders that could not be listed, those refused (access denied): an elevated
+    /// scan may read them.
+    pub denied: u64,
 }
 
 /// A finished (or cancelled) scan.
@@ -545,6 +566,34 @@ impl Tree {
     /// removed; the top item rescans everything. Totals above it are updated.
     pub fn refresh(&mut self, id: NodeId, handle: &ScanHandle) -> anyhow::Result<()> {
         walk::refresh(self, id, handle)
+    }
+
+    /// Applies what the File Watcher saw change ([`watch`]): each of `paths` (and a new
+    /// item's folder) is read again from the disk; new items are added (new folders
+    /// walked), changed files read again, removed items dropped, and the totals above
+    /// summed again. Paths outside the scan are ignored. When items were added or removed
+    /// the tree is compacted and [`watch::Applied::remap`] maps the old ids.
+    pub fn apply_changes(&mut self, paths: &[PathBuf]) -> anyhow::Result<watch::Applied> {
+        walk::apply(self, paths)
+    }
+
+    /// Folders whose listing was refused (access denied).
+    pub(crate) fn count_denied(&self) -> u64 {
+        (self.nodes())
+            .filter(|(_, n)| n.is_container() && n.has(flag::DENIED))
+            .count() as u64
+    }
+
+    /// The folder roots (not device storages) an elevated scan might read more of: some of
+    /// their folders refused to be listed.
+    pub fn denied_roots(&self) -> Vec<PathBuf> {
+        if self.info.denied == 0 {
+            return Vec::new();
+        }
+        (self.roots.iter())
+            .filter(|r| r.device.is_none())
+            .map(|r| r.path.clone())
+            .collect()
     }
 
     /// Drops Dead items; ids change. Returns the old id → new id map (NONE for dropped).
@@ -761,6 +810,7 @@ fn notes(flags: u16) -> Vec<&'static str> {
         (flag::JUNCTION, "junction"),
         (flag::MOUNT, "mount point"),
         (flag::FOLLOWED, "followed"),
+        (flag::DENIED, "access denied"),
     ]
     .into_iter()
     .filter(|(f, _)| flags & f != 0)

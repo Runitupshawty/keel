@@ -53,6 +53,8 @@ struct CacheKey {
     /// The tree's generation while the triangles show.
     tree: Option<u64>,
     groups: u64,
+    /// Task 76: the search results' own order (`set_custom_order`).
+    custom: u64,
 }
 
 impl CacheKey {
@@ -65,6 +67,7 @@ impl CacheKey {
             self.totals,
             self.tree,
             self.groups,
+            self.custom,
         ) == (
             o.generation,
             o.mode,
@@ -72,6 +75,7 @@ impl CacheKey {
             o.totals,
             o.tree,
             o.groups,
+            o.custom,
         )
     }
 }
@@ -177,7 +181,7 @@ pub struct Tab {
     /// Every entry in the current sort order, for (generation, sort); filtering is a
     /// linear pass over it, so a keystroke never sorts.
     sorted: Vec<usize>,
-    sorted_key: Option<(u64, u64, Mode)>,
+    sorted_key: Option<(u64, u64, Mode, u64)>,
     /// Entry names (names survive a refresh, indices do not).
     pub selected: BTreeSet<String>,
     pub cursor: Option<String>,
@@ -254,6 +258,15 @@ pub struct Tab {
     group_starts: Vec<(usize, u32)>,
     /// Creation times read off the UI thread.
     pub meta: crate::list_view::Meta,
+    /// Phase 17: the Disk usage view's scan and tree list (made when first shown).
+    pub du_view: Option<Box<crate::disk_usage::view::PaneView>>,
+    // --- Task 76 ---
+    /// A search tab's sort, columns, Folders sidebar and disk-read columns.
+    pub results: crate::search_columns::TabResults,
+    /// The search results' order (`search_columns::prepare`), replacing the sort of
+    /// `visible()`; may leave entries out (the Folders sidebar).
+    custom_order: Option<Vec<usize>>,
+    custom_gen: u64,
 }
 
 impl Tab {
@@ -333,6 +346,10 @@ impl Tab {
             group_gen: 0,
             group_starts: Vec::new(),
             meta: Default::default(),
+            du_view: None,
+            results: Default::default(),
+            custom_order: None,
+            custom_gen: 0,
         }
     }
 
@@ -458,6 +475,8 @@ impl Tab {
         let old_lower = std::mem::replace(&mut self.lower, listing.lower);
         self.order = listing.order;
         self.generation += 1;
+        self.custom_order = None;
+        self.custom_gen += 1;
         self.tree.top = self.entries.len();
         self.groups = None;
         self.group_key = None;
@@ -537,6 +556,7 @@ impl Tab {
             totals: self.totals_gen,
             tree: tree_on.then_some(self.tree_gen),
             groups: self.group_gen,
+            custom: self.custom_gen,
         };
         let top = self.tree.top;
         let ranks: Option<&[u32]> = (self.groups.as_ref())
@@ -562,10 +582,14 @@ impl Tab {
                 };
             }
             _ => {
-                let sort_key = (self.generation, self.totals_gen, mode);
+                let sort_key = (self.generation, self.totals_gen, mode, self.custom_gen);
                 if self.sorted_key != Some(sort_key) {
                     let order = &self.order;
                     self.sorted = match mode {
+                        _ if self.custom_order.is_some() => {
+                            let rows = self.custom_order.as_deref().unwrap_or_default();
+                            rows.iter().copied().filter(|&i| i < top).collect()
+                        }
                         (SortKey::Name, true, false) => order.clone(),
                         (SortKey::Name, false, false) => {
                             // Folders stay first; each group reversed.
@@ -1039,6 +1063,15 @@ impl Tab {
         self.cache_key = None;
         self.cache_gen += 1;
         self.group_starts.clear();
+    }
+
+    // --- Task 76: the search results' order ---
+
+    /// Replaces the sort of `visible()` with `order` (indices into `entries()`; those left
+    /// out are not shown) until the next listing; None goes back to the sort.
+    pub fn set_custom_order(&mut self, order: Option<Vec<usize>>) {
+        self.custom_order = order;
+        self.custom_gen += 1;
     }
 
     // --- Task 66: Group by ---

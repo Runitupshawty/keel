@@ -25,6 +25,7 @@ fn idempotent(req: &Request) -> bool {
             | Request::Grants
             | Request::DropStatus { .. }
             | Request::SyncPull { .. }
+            | Request::Search { .. }
     )
 }
 
@@ -86,7 +87,14 @@ fn permitted(grants: &[Grant], peer: PeerId, req: &Request) -> bool {
         | Request::StatPartial { source, path }
         | Request::Remove { source, path } => inside(source, path),
         Request::Rename { source, from, to } => inside(source, from) && inside(source, to),
+        // Its own grant (`search_permitted`), not a share.
+        Request::Search { .. } => false,
     }
+}
+
+/// Network indexes: a search needs the device's **Search my files** grant.
+fn search_permitted(search: &[PeerId], peer: PeerId, req: &Request) -> bool {
+    matches!(req, Request::Search { .. }) && search.contains(&peer)
 }
 
 impl Node {
@@ -115,7 +123,7 @@ impl Node {
                         let allowed = {
                             let state = node.state.lock();
                             !state.closed && !cancel.is_cancelled() && state.data.peers.iter().any(|r| r.peer.id == peer)
-                                && (permitted(&state.data.grants,peer,&req) || node.drop_permits(peer, &req))
+                                && (permitted(&state.data.grants,peer,&req) || search_permitted(&state.data.search, peer, &req) || node.drop_permits(peer, &req))
                         };
                         tracing::debug!(peer = %peer.0, what = req.name(), allowed, "net request");
                         node.emit_request(peer, req.name());
@@ -226,6 +234,7 @@ impl Node {
                     Response::Ok
                 }
                 Request::SyncPull { since, styles } => self.serve_sync(peer, since, styles).await?,
+                Request::Search { query } => self.serve_search(&ctx, query).await?,
                 Request::Write {
                     source,
                     path,

@@ -315,6 +315,7 @@ mod tests {
             search: Some("needle".into()),
             filelist: None,
             disk_usage: true,
+            du_scan: Vec::new(),
             select: None,
         };
         let (_server, rx) = served(&name);
@@ -341,6 +342,7 @@ mod tests {
             search: None,
             filelist: None,
             disk_usage: false,
+            du_scan: Vec::new(),
             select: None,
         };
         let (_server, rx) = served(&name);

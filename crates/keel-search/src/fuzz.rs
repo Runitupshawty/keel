@@ -40,8 +40,17 @@ pub fn efu(data: &[u8]) {
             assert_eq!(again.columns, list.columns);
         }
     }
-    let searcher = FileListSearcher::new("fuzz", list);
-    for text in ["a", "*.txt", "folder:", "regex:^x", "in:c:/"] {
+    let searcher = FileListSearcher::new("fuzz", list).with_source("fuzz.efu");
+    for text in [
+        "a",
+        "*.txt",
+        "folder:",
+        "regex:^x",
+        "in:c:/",
+        "size:>1 | !ext:txt",
+        "filelist-filename:fuzz dm:<2030",
+        "dupe:size",
+    ] {
         let q = crate::Query {
             text: text.into(),
             max: 50,
@@ -49,6 +58,31 @@ pub fn efu(data: &[u8]) {
         };
         let _ = crate::Searcher::query(&searcher, &q);
     }
+}
+
+/// A `.metadata.efu` sidecar, read under small bounds for a folder (`C:\Photos`, so full
+/// paths in it count too): no more files than rows, every property has a value and is found
+/// again by its column, and a name it lacks has no properties.
+pub fn metadata_efu(data: &[u8]) {
+    use crate::filelist::Sidecar;
+    let limits = Limits {
+        max_rows: 2_000,
+        max_line: 4096,
+    };
+    let Ok(sidecar) = Sidecar::parse(data, Some("C:\\Photos"), &limits) else {
+        return;
+    };
+    assert!(sidecar.len() <= limits.max_rows);
+    let text = String::from_utf8_lossy(data);
+    for name in text.split([',', '\n', '"']).take(64) {
+        let props = sidecar.properties(name);
+        assert!(props.len() <= sidecar.columns.len());
+        for (column, value) in props {
+            assert!(!value.is_empty());
+            assert!(sidecar.property(name, column).is_some());
+        }
+    }
+    assert!(sidecar.properties("\0not a listed name\0").is_empty());
 }
 
 /// MFT `FILE` records as the elevated volume read hands them over: the whole input as
@@ -153,6 +187,11 @@ mod tests {
     #[test]
     fn fuzz_efu() {
         run("efu", super::efu);
+    }
+
+    #[test]
+    fn fuzz_metadata_efu() {
+        run("metadata_efu", super::metadata_efu);
     }
 
     #[test]

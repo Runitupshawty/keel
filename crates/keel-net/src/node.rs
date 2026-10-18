@@ -49,6 +49,11 @@ pub struct NodeOptions {
     pub sync_every: Duration,
     /// Library sync: most entries applied from one device per minute; the rest wait.
     pub sync_rate: usize,
+    /// Network indexes: how long a paired device's search may run here before it is
+    /// answered with an error.
+    pub search_timeout: Duration,
+    /// Network indexes: searches one device may run here per minute.
+    pub search_rate: usize,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -62,6 +67,8 @@ impl Default for NodeOptions {
             drop_answer_wait: crate::spacedrop::GIVE_UP,
             sync_every: crate::sync::SYNC_EVERY,
             sync_rate: crate::sync::SYNC_RATE,
+            search_timeout: crate::search::SEARCH_TIMEOUT,
+            search_rate: crate::search::SEARCH_RATE,
         }
     }
 }
@@ -93,6 +100,9 @@ impl NodeOptions {
             drop_answer_wait: crate::spacedrop::GIVE_UP,
             sync_every: crate::sync::SYNC_EVERY,
             sync_rate: crate::sync::SYNC_RATE,
+            // Answered well inside the asking device's request timeout.
+            search_timeout: request_timeout / 2,
+            search_rate: crate::search::SEARCH_RATE,
         }
     }
     pub(crate) fn builder(&self, key: SecretKey) -> Result<Builder> {
@@ -172,6 +182,8 @@ pub struct Node {
     pub(crate) sync: Mutex<crate::sync::SyncState>,
     /// Wakes the sync loop (a device connected, or sync was turned on).
     pub(crate) sync_wake: Arc<tokio::sync::Notify>,
+    /// Network indexes: searches under way and each device's rate.
+    pub(crate) searches: Arc<Mutex<crate::search::SearchState>>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -239,6 +251,7 @@ impl Node {
             drops: Mutex::default(),
             sync: Mutex::default(),
             sync_wake: Arc::default(),
+            searches: Arc::default(),
         });
         crate::spacedrop::register_node(&node);
         let (handler, id) = (node.handler.clone(), node.id());
@@ -374,6 +387,7 @@ impl Node {
         let ((), mut state) = self.update(|d| {
             d.peers.retain(|r| &r.peer.id != peer);
             d.grants.retain(|g| &g.peer != peer);
+            d.search.retain(|p| p != peer);
             Ok(())
         })?;
         state.disconnect(peer);

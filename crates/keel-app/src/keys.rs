@@ -204,6 +204,8 @@ pub enum Action {
     ToggleInspector,
     /// Settings window (Ctrl+,).
     Settings,
+    /// Task 76: Settings → Advanced, Import / Export settings…, Reset all settings.
+    SettingsIo(crate::settings_io::IoCmd),
     /// Start another Keel window (`keel --new-window`, same profile).
     NewWindow,
     // --- Task 85 ---
@@ -306,6 +308,8 @@ pub enum Action {
     // --- Task 76 ---
     /// Bookmarks, filters and search history (`bookmarks.rs`).
     Find(crate::bookmarks::FindCmd),
+    /// The search sidebars and Search current results (`search_view.rs`).
+    Results(crate::search_view::ResultsCmd),
     // --- Task 65 ---
     /// Show / hide the sidebar (Ctrl+Alt+S, the toolbar's sidebar button).
     ToggleSidebar,

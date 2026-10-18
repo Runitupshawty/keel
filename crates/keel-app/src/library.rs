@@ -1981,6 +1981,10 @@ impl AppState {
         let busy_input = self
             .ctx
             .input(|i| !i.events.is_empty() || i.pointer.is_moving());
+        if busy_input {
+            // The property index's idle job pauses too, with or without a library.
+            keel_search::propindex::note_activity();
+        }
         let range = keel_api::config::REMOTE_POLL_SECS;
         let poll = (self.settings.library.remote_poll_secs).clamp(*range.start(), *range.end());
         let poll = Duration::from_secs(poll);

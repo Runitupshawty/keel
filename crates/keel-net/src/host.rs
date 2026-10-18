@@ -29,7 +29,13 @@ pub struct LibraryHandler {
     /// one per served request or received file would cap a drop of small files at a few
     /// dozen a second). `close` (and dropping the handler) waits until they are written.
     log: crossbeam_channel::Sender<Logged>,
+    /// Network indexes: this device's system search (`set_search`).
+    search: Mutex<Option<SearchFn>>,
 }
+
+/// Network indexes: runs a query on this device's system index. Hit paths are full,
+/// slash-separated local paths (`keel_vfs::VPath::local(..).path`).
+pub type SearchFn = Arc<dyn Fn(&SearchQuery) -> Result<Vec<SearchHit>> + Send + Sync>;
 
 /// What the op log thread gets: an entry, or a request to say once all before it are in.
 enum Logged {
@@ -82,7 +88,19 @@ impl LibraryHandler {
             lib,
             drops: Mutex::default(),
             log,
+            search: Mutex::new(None),
         }
+    }
+
+    /// Network indexes: answers paired devices' searches (those given **Search my files**)
+    /// with `search`. Each hit inside a local source is given that source and path, so it
+    /// opens through a share; the node keeps that only where the device has a read grant.
+    /// Every search is written to the op log as `net.search`. Without this, searches fail.
+    pub fn set_search(
+        &self,
+        search: impl Fn(&SearchQuery) -> Result<Vec<SearchHit>> + Send + Sync + 'static,
+    ) {
+        *self.search.lock() = Some(Arc::new(search));
     }
 
     fn log_op(&self, kind: String, payload: serde_json::Value, result: String, ok: bool) {
@@ -180,6 +198,21 @@ fn locate(lib: &Library, id: &str, rel: &str) -> Result<(VPath, Arc<dyn Provider
     };
     ensure!(same(&expected, &actual), "path leaves the shared folder");
     Ok((abs, provider))
+}
+
+/// The source (of `roots`: id, local root path) holding the local `path`, and the path
+/// inside it. Windows compares the root without ASCII case (the path keeps its own).
+pub(crate) fn shared_at(roots: &[(String, String)], path: &str) -> Option<(String, String)> {
+    roots.iter().find_map(|(id, root)| {
+        let root = root.trim_end_matches('/');
+        let head = path.get(..root.len())?;
+        let same = match cfg!(windows) {
+            true => head.eq_ignore_ascii_case(root),
+            false => head == root,
+        };
+        let rel = path[root.len()..].strip_prefix('/')?;
+        (same && !rel.is_empty() && scope::valid_path(rel)).then(|| (id.clone(), rel.to_owned()))
+    })
 }
 
 fn changes(rel: &str) -> Result<()> {
@@ -591,6 +624,34 @@ impl Handler for LibraryHandler {
         let (inbox, ask) = self.drops.lock().clone()?;
         ask(offer);
         Some(inbox)
+    }
+    fn search(&self, ctx: &RequestCtx, query: &SearchQuery) -> Result<Vec<SearchHit>> {
+        let search = self.search.lock().clone();
+        let result = search
+            .context("this device does not search its files")
+            .and_then(|search| search(query));
+        let roots: Vec<(String, String)> = (self.lib.sources().into_iter())
+            .filter(|s| s.root.scheme == "file" && s.kind != SourceKind::Device)
+            .map(|s| (s.id.0, s.root.path))
+            .collect();
+        let payload = json!({
+            "peer": ctx.peer.0.to_string(),
+            "device": ctx.label,
+            "query": query.text,
+            "hits": result.as_ref().map_or(0, Vec::len),
+        });
+        let (text, ok) = match &result {
+            Ok(_) => ("ok".to_owned(), true),
+            Err(e) => (format!("{e:#}"), false),
+        };
+        self.log_op("net.search".into(), payload, text, ok);
+        let mut hits = result?;
+        for hit in &mut hits {
+            if hit.open.is_none() {
+                hit.open = shared_at(&roots, &hit.path);
+            }
+        }
+        Ok(hits)
     }
     /// `net.<op>` with the device's id and label.
     fn close(&self) {

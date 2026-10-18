@@ -20,6 +20,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories.workspace = true
 ignore.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
+# The property index reads file properties through keel-props (Settings → Search index →
+# Properties).
+keel-props = { path = "../keel-props" }
+# Keel's search language; `si:` hits from the Windows Search index and file lists are
+# checked against the rest of the query too.
+keel-query = { path = "../keel-query" }
 notify.workspace = true
 nucleo.workspace = true
 parking_lot.workspace = true
@@ -40,4 +46,4 @@ toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 libloading.workspace = true
-windows = { workspace = true, features = ["Win32_Security", "Win32_Security_Authorization", "Win32_System_Com", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Pipes", "Win32_System_Services", "Win32_System_Threading", "Win32_UI_Shell"] }
+windows = { workspace = true, features = ["Win32_Security", "Win32_Security_Authorization", "Win32_System_Com", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Pipes", "Win32_System_Search", "Win32_System_Services", "Win32_System_Threading", "Win32_UI_Shell"] }

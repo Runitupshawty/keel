@@ -34,6 +34,10 @@ pub enum FileListCmd {
         opts: ExportOptions,
         selection: bool,
     },
+    /// Open the File List Editor window (`filelist_editor`).
+    Editor,
+    /// Files and folders dropped on the File List Editor: add them to its list.
+    EditorAdd(Vec<PathBuf>),
 }
 
 pub enum FileListMsg {
@@ -45,6 +49,8 @@ pub enum FileListMsg {
     },
     /// An export finished: the file and how many rows, or why not.
     Exported(Result<(PathBuf, usize), String>),
+    /// A File List Editor worker answered.
+    Editor(crate::filelist_editor::EditorMsg),
 }
 
 /// The Export dialog.
@@ -156,6 +162,8 @@ impl AppState {
             FileListCmd::Open(Some(path)) => {
                 worker::spawn("keel-filelist-read", move || load(p, path, &tx, &ctx));
             }
+            FileListCmd::Editor => self.filelist_editor.show(),
+            FileListCmd::EditorAdd(paths) => self.filelist_editor.add(paths, &tx, &ctx),
             FileListCmd::Export => {
                 let tab = self.tab(p);
                 let shown = tab.visible_cached().len();
@@ -210,13 +218,14 @@ impl AppState {
                 path.display()
             )),
             FileListMsg::Exported(Err(e)) => self.toasts.error(format!("Export: {e}")),
+            FileListMsg::Editor(msg) => self.filelist_editor.answered(msg),
         }
     }
 
     /// A search tab over `searcher`'s entries, listing all of them at once.
     pub fn open_list_tab(&mut self, p: usize, path: &Path, searcher: Arc<FileListSearcher>) {
-        let dir = path
-            .parent()
+        let dir = (path.parent())
+            .filter(|d| d.is_absolute())
             .map_or_else(|| self.tab(p).dir.clone(), VPath::local);
         let mut tab = Tab::search(dir);
         tab.filelist = Some(searcher);
@@ -231,20 +240,33 @@ impl AppState {
     }
 }
 
-/// Reads `path` on this (worker) thread and sends the tab's searcher.
-fn load(pane: usize, path: PathBuf, tx: &crossbeam_channel::Sender<Msg>, ctx: &egui::Context) {
+/// A file list tab's searcher over `list`, read from `path`.
+pub fn searcher(path: &Path, list: FileList) -> Arc<FileListSearcher> {
     let label = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
+    let searcher = FileListSearcher::new(label, list)
+        .with_cap(LIST_HITS)
+        .with_source(path.display().to_string());
+    Arc::new(searcher)
+}
+
+/// Reads `path` on this (worker) thread and sends the tab's searcher.
+fn load(pane: usize, path: PathBuf, tx: &crossbeam_channel::Sender<Msg>, ctx: &egui::Context) {
     let result = read_file(&path, &Limits::default())
-        .map(|list| Arc::new(FileListSearcher::new(label, list).with_cap(LIST_HITS)))
+        .map(|list| searcher(&path, list))
         .map_err(|e| format!("{e:#}"));
     worker::send(
         tx,
         ctx,
         Msg::FileList(FileListMsg::Loaded { pane, path, result }),
     );
+}
+
+/// Writes `list` to `path` as EFU (the File List Editor's Save).
+pub fn save_efu(list: &FileList, path: &Path) -> anyhow::Result<()> {
+    write_list(list, &ExportOptions::new(Format::Efu), path)
 }
 
 /// Writes `list` to `path` (through a temporary file next to it, so a failed write leaves

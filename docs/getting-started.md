@@ -31,6 +31,7 @@ Keel is installed to `%LOCALAPPDATA%\Programs\Keel`, with a Start menu shortcut 
 $i = [scriptblock]::Create((irm https://raw.githubusercontent.com/Runitupshawty/keel/main/scripts/install.ps1))
 & $i -Desktop -AddToPath
 & $i -UrlProtocol      # also open keel: links with Keel ([keel: links](files.md#keel-links))
+& $i -EfuAssociation   # also open .efu file lists with Keel (files.md, "Opening .efu files from Explorer")
 & $i -Uninstall
 ```
 

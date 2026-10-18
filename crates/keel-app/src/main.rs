@@ -24,6 +24,7 @@ mod disk_usage;
 mod dropzone;
 mod du_tabs; // Task 84: the Disk Usage window's analysis tabs
 mod explorer_menu; // Task 85: Search in Keel / Analyze disk usage in Explorer's menu
+mod filelist_editor; // Task 77: the File List Editor window
 mod filelist_ui; // Task 77: file list tabs, Export, `keel filelist`
 mod finder; // Phase 14 Task 67: Quick Look, path bar, spring-loading, Go to Folder
 mod finder_icons; // Task 68: the built-in Keel Finder icon theme
@@ -51,6 +52,7 @@ mod list_view; // Task 66: list view columns, Group by, View Options
 mod media;
 mod media_viewer;
 mod mount_ui;
+mod net_search; // network indexes: searching paired devices (Phase 16 Task 78)
 mod palette;
 mod pane;
 mod path_bar; // Phase 14 Task 67
@@ -64,12 +66,15 @@ mod recover_cli; // Phase 17 Task 85: `keel recover`
 mod remotes;
 #[cfg(test)]
 mod screenshots; // docs/screenshots (ignored: needs a GPU)
+mod search_columns; // Task 76: search results columns and sort
 mod search_filters; // Task 76
 mod search_history; // Task 76
 mod search_settings;
 mod search_tab;
+mod search_view; // Task 76: search sidebars, search current results, complete word
 mod session;
 mod settings;
+mod settings_io; // Task 76: Settings → Advanced, import, export and reset
 mod shell_menu; // Task 43: More options, the Windows shell menu
 mod sidebar;
 mod sidebar_glyphs; // Phase 14: the sidebar's icons

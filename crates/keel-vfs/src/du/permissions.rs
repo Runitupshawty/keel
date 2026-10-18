@@ -209,7 +209,7 @@ pub(crate) fn from_mode(uid: u32, gid: u32, mode: u32) -> Permissions {
 }
 
 #[cfg(unix)]
-mod unix {
+pub(crate) mod unix {
     use std::ffi::CStr;
 
     pub fn user(uid: u32) -> Option<String> {
