@@ -69,8 +69,8 @@ mod imp {
     use std::cell::Cell;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
-        FileIoPriorityHintInfo, SetFileInformationByHandle, FILE_IO_PRIORITY_HINT_INFO,
-        IoPriorityHintLow, IoPriorityHintVeryLow,
+        FileIoPriorityHintInfo, IoPriorityHintLow, IoPriorityHintVeryLow,
+        SetFileInformationByHandle, FILE_IO_PRIORITY_HINT_INFO,
     };
     use windows::Win32::System::Threading::{
         GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
@@ -116,9 +116,7 @@ mod imp {
             Priority::Low => IoPriorityHintLow,
             Priority::Background => IoPriorityHintVeryLow,
         };
-        let info = FILE_IO_PRIORITY_HINT_INFO {
-            PriorityHint: hint,
-        };
+        let info = FILE_IO_PRIORITY_HINT_INFO { PriorityHint: hint };
         // SAFETY: `info` is the FILE_IO_PRIORITY_HINT_INFO of the size passed; `handle` is
         // open for the call.
         let r = unsafe {
@@ -272,7 +270,9 @@ mod tests {
     /// Each priority applied on a thread of its own reads back the same from the system.
     #[test]
     fn priority_round_trips_through_the_system() {
-        let base = std::thread::spawn(|| (current(), current_io())).join().unwrap();
+        let base = std::thread::spawn(|| (current(), current_io()))
+            .join()
+            .unwrap();
         for p in [Priority::Low, Priority::Background] {
             let (ok, cpu, io) = std::thread::spawn(move || (apply(p), current(), current_io()))
                 .join()

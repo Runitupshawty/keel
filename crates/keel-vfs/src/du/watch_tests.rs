@@ -32,9 +32,15 @@ fn same_as_fresh(t: &Tree, root: &Path) {
     );
     for (id, n) in fresh.nodes().filter(|(_, n)| n.kind == NodeKind::Dir) {
         let path = fresh.path(id).unwrap();
-        let mine = t.find(&path).unwrap_or_else(|| panic!("{} missing", path.display()));
+        let mine = t
+            .find(&path)
+            .unwrap_or_else(|| panic!("{} missing", path.display()));
         let m = t.node(mine);
-        assert_eq!((m.size, m.files, m.items), (n.size, n.files, n.items), "{path:?}");
+        assert_eq!(
+            (m.size, m.files, m.items),
+            (n.size, n.files, n.items),
+            "{path:?}"
+        );
     }
 }
 
@@ -99,7 +105,9 @@ fn a_changed_file_is_read_again_in_place() {
     let (_tmp, r, mut t) = fixture();
     let two = t.find(&r.join("a/two.bin")).unwrap();
     write(&r.join("a/two.bin"), 5000);
-    let applied = t.apply_changes(&[r.join("a/two.bin"), r.join("a/two.bin")]).unwrap();
+    let applied = t
+        .apply_changes(&[r.join("a/two.bin"), r.join("a/two.bin")])
+        .unwrap();
     assert_eq!((applied.added, applied.removed, applied.updated), (0, 0, 1));
     assert!(applied.remap.is_none(), "ids stay");
     assert_eq!(t.node(two).size, 5000);
@@ -120,7 +128,10 @@ fn a_new_folder_is_walked_with_what_is_in_it() {
     assert_eq!(applied.added, 1, "the new folder, with what is in it");
     let new = t.find(&r.join("b/deep/new")).unwrap();
     assert_eq!(t.node(new).kind, NodeKind::Dir);
-    assert_eq!((t.node(new).size, t.node(new).files, t.node(new).folders), (60, 3, 1));
+    assert_eq!(
+        (t.node(new).size, t.node(new).files, t.node(new).folders),
+        (60, 3, 1)
+    );
     same_as_fresh(&t, &r);
 }
 
@@ -217,9 +228,10 @@ fn the_watcher_reports_a_new_file() {
         n += 1;
         std::thread::sleep(std::time::Duration::from_millis(300));
         seen.extend(w.drain(1000));
-        if seen.iter().any(|c| {
-            (c.path.file_name()).is_some_and(|f| f.to_string_lossy().starts_with("new"))
-        }) {
+        if seen
+            .iter()
+            .any(|c| (c.path.file_name()).is_some_and(|f| f.to_string_lossy().starts_with("new")))
+        {
             return;
         }
     }

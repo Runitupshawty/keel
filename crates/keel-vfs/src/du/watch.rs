@@ -115,7 +115,8 @@ impl Watcher {
             }
         }
         if watched.is_empty() {
-            let why = (failed.first()).map_or_else(|| "nothing to watch".to_owned(), |f| f.1.clone());
+            let why =
+                (failed.first()).map_or_else(|| "nothing to watch".to_owned(), |f| f.1.clone());
             anyhow::bail!("the folders cannot be watched: {why}");
         }
         Ok(Watcher {
@@ -197,7 +198,10 @@ impl ChangeLog {
 
     /// Newest first, only the paths `filter` matches.
     pub fn newest_first<'a>(&'a self, filter: &'a PathFilter) -> impl Iterator<Item = &'a Change> {
-        self.entries.iter().rev().filter(|c| filter.matches(&c.path))
+        self.entries
+            .iter()
+            .rev()
+            .filter(|c| filter.matches(&c.path))
     }
 }
 

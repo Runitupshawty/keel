@@ -221,7 +221,10 @@ impl<'a> Walker<'a> {
                 tracing::debug!("du: {}: {e}", job.path.display());
                 self.unreadable.fetch_add(1, Ordering::Relaxed);
                 let denied = e.kind() == std::io::ErrorKind::PermissionDenied;
-                self.mark(job.node, flag::UNREADABLE | if denied { flag::DENIED } else { 0 });
+                self.mark(
+                    job.node,
+                    flag::UNREADABLE | if denied { flag::DENIED } else { 0 },
+                );
                 return;
             }
         };
@@ -1316,7 +1319,10 @@ fn append(
         false => Vec::new(),
     };
     let old: Vec<NodeId> = tree.children(pid).collect();
-    let kept: Vec<Node> = old.iter().map(|&c| tree.nodes[c as usize].clone()).collect();
+    let kept: Vec<Node> = old
+        .iter()
+        .map(|&c| tree.nodes[c as usize].clone())
+        .collect();
     let cluster = sys::cluster_size(dir);
     let pool = pool(opts)?;
     let arena = Arena::new(
