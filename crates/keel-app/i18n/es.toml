@@ -1008,3 +1008,8 @@ reset_body = "Todos los ajustes vuelven a su valor predeterminado. Se conservan 
 reset_backup = "Antes se guardan los ajustes actuales, como {file} junto a config.toml."
 reset_failed = "No se restableció nada: no se pudo escribir la copia de seguridad ({why})"
 was_reset = "Todos los ajustes han vuelto a sus valores predeterminados; los anteriores están en {backup}"
+
+[disk_usage]
+phones_and_cameras = "Teléfonos y cámaras"
+looking_for_devices = "Buscando dispositivos…"
+double_click_to_scan = "Haz doble clic para analizar {name}"

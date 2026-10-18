@@ -906,3 +906,9 @@ reset_body = "Every setting goes back to its default. The interface language, re
 reset_backup = "The current settings are saved first, as {file} next to config.toml."
 reset_failed = "Nothing was reset: the backup could not be written ({why})"
 was_reset = "All settings are back to their defaults; the previous ones are in {backup}"
+
+# The Disk Usage window's Select drives dialog.
+[disk_usage]
+phones_and_cameras = "Phones and cameras"
+looking_for_devices = "Looking for devices…"
+double_click_to_scan = "Double-click to scan {name}"
