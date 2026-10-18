@@ -822,6 +822,9 @@ match_prefix = "Coincidir prefijo"
 match_suffix = "Coincidir sufijo"
 ignore_punctuation = "Ignorar puntuación"
 ignore_whitespace = "Ignorar espacios en blanco"
+include_devices = "Incluir dispositivos emparejados"
+include_devices_tip = "Las búsquedas también preguntan a tus dispositivos emparejados que dejan a este buscar sus archivos (Buscar mis archivos en su diálogo Compartidos); sus resultados muestran el equipo. network-index-host:<nombre> limita una búsqueda a un dispositivo."
+host = "Equipo"
 
 [media_viewer]
 close_tip = "Cerrar (Esc)"
@@ -1067,3 +1070,9 @@ tree_first_n = "Carpetas de los primeros {n} resultados"
 phones_and_cameras = "Teléfonos y cámaras"
 looking_for_devices = "Buscando dispositivos…"
 double_click_to_scan = "Haz doble clic para analizar {name}"
+
+[net_index]
+search_my_files = "Buscar mis archivos"
+search_my_files_tip = "Este dispositivo puede buscar tus archivos por nombre: ve rutas, tamaños y fechas, nunca su contenido. Solo abre lo que compartes con él. Desactivado por defecto; al desactivarlo se aplica al instante."
+daemon = "Buscar mis archivos aún no está disponible mientras esta ventana usa los dispositivos de keel-daemon"
+grant_failed = "No se pudo cambiar Buscar mis archivos: {error}"

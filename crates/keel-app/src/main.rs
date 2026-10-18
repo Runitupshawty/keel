@@ -51,6 +51,7 @@ mod list_view; // Task 66: list view columns, Group by, View Options
 mod media;
 mod media_viewer;
 mod mount_ui;
+mod net_search; // network indexes: searching paired devices (Phase 16 Task 78)
 mod palette;
 mod pane;
 mod path_bar; // Phase 14 Task 67

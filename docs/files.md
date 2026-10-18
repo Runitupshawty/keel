@@ -273,7 +273,7 @@ Results:
 - The status bar shows the number of results, their total size, and the selection's count and size.
 - Ctrl+Enter (also from the query box) or **Open path** opens the result's folder with it selected. **Copy name** copies the file names; **Copy path** copies full paths, in double quotes when Settings → General → **Copy path: In double quotes** is on.
 
-Settings → General → **Search**: **Search as you type** (on; off, Enter runs the query) and its delay (150 ms), and **Match whole filename when using wildcards** (on: `*.pdf` must match the whole name; off: a wildcard term may match anywhere in it, so `*.pd` finds `report.pdf`). With Everything as the backend its own wildcard setting applies.
+Settings → General → **Search**: **Search as you type** (on; off, Enter runs the query) and its delay (150 ms), and **Match whole filename when using wildcards** (on: `*.pdf` must match the whole name; off: a wildcard term may match anywhere in it, so `*.pd` finds `report.pdf`). With Everything as the backend its own wildcard setting applies. **Include paired devices** (off) also searches the paired devices that let this one search their files, with a Host column ([network indexes](devices.md#devices-and-spacedrop)).
 
 ## Search without Everything
 

@@ -713,6 +713,9 @@ match_prefix = "Match prefix"
 match_suffix = "Match suffix"
 ignore_punctuation = "Ignore punctuation"
 ignore_whitespace = "Ignore white-space"
+include_devices = "Include paired devices"
+include_devices_tip = "Searches also ask your paired devices that let this one search their files (Search my files in their Shares dialog); their hits show the Host. network-index-host:<name> keeps a search to one device."
+host = "Host"
 
 [media_viewer]
 close_tip = "Close (Esc)"
@@ -959,3 +962,9 @@ tree_first_n = "Folders of the first {n} results"
 phones_and_cameras = "Phones and cameras"
 looking_for_devices = "Looking for devices…"
 double_click_to_scan = "Double-click to scan {name}"
+
+[net_index]
+search_my_files = "Search my files"
+search_my_files_tip = "This device may search your files by name: it sees paths, sizes and dates, never what is inside. It opens only what you share with it. Off by default; turning it off takes effect at once."
+daemon = "Search my files is not available yet while this window uses keel-daemon's devices"
+grant_failed = "Could not change Search my files: {error}"
