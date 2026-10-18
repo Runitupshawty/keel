@@ -11,6 +11,8 @@
 .PARAMETER Desktop     Also create a Desktop shortcut.
 .PARAMETER AddToPath   Add the install folder to your user PATH, so `keel` works in a terminal.
 .PARAMETER UrlProtocol Open keel: links (keel:search?q=..., keel:open?path=...) with Keel, for this user.
+.PARAMETER EfuAssociation  Open .efu file lists (Everything's) with Keel on a double-click, for this user only
+                   (HKCU). Off by default; -Uninstall removes it when it is this Keel's.
 .PARAMETER Uninstall   Remove Keel: files, shortcuts, PATH entry and the Settings -> Apps entry.
 .PARAMETER InstallDir  Default: %LOCALAPPDATA%\Programs\Keel
 .PARAMETER NoRegister  Skip the Settings -> Apps (uninstall) registry entry.
@@ -23,6 +25,7 @@ param(
   [switch]$Desktop,
   [switch]$AddToPath,
   [switch]$UrlProtocol,
+  [switch]$EfuAssociation,
   [switch]$Uninstall,
   [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Keel'),
   [switch]$NoRegister,
@@ -67,6 +70,48 @@ function Set-UrlProtocol([string]$Exe, [bool]$On) {
       Remove-Item $UrlKey -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
+}
+
+# The per-user .efu association (opt-in, as `keel --filelist` opens a list): a Keel.FileList
+# ProgID under HKCU\Software\Classes, made the default for .efu and listed in its
+# OpenWithProgids. Removing takes away only what is this Keel's; another program's .efu
+# handler stays. A choice the user made in Windows' "Open with" (UserChoice) wins over both.
+$ClassesRoot = 'HKCU:\Software\Classes'
+$EfuProgId = 'Keel.FileList'
+function Set-EfuAssociation([string]$Exe, [bool]$On) {
+  $ext = "$ClassesRoot\.efu"
+  $prog = "$ClassesRoot\$EfuProgId"
+  if ($On) {
+    New-Item "$prog\shell\open\command" -Force | Out-Null
+    New-Item "$prog\DefaultIcon" -Force | Out-Null
+    Set-Item $prog -Value 'Keel file list'
+    Set-Item "$prog\DefaultIcon" -Value "$Exe,0"
+    Set-Item "$prog\shell\open\command" -Value "`"$Exe`" --filelist `"%1`""
+    if (-not (Test-Path "$ext\OpenWithProgids")) { New-Item "$ext\OpenWithProgids" -Force | Out-Null }
+    New-ItemProperty "$ext\OpenWithProgids" -Name $EfuProgId -Value '' -PropertyType String -Force | Out-Null
+    Set-Item $ext -Value $EfuProgId
+  } else {
+    $cmd = (Get-Item "$prog\shell\open\command" -ErrorAction SilentlyContinue).GetValue('')
+    if (-not ($cmd -and $cmd.ToLowerInvariant().Contains($Exe.ToLowerInvariant()))) { return }
+    Remove-Item $prog -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-ItemProperty "$ext\OpenWithProgids" -Name $EfuProgId -ErrorAction SilentlyContinue
+    $key = Get-Item $ext -ErrorAction SilentlyContinue
+    if ($key -and $key.GetValue('') -eq $EfuProgId) {
+      # Back to no default (another program's ProgID in OpenWithProgids still offers itself).
+      Remove-ItemProperty $ext -Name '(default)' -ErrorAction SilentlyContinue
+    }
+    $key = Get-Item $ext -ErrorAction SilentlyContinue
+    $empty = $key -and $key.ValueCount -eq 0 -and $key.SubKeyCount -le 1 -and
+      -not (Get-Item "$ext\OpenWithProgids" -ErrorAction SilentlyContinue | Where-Object { $_.ValueCount -gt 0 })
+    if ($empty) { Remove-Item $ext -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  # Tell Explorer the associations changed (icons, Open).
+  try {
+    if (-not ('KeelShell.Notify' -as [type])) {
+      Add-Type -Namespace KeelShell -Name Notify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int e, uint f, System.IntPtr a, System.IntPtr b);'
+    }
+    [KeelShell.Notify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+  } catch {}
 }
 
 function Stop-Keel {
@@ -209,6 +254,7 @@ if ($Uninstall) {
   foreach ($f in $Lnk, $DesktopLnk) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
   Set-UserPath $InstallDir $false
   Set-UrlProtocol (Join-Path $InstallDir 'keel.exe') $false
+  Set-EfuAssociation (Join-Path $InstallDir 'keel.exe') $false
   Remove-Item $RegPath -Recurse -Force -ErrorAction SilentlyContinue
   # Everything but this script first (it may be the running one), then the folder itself.
   if (Test-Path $InstallDir) {
@@ -269,6 +315,7 @@ try {
   if ($Desktop) { New-Shortcut $DesktopLnk $exe }
   if ($AddToPath) { Set-UserPath $InstallDir $true }
   if ($UrlProtocol) { Set-UrlProtocol $exe $true }
+  if ($EfuAssociation) { Set-EfuAssociation $exe $true }
 
   if (-not $NoRegister) {
     $ver = $tag.TrimStart('v')
