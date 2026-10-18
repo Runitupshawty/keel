@@ -279,7 +279,12 @@ mod tests {
                 .unwrap();
             if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
                 assert!(ok, "{p:?} refused");
-                assert_eq!((cpu, io), (p, p), "{p:?}");
+                assert_eq!(io, p, "{p:?}: I/O");
+            }
+            // macOS reports the quality of service a thread runs at, which the system may
+            // keep higher than asked (CI's runners do): only the I/O policy reads back.
+            if cfg!(any(windows, target_os = "linux")) {
+                assert_eq!(cpu, p, "{p:?}: CPU");
             }
         }
         // Normal is only reachable from a thread that was not lowered already (a test run
