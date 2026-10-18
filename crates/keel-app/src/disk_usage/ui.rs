@@ -92,7 +92,10 @@ pub fn window(
     }
     if let Some(p) = &mut du.picker {
         match p.ui(ctx, theme.accent()) {
-            Some(Answer::Scan(roots)) => du.start(roots),
+            Some(Answer::Scan(roots)) => {
+                du.device_labels = p.device_labels();
+                du.start(roots);
+            }
             Some(Answer::Cancel) => du.picker = None,
             None => {}
         }
@@ -149,7 +152,7 @@ fn body(
 ) {
     toolbar(ui, du, settings, drives);
     if let Some((roots, p)) = du.scanning() {
-        let what = roots_text(roots);
+        let what = roots_text(roots, &du.device_labels);
         let mut pause = None;
         let mut cancel = false;
         ui.horizontal(|ui| {
@@ -265,12 +268,14 @@ fn remember(setting: &mut f32, now: f32) {
     }
 }
 
-fn roots_text(roots: &[Root]) -> String {
+/// What a scan is of; a device storage by its name in `labels` when it is there.
+pub(super) fn roots_text(roots: &[Root], labels: &[(Root, String)]) -> String {
     let names: Vec<String> = (roots.iter())
         .map(|r| match r {
             Root::AllLocalDrives => "all local drives".to_owned(),
             Root::Path(p) => p.display().to_string(),
-            Root::Mtp { .. } => "a portable device".to_owned(),
+            Root::Mtp { .. } => (labels.iter().find(|(root, _)| root == r))
+                .map_or_else(|| "a portable device".to_owned(), |(_, l)| l.clone()),
         })
         .collect();
     names.join(", ")

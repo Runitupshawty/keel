@@ -665,3 +665,21 @@ fn owners_are_read_lazily_and_named_once() {
         assert_eq!(reader.owner_lookups(), 1, "one account, one lookup");
     }
 }
+
+/// The scan's progress line names a device storage the way the Select drives dialog did.
+#[test]
+fn the_progress_line_names_device_storages() {
+    let phone = Root::Mtp {
+        device_id: "phone".to_owned(),
+        storage_id: "internal".to_owned(),
+    };
+    let camera = Root::Mtp {
+        device_id: "camera".to_owned(),
+        storage_id: "card".to_owned(),
+    };
+    let labels = vec![(phone.clone(), "Phone: Internal".to_owned())];
+    assert_eq!(
+        super::ui::roots_text(&[phone, camera], &labels),
+        "Phone: Internal, a portable device"
+    );
+}
