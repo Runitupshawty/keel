@@ -204,6 +204,8 @@ pub enum Action {
     ToggleInspector,
     /// Settings window (Ctrl+,).
     Settings,
+    /// Task 76: Settings → Advanced, Import / Export settings…, Reset all settings.
+    SettingsIo(crate::settings_io::IoCmd),
     /// Start another Keel window (`keel --new-window`, same profile).
     NewWindow,
     // --- Task 85 ---

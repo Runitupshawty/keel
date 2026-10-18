@@ -361,6 +361,8 @@ pub struct AppState {
     pub find: crate::bookmarks::Find,
     /// Settings → Search index: the page's edits and the offline roots it marks.
     pub search_page: crate::search_settings::SearchPage,
+    /// Task 76: Settings → Advanced.
+    pub advanced: crate::settings_io::AdvancedUi,
 }
 
 impl AppState {
@@ -472,6 +474,7 @@ impl AppState {
             color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
             info: Default::default(),
             search_page: Default::default(),
+            advanced: Default::default(),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
@@ -564,6 +567,7 @@ impl AppState {
             &mut self.keyboard,
             &mut find,
             &mut self.search_page,
+            &mut self.advanced,
         );
         if s.search_index != index_before {
             crate::search_settings::push(self.searcher.clone(), &s.search_index);
@@ -2174,6 +2178,11 @@ impl AppState {
                 self.theme.apply(&self.ctx);
             }
             Action::Settings => self.settings_open = !self.settings_open,
+            Action::SettingsIo(cmd) => {
+                self.settings_open = true;
+                self.remotes.page = crate::settings::Page::Advanced;
+                self.advanced.pending = Some(cmd);
+            }
             Action::NewWindow => {
                 if let Err(e) = crate::single_instance::new_window() {
                     self.toasts

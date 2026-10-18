@@ -70,6 +70,7 @@ mod search_settings;
 mod search_tab;
 mod session;
 mod settings;
+mod settings_io; // Task 76: Settings → Advanced, import, export and reset
 mod shell_menu; // Task 43: More options, the Windows shell menu
 mod sidebar;
 mod sidebar_glyphs; // Phase 14: the sidebar's icons
