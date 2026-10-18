@@ -78,10 +78,6 @@ impl FileListEditor {
             && pos.is_some_and(|p| self.rect.is_some_and(|r| r.contains(p)))
     }
 
-    pub fn list(&self) -> &FileList {
-        &self.list
-    }
-
     /// Opens the window (an empty list the first time).
     pub fn show(&mut self) {
         self.open = true;
@@ -146,8 +142,9 @@ impl FileListEditor {
             EditorMsg::Saved { gen, result } => match result {
                 Ok(path) => {
                     self.dirty &= gen != self.gen;
-                    self.note = Some(Ok(tr("filelist_editor.saved")
-                        .replace("{path}", &path.display().to_string())));
+                    self.note =
+                        Some(Ok(tr("filelist_editor.saved")
+                            .replace("{path}", &path.display().to_string())));
                     self.path = Some(path);
                 }
                 Err(e) => self.note = Some(Err(e)),
@@ -176,7 +173,9 @@ impl FileListEditor {
         });
         let n = selected.len();
         self.changed();
-        self.note = Some(Ok(tr("filelist_editor.removed").replace("{n}", &n.to_string())));
+        self.note = Some(Ok(
+            tr("filelist_editor.removed").replace("{n}", &n.to_string())
+        ));
     }
 
     fn remove_duplicates(&mut self) {
@@ -209,10 +208,14 @@ impl FileListEditor {
     fn save(&mut self, to: Option<PathBuf>, tx: &Sender<Msg>, ctx: &egui::Context) {
         let (list, gen, tx, ctx) = (self.list.clone(), self.gen, tx.clone(), ctx.clone());
         let name = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
-            || "File list.efu".to_owned(),
+            || format!("{}.efu", tr("filelist_editor.untitled")),
             |n| Path::new(n).with_extension("efu").display().to_string(),
         );
-        let dir = self.path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
+        let dir = self
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf);
         let title = tr("filelist_editor.save_title").to_owned();
         self.busy = Some("filelist_editor.saving");
         let started = worker::spawn("keel-filelist-save", move || {
@@ -334,9 +337,10 @@ fn note(done: &Done) -> String {
 
 /// The window title: the list's file name, with `*` while it has unsaved changes.
 fn title(ed: &FileListEditor) -> String {
-    let name = (ed.path.as_ref())
-        .and_then(|p| p.file_name())
-        .map_or_else(|| tr("filelist_editor.untitled").to_owned(), |n| n.to_string_lossy().into_owned());
+    let name = (ed.path.as_ref()).and_then(|p| p.file_name()).map_or_else(
+        || tr("filelist_editor.untitled").to_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     format!(
         "{}: {name}{}",
         tr("filelist_editor.title"),
@@ -437,12 +441,15 @@ fn body(
                 ed.update(tx, &ctx);
             }
             ui.separator();
-            let save_to = ed.path.clone().filter(|p| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("efu"))
-            });
+            let save_to = ed
+                .path
+                .clone()
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("efu")));
             if ui
-                .add_enabled(ed.dirty || save_to.is_none(), egui::Button::new(tr("filelist_editor.save")))
+                .add_enabled(
+                    ed.dirty || save_to.is_none(),
+                    egui::Button::new(tr("filelist_editor.save")),
+                )
                 .on_hover_text(tr("filelist_editor.save_tip"))
                 .clicked()
             {
@@ -541,7 +548,11 @@ fn body(
                 row.col(|ui| {
                     let icon = if e.is_dir { "📁 " } else { "" };
                     let text = egui::RichText::new(format!("{icon}{}", e.path));
-                    let text = if selected { text.color(selected_fg) } else { text };
+                    let text = if selected {
+                        text.color(selected_fg)
+                    } else {
+                        text
+                    };
                     ui.add(egui::Label::new(text).truncate().selectable(false));
                 });
                 row.col(|ui| {
@@ -551,7 +562,12 @@ fn body(
                 });
                 row.col(|ui| {
                     if let Some(t) = e.modified {
-                        ui.label(format_iso(t).replace('T', " ").trim_end_matches('Z').to_owned());
+                        ui.label(
+                            format_iso(t)
+                                .replace('T', " ")
+                                .trim_end_matches('Z')
+                                .to_owned(),
+                        );
                     }
                 });
                 if row.response().clicked() {
@@ -655,8 +671,13 @@ mod tests {
 
     #[test]
     fn drops_land_in_the_window_only_while_it_is_open() {
-        let mut ed = FileListEditor::default();
-        ed.rect = Some(egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 100.0)));
+        let mut ed = FileListEditor {
+            rect: Some(egui::Rect::from_min_size(
+                egui::pos2(10.0, 10.0),
+                egui::vec2(100.0, 100.0),
+            )),
+            ..FileListEditor::default()
+        };
         let inside = Some(egui::pos2(50.0, 50.0));
         assert!(!ed.takes_drop(inside), "closed");
         ed.show();

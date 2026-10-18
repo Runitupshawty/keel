@@ -700,6 +700,7 @@ impl App {
         crate::library_ui::windows(ctx, s, &mut acts);
         crate::devices::windows(ctx, s, &mut acts); // Task 36
         crate::dialogs::properties::windows(ctx, s, &mut acts); // Task 67
+
         // Task 77: the File List Editor; "Search in a tab" opens its list as a tab.
         if let Some((path, list)) =
             crate::filelist_editor::window(ctx, &mut s.filelist_editor, &s.tx)

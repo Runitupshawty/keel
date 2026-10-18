@@ -97,8 +97,7 @@ impl Inspector {
         let (req, slot, ctx) = (self.req, self.sidecar_answer.clone(), ctx.clone());
         crate::worker::spawn("keel-inspect-sidecar", move || {
             // A sidecar that cannot be read gives no properties.
-            let props =
-                keel_search::filelist::sidecar::properties_of(&local).unwrap_or_default();
+            let props = keel_search::filelist::sidecar::properties_of(&local).unwrap_or_default();
             if !props.is_empty() {
                 *slot.lock() = Some((req, props));
                 ctx.request_repaint();
