@@ -351,7 +351,7 @@ impl WebApp {
             screen: Screen::new(width),
             two_panes: false,
             history: web::History::install(&cc.egui_ctx),
-            base_style: cc.egui_ctx.style(),
+            base_style: Arc::new(crate::design::finder_style(&cc.egui_ctx.style())),
             library: String::new(),
             sources: Vec::new(),
             per_source: Vec::new(),

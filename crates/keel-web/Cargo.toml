@@ -22,10 +22,11 @@ serde.workspace = true
 serde_json.workspace = true
 # The API types are keel-api's own file (src/types.rs), shared by path.
 schemars = "1.2"
+# Plain egui for the shared design tokens (src/design.rs), tested natively.
+egui = "0.31"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
-egui = "0.31"
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 base64.workspace = true
 wasm-bindgen = "0.2"

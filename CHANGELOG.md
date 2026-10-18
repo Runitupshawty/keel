@@ -4,6 +4,10 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ## [Unreleased]
 
+### Changed
+
+- Web client: Finder design tokens (spacing, type scale, radii, light/dark colors) shared with the desktop app.
+
 ### Added
 
 - Finder-style motion: the list view's disclosure triangle turns over 150 ms when a folder expands or collapses, sidebar sections ease their height over 200 ms when they hide or show, and the Quick Look window fades in over 150 ms; all instant with **Reduce motion** (Settings → General), none in Classic. See [Appearance](docs/files.md#appearance).

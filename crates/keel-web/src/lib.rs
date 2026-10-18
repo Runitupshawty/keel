@@ -13,6 +13,7 @@
 #[path = "../../keel-core/src/chips.rs"]
 pub mod chips;
 pub mod conn;
+pub mod design;
 pub mod gesture;
 pub mod guard;
 pub mod layout;
