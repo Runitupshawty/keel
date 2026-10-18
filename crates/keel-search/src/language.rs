@@ -224,6 +224,8 @@ pub(crate) struct Prefilter {
     /// The folder the scan keeps to, lower case with `/` separators: a typed `in:` that
     /// every match needs, else the pane's folder (a typed `in:` takes its place).
     pub within: Option<String>,
+    /// The query reads the run history (`run-count:`, `date-run:`).
+    pub runs: bool,
 }
 
 pub(crate) fn prefilter(q: &Query) -> anyhow::Result<Prefilter> {
@@ -266,6 +268,7 @@ pub(crate) fn prefilter(q: &Query) -> anyhow::Result<Prefilter> {
     }
     .map(|w| w.replace('\\', "/").to_lowercase());
     Ok(Prefilter {
+        runs: query.uses_runs(),
         query,
         scan,
         prefix,

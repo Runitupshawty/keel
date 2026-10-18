@@ -1130,7 +1130,7 @@ impl Index {
             let quality = quality(m, name);
             if keep(quality)
                 && !within.as_mut().is_some_and(|w| !w.contains(self, slot))
-                && m.query.matches_in(&EntryProps::new(self, i), Some(tree))
+                && m.matches_in(&EntryProps::new(self, i), Some(tree))
             {
                 hits.push((quality, i));
             }

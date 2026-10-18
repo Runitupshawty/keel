@@ -27,6 +27,7 @@ mod locate;
 mod mft;
 #[cfg(windows)]
 mod ntfs;
+pub mod propindex;
 /// The index service's wire protocol: used on Windows, built everywhere for fuzzing.
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/proto.rs"]
@@ -37,9 +38,11 @@ mod proto;
 mod raw;
 #[cfg(windows)]
 mod rdcw;
+pub mod runs;
 mod schedule;
 #[cfg(target_os = "macos")]
 mod spotlight;
+pub mod sysindex;
 mod terms;
 mod volumes;
 mod walkindex;
@@ -56,8 +59,8 @@ pub use filelist::FileListSearcher;
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
-    VolumeRoot, DEFAULT_JOURNAL_MB,
+    split_list, ExcludeSettings, FolderRoot, IndexSettings, IndexedProperty, JournalSettings,
+    PropertySettings, ScanOptions, Schedule, VolumeRoot, DEFAULT_JOURNAL_MB,
 };
 pub use language::{
     backend_query, compile_query, evaluate_hits, Evaluated, HitFilter, EVALUATED_SCAN,
@@ -68,6 +71,7 @@ pub use ntfs::{
     run_index_service, run_service, service_state, set_hide_unlistable, uninstall_service,
     NtfsSearcher, ServiceState, FALLBACK_STATUS, FROZEN_STATUS,
 };
+pub use runs::RunHistorySettings;
 pub use schedule::{parse_time_of_day, Clock, SystemClock};
 pub use terms::Highlighter;
 pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};
@@ -279,7 +283,14 @@ pub fn default_searcher() -> Box<dyn Searcher> {
 
 /// [`default_searcher`] with the folders and volumes of Settings → Search
 /// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list).
+///
+/// Every backend answers `si:` terms through the Windows Search index
+/// ([`sysindex::SystemIndexed`]).
 pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
+    Box::new(sysindex::SystemIndexed::new(backend_with(settings)))
+}
+
+fn backend_with(settings: &IndexSettings) -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
         (Ok(everything), dir) => {

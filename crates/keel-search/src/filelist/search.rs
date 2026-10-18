@@ -116,7 +116,7 @@ impl Searcher for FileListSearcher {
                     continue;
                 }
             }
-            if !m.query.matches(&ListProps(e)) {
+            if !m.matches_in(&ListProps(e), None) {
                 continue;
             }
             found.push((m.quality(name), i));

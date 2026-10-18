@@ -461,6 +461,33 @@ keep_journal_tip = "Every create, delete, rename, modify and attribute change th
 size = "Size"
 journal_size = "Journal size in MB"
 journal_note = "When the journal reaches its size the oldest entries go first. Open it with Index journal in the command palette, or `keel journal` on the command line."
+tab_properties = "Properties"
+tab_run_history = "Run history"
+properties_intro = "An idle background job reads these properties into a store next to the index, so searching or sorting by them does not open every file. It pauses while you work and on battery. With no include-only folders it reads your home folder and the Folders and Volumes of this page."
+fast_sort = "Fast sort"
+fast_sort_tip = "Keep a sort order of this property, so sorting by it is instant"
+remove_property = "Remove"
+no_properties_yet = "No properties yet: the job does not run."
+new_property = "New property"
+add_property = "Add property"
+unknown_property = "Not a property Keel can read"
+max_file_size = "Maximum file size"
+max_file_size_tip = "Larger files are left out; 0 is no limit"
+exclude_recall = "Exclude recall on data access"
+exclude_recall_tip = "Leave out cloud files whose data is not on this device: reading them would download them"
+exclude_not_content_indexed = "Exclude files marked not content indexed"
+properties_status = "{state}: {stored} files in the store, {read} read since Keel started."
+properties_off = "Not running"
+properties_paused = "Paused"
+properties_reading = "Reading"
+properties_current = "Up to date"
+keep_run_history = "Keep a run history"
+keep_run_history_tip = "Count every file and folder Keel opens with an app, and when it last did"
+run_history_count = "{n} paths in the run history."
+clear_run_history = "Clear"
+clear_run_history_tip = "Forget every count and date"
+run_history_cleared = "Run history cleared."
+run_history_note = "Search with run-count: and date-run:, or show the Run count and Date run columns."
 
 # The library's UI (library_ui.rs): the sidebar, the Overview, the add-source dialog, the plan
 # preview, the tag picker, the duplicate finder and Settings → Library.
@@ -958,6 +985,10 @@ filters = "Filters"
 folders = "Folders"
 all_results = "All results ({n})"
 tree_first_n = "Folders of the first {n} results"
+# The list view's run history columns.
+[columns]
+run_count = "Run count"
+date_run = "Date run"
 
 # The Disk Usage window's Select drives dialog.
 [disk_usage]

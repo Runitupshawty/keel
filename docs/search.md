@@ -187,6 +187,7 @@ compare as typed (case still folds).
 | `ancestor:` | a folder above the item has this full path (`ancestor:C:\work` is anything inside it; wildcards: `ancestor:**\photos`, where `**` crosses folders) |
 | `ancestor-name:` | a folder above the item has a name containing the text |
 | `pathlist:` | the full path is one of a `;` list (`pathlist:C:\a.txt;C:\b.txt`); any case |
+| `system-index:`, `si:` | the Windows Search index finds the item for these words (`si:budget`): in its text, properties or name; the hits are merged into the results and checked against the rest of the query (Windows only, [Windows Search](files.md#windows-search-si)) |
 
 Paths are compared with `/` read as `\`, so the same terms work on Windows, macOS and Linux
 (`\home\me` matches `/home/me`).
@@ -202,7 +203,7 @@ Paths are compared with `/` read as `\`, so the same terms work on Windows, macO
 | `child-folder-count:`, `childfoldercount:` | folders directly inside a folder |
 | `empty:` | folders with no files and no subfolders |
 | `attributes:`, `attr:`, `attrib:`, `attribute:` | has all these attributes: letters (`attrib:RHS`) or a hex mask (`attrib:0x20`) |
-| `run-count:`, `runcount:` | how many times Keel opened the item |
+| `run-count:`, `runcount:` | how many times Keel opened the item ([run history](files.md#run-history)) |
 | `descendant-count:` | files and folders anywhere below a folder |
 | `descendant-file-count:` | files anywhere below a folder |
 | `descendant-folder-count:` | folders anywhere below a folder |
@@ -394,7 +395,7 @@ so a query never silently matches the wrong thing:
 | Functions | Why |
 |---|---|
 | `content:`, `utf8content:`, `ansicontent:`, `utf16content:`, `utf16becontent:`, `textplain:` | content functions (Task 73) |
-| `perceived-type:`, `content-type:`, `document-content-type:`, `file-signature:`, `shortcut-target:`, `volume-label:`, `location:`, `loc:`, `computer:`, `url:`, `owner:`, `protected:`, `offline:`, `online:`, `offline-availability:`, `offline-status:`, `is-running:`, `shared-with:`, `status:`, `content-status:`, `character-encoding:`, `line-count:`, `word-count:`, `page-count:`, `slide-count:`, `total-editing-time:`, `md5:`, `sha1:`, `sha256:`, `crc32:`, `crc64:`, `crc:`, `digital-signature-name:`, `digital-signature-timestamp:`, `version:`, `product-name:`, `product-version:`, `company:`, `copyright:`, `trademarks:`, `description:`, `details:`, `system-index:`, `si:` | file properties read from disk (Task 73) |
+| `perceived-type:`, `content-type:`, `document-content-type:`, `file-signature:`, `shortcut-target:`, `volume-label:`, `location:`, `loc:`, `computer:`, `url:`, `owner:`, `protected:`, `offline:`, `online:`, `offline-availability:`, `offline-status:`, `is-running:`, `shared-with:`, `status:`, `content-status:`, `character-encoding:`, `line-count:`, `word-count:`, `page-count:`, `slide-count:`, `total-editing-time:`, `md5:`, `sha1:`, `sha256:`, `crc32:`, `crc64:`, `crc:`, `digital-signature-name:`, `digital-signature-timestamp:`, `version:`, `product-name:`, `product-version:`, `company:`, `copyright:`, `trademarks:`, `description:`, `details:` | file properties read from disk (Task 73) |
 | `width:`, `wide:`, `height:`, `high:`, `dimensions:`, `orientation:`, `bit-depth:`, `bpp:`, `horizontal-resolution:`, `vertical-resolution:`, `aspect-ratio:`, `camera-maker:`, `camera-model:`, `lens-model:`, `aperture:`, `f-stop:`, `max-aperture:`, `exposure-time:`, `exposure-bias:`, `exposure-program:`, `exif-version:`, `flash-mode:`, `focal-length:`, `35mm-focal-length:`, `iso-speed:`, `light-source:`, `metering-mode:`, `brightness:`, `contrast:`, `saturation:`, `white-balance:`, `subject-distance:`, `latitude:`, `longitude:`, `altitude:` | image properties (Task 73) |
 | `album:`, `album-artist:`, `artist:`, `authors:`, `composer:`, `conductor:`, `director:`, `producer:`, `writer:`, `genre:`, `mood:`, `title:`, `subtitle:`, `track:`, `year:`, `beats-per-minute:`, `bpm:`, `initial-key:`, `length:`, `duration:`, `audio-bitrate:`, `audio-bits-per-sample:`, `audio-channels:`, `audio-format:`, `audio-sample-rate:`, `audio-track-count:`, `video-bitrate:`, `video-format:`, `video-track-count:`, `subtitle-track-count:`, `total-bitrate:`, `frame-count:`, `frame-rate:`, `fps:`, `language:`, `part-of-a-compilation:`, `part-of-set:`, `period:`, `encoded-by:`, `publisher:`, `parental-rating:`, `parental-rating-reason:` | audio and video properties (Task 73) |
 | `subject:`, `comment:`, `category:`, `tags:`, `tag:`, `rating:`, `people:`, `last-author:`, `software:`, `from:`, `to:` | document properties (Task 73) |

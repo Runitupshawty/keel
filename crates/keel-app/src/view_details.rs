@@ -58,6 +58,9 @@ enum Col {
     Modified,
     Created,
     Opened,
+    /// The run history's count and last open.
+    RunCount,
+    DateRun,
     /// Sizes view only.
     Files,
     OfUsed,
@@ -127,6 +130,8 @@ fn columns(
             (ListColumn::Modified, Col::Modified),
             (ListColumn::Created, Col::Created),
             (ListColumn::Opened, Col::Opened),
+            (ListColumn::RunCount, Col::RunCount),
+            (ListColumn::DateRun, Col::DateRun),
         ] {
             if list.shows(c) {
                 cols.push(col);
@@ -298,9 +303,10 @@ pub fn ui(
             Col::Host => Column::initial(110.0).at_least(40.0).clip(true),
             Col::Size => Column::initial(80.0).at_least(50.0),
             // Room for "Yesterday at 14:05".
-            Col::Modified | Col::Created | Col::Opened => {
+            Col::Modified | Col::Created | Col::Opened | Col::DateRun => {
                 Column::initial(140.0).at_least(60.0).clip(true)
             }
+            Col::RunCount => Column::initial(70.0).at_least(40.0).clip(true),
             Col::Files | Col::OfUsed => Column::initial(70.0).at_least(40.0).clip(true),
             Col::Copies => Column::initial(64.0).at_least(40.0).clip(true),
             Col::Tags => Column::initial(120.0).at_least(40.0).clip(true),
@@ -391,6 +397,8 @@ pub fn ui(
                     Col::Modified => ("Modified", Some(SortKey::Modified)),
                     Col::Created => ("Created", None),
                     Col::Opened => ("Last opened", None),
+                    Col::RunCount => (crate::i18n::tr("columns.run_count"), None),
+                    Col::DateRun => (crate::i18n::tr("columns.date_run"), None),
                     Col::Files => ("Files", None),
                     Col::OfUsed => ("Of used", None),
                     Col::Copies => ("Copies", None),
@@ -707,6 +715,26 @@ pub fn ui(
                                     relative,
                                     now,
                                 );
+                                ui.label(cell(&d, Some(muted)));
+                            });
+                        }
+                        Col::RunCount => {
+                            row.col(|ui| {
+                                tint(ui);
+                                let n = list_view::run_count_text(list_view::run_of(e));
+                                ui.label(cell(&n, Some(muted)));
+                            });
+                        }
+                        Col::DateRun => {
+                            row.col(|ui| {
+                                tint(ui);
+                                let at = list_view::run_of(e).map(|r| {
+                                    std::time::UNIX_EPOCH
+                                        + std::time::Duration::from_millis(
+                                            u64::try_from(r.last_run).unwrap_or(0),
+                                        )
+                                });
+                                let d = list_view::date_label(at, relative, now);
                                 ui.label(cell(&d, Some(muted)));
                             });
                         }

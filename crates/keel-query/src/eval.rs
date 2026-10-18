@@ -98,6 +98,8 @@ enum Test {
     OfParent(Box<Node>),
     /// Folded full paths without trailing separators.
     PathList(HashSet<String>, Fold),
+    /// The Windows Search index finds the item for this text.
+    SystemIndex(String),
 }
 
 /// An `exists:` value: a full path, or names from the item's folder.
@@ -527,6 +529,26 @@ impl Compiler<'_> {
                 }
                 return Ok(leaf(Test::PathList(set, fold), 3));
             }
+            FnKind::SystemIndex => {
+                let mut alts = Vec::new();
+                for item in &t.items {
+                    if !matches!(item.op, None | Some(CmpOp::Eq)) || item.text.trim().is_empty() {
+                        return Err(value_err(item, "si: takes the words to search for".into()));
+                    }
+                    alts.push(leaf(Test::SystemIndex(item.text.trim().to_owned()), 90));
+                }
+                return Ok(match alts.len() {
+                    0 => {
+                        return Err(Error {
+                            span: t.span.clone(),
+                            kind: ErrorKind::Value,
+                            message: "si: needs the words to search for".into(),
+                        })
+                    }
+                    1 => alts.pop().unwrap_or(Node::And(Vec::new())),
+                    _ => Node::Or(alts),
+                });
+            }
             FnKind::Set(_) => {
                 return Err(Error {
                     span: t.span.clone(),
@@ -653,6 +675,7 @@ impl Compiler<'_> {
             | FnKind::Exists(_)
             | FnKind::OfParent(_)
             | FnKind::PathList
+            | FnKind::SystemIndex
             | FnKind::Set(_) => Node::And(Vec::new()),
         })
     }
@@ -1420,6 +1443,7 @@ impl Test {
             Test::PathList(set, fold) => {
                 set.contains(fold.apply(trim_sep(&normalize(p.path()))).as_ref())
             }
+            Test::SystemIndex(text) => p.system_index(text).unwrap_or(false),
         }
     }
 }

@@ -557,7 +557,7 @@ impl Table {
                 return None;
             }
         }
-        if !m.query.matches_in(&props, Some(self)) {
+        if !m.matches_in(&props, Some(self)) {
             return None;
         }
         Some((m.quality(name), slot))
@@ -682,9 +682,20 @@ pub(crate) struct Matcher {
     pub(crate) within: Option<String>,
     /// The compiled query; it decides every candidate.
     pub(crate) query: keel_query::Query,
+    /// The query reads the run history (`run-count:`, `date-run:`).
+    pub(crate) runs: bool,
 }
 
 impl Matcher {
+    /// Whether the query matches `item` (of `tree`), with the run history when it reads it.
+    pub(crate) fn matches_in(
+        &self,
+        item: &dyn keel_query::Props,
+        tree: Option<&dyn keel_query::Tree>,
+    ) -> bool {
+        crate::runs::matches_in(&self.query, self.runs, item, tree)
+    }
+
     /// 0 for an exact name, 1 for a prefix, 2 otherwise.
     pub(crate) fn quality(&self, name: &str) -> u8 {
         match &self.literal {
@@ -711,6 +722,7 @@ pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
         folders_only: query.folders_only,
         within: p.within,
         query: p.query,
+        runs: p.runs,
     })
 }
 
@@ -2038,6 +2050,8 @@ impl Worker {
             return;
         }
         let events = journal::events_from(changes, renames, journal::now_ms());
+        // The property index follows the same changes (whether the journal is on or not).
+        crate::propindex::note_changes(&events);
         match &self.opts.journal {
             Some(j) => {
                 let _ = j.record_all(&events);

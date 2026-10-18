@@ -119,6 +119,9 @@ pub enum FnKind {
     OfParent(&'static FnKind),
     /// The full path is one of these (`pathlist:`).
     PathList,
+    /// The Windows Search index finds the item for this text (`si:`, `system-index:`); the
+    /// search backend runs the query and answers through [`crate::Props::system_index`].
+    SystemIndex,
     /// A function over the whole result set (`dupe:`, `unique:`, `count:`).
     Set(SetFn),
     /// A UI-state function (`sort:`, `columns:`, ...): recorded, never filters.
@@ -422,6 +425,11 @@ pub static FUNCTIONS: &[FunctionInfo] = &[
         K::PathList,
         "the full path is one of these (`;` list)"
     ),
+    f!(
+        &["system-index", "si"],
+        K::SystemIndex,
+        "the Windows Search index finds the item for this text (`si:budget`)"
+    ),
     // Set functions.
     f!(
         &["dupe"],
@@ -632,7 +640,7 @@ pub static UNSUPPORTED: &[(&[&str], &str)] = &[
             "line-count", "word-count", "page-count", "slide-count", "total-editing-time", "md5",
             "sha1", "sha256", "crc32", "crc64", "crc", "digital-signature-name",
             "digital-signature-timestamp", "version", "product-name", "product-version", "company",
-            "copyright", "trademarks", "description", "details", "system-index", "si",
+            "copyright", "trademarks", "description", "details",
         ],
         "a file property read from disk (Phase 15, Task 73)",
     ),

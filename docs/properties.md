@@ -13,6 +13,7 @@ Each property comes from one of two places:
   - **Text statistics**: `character-encoding:` from the byte order mark, UTF-8 validity and a UTF-16 check (`ASCII`, `UTF-8`, `UTF-8 BOM`, `UTF-16LE`, `UTF-16BE`, `UTF-32LE`, `UTF-32BE`, `ANSI`, or `binary`), `line-count:` (a last line without a newline counts) and `word-count:` (runs of non-space characters). Files over 64 MiB get no counts (unknown); their encoding comes from their first 64 KiB.
   - **Hashes**: `md5:`, `sha1:`, `sha256:`, `crc32:` and `crc64:` (`crc:`), as lowercase hex. CRC-32 is the zip one; CRC-64 is CRC-64/XZ (as 7-Zip prints it). The file is read once for every hash asked for together, and a read can be cancelled between 256 KiB chunks.
   - **Deleted items**: `date-deleted:` of an item in a Windows Recycle Bin (`$Recycle.Bin\<SID>\$R...`) comes from its `$I` record (versions 1 and 2: deletion time, original path, size), read on any platform so a Windows disk mounted elsewhere works too; of an item in a freedesktop.org Trash (`~/.local/share/Trash/files`, `.Trash-<uid>`, `.Trash/<uid>`) from its `.trashinfo` file (`DeletionDate`, local time). An item inside a deleted folder has the folder's date.
+  - **Digital signatures** (Windows only): `digital-signature-name:` is the signer's name (`Microsoft Windows`) and `digital-signature-timestamp:` the time of its countersignature, through `WinVerifyTrust`: the file's own Authenticode signature, else the system catalog that holds its hash (most of Windows' own files). The signer is given whether or not this computer trusts its chain; revocation is not checked and nothing is fetched from the network. A cloud placeholder is not checked (unknown).
   - **Audio tags**: ID3v2 (2.2, 2.3 and 2.4, with unsynchronisation and per-frame flags) and ID3v1 tags; MPEG audio frames for sample rate, channels and bit rate, with Xing, Info and VBRI headers for the length of variable-bit-rate files; FLAC STREAMINFO and Vorbis comments; WAV `fmt `, `data`, `LIST/INFO` and embedded ID3 chunks. ID3v2 wins over ID3v1. Numeric ID3 genres (`(17)`) become names (`Rock`). `audio-bitrate:` is in kbit/s.
 - **The Windows Property System**, on Windows only: the same `IPropertyStore` Explorer's columns and Details pane use, with every property handler installed (photos, Office documents, videos, mail). It answers every function with a Windows property in the tables below when Keel's own reader has no value. Any canonical property name also works as a function: `System.Photo.FNumber`, `System.Music.Composer`. Durations come back as durations, bit rates in kbit/s and frame rates in frames per second.
 
@@ -109,8 +110,8 @@ Function names are Everything's (audit Part 1), with their aliases in parenthese
 | `sha256:` | hash (streamed) | no |
 | `crc32:` | hash (streamed) | no |
 | `crc64:` (`crc:`) | hash (streamed) | no |
-| `digital-signature-name:` | no | no |
-| `digital-signature-timestamp:` | no | no |
+| `digital-signature-name:` | `WinVerifyTrust` (Windows only): embedded or catalog signature | no |
+| `digital-signature-timestamp:` | `WinVerifyTrust` (Windows only): embedded or catalog signature | no |
 | `version:` | PE version resource | `System.FileVersion` |
 | `product-name:` | PE version resource | `System.Software.ProductName` |
 | `product-version:` | PE version resource | `System.Software.ProductVersion` |
@@ -238,7 +239,7 @@ The other Everything functions (name, path, size, the file system dates, attribu
 ## Not yet
 
 - Keel's own readers for image (EXIF, dimensions), video and Office document properties on Linux and macOS (the Windows Property System covers them on Windows); macOS `MDItem` attributes.
-- `digital-signature-name:` and `digital-signature-timestamp:` (`WinVerifyTrust`), `volume-label:`, `location:`, `protected:`, `aspect-ratio:`, track counts and `frame-count:`, `document-content-type:` and `details:`.
+- `volume-label:`, `location:`, `protected:`, `aspect-ratio:`, track counts and `frame-count:`, `document-content-type:` and `details:`.
 - Content indexing (keeping file content in the index per folder, Everything 1.5), `pinyin:` matching, ANSI content in a system code page other than Windows-1252, and Windows XP's `INFO2` Recycle Bin records.
-- Run tracking (`run-count:`, `date-run:`, `is-running:`), property indexing (choosing properties to keep in the index, with an idle job) and Ogg/Opus and MP4 audio tags.
+- `is-running:`, and Ogg/Opus and MP4 audio tags. Run counts (`run-count:`, `date-run:`) come from Keel's run history and indexed properties from the property index ([Search: property index](files.md#property-index)), not from this crate.
 - ANSI strings in `.lnk` files, ID3v1 tags and WAV INFO chunks are read as Windows-1252, not the system's code page. Windows list values (several artists, keywords) are split at `; `, so a value that itself holds `; ` splits in two.

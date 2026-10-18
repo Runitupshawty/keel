@@ -48,7 +48,7 @@ pub use parse::{
 };
 pub use props::{
     attr, depth_of, extension_of, name_of, normalize, parent_of, stem_of, ChildCounts, DateProp,
-    Props, Timestamp,
+    Props, Timestamp, WithRuns,
 };
 pub use set::SetPass;
 pub use text::REGEX_SIZE_LIMIT;
@@ -265,6 +265,55 @@ impl Query {
     /// Global settings and UI directives typed in the query.
     pub fn globals(&self) -> &Globals {
         &self.ast.globals
+    }
+
+    /// Whether the query reads the run history (`run-count:`, `date-run:`): a search
+    /// backend then answers through [`WithRuns`], looking each candidate up only for such
+    /// queries.
+    pub fn uses_runs(&self) -> bool {
+        fn kind(k: &FnKind) -> bool {
+            match k {
+                FnKind::Number(NumProp::RunCount) | FnKind::Date(DateProp::Run, _) => true,
+                FnKind::OfParent(k) => kind(k),
+                _ => false,
+            }
+        }
+        fn walk(e: &Expr) -> bool {
+            match e {
+                Expr::And(v) | Expr::Or(v) => v.iter().any(walk),
+                Expr::Not(e) => walk(e),
+                Expr::Term(t) => t.function.as_ref().is_some_and(|f| kind(&f.kind)),
+            }
+        }
+        walk(&self.ast.expr)
+    }
+
+    /// The texts of the query's `si:` / `system-index:` terms, in order and without
+    /// repeats: a search backend runs them through the Windows Search index and answers
+    /// [`Props::system_index`].
+    pub fn system_index_texts(&self) -> Vec<String> {
+        fn walk(e: &Expr, out: &mut Vec<String>) {
+            match e {
+                Expr::And(v) | Expr::Or(v) => v.iter().for_each(|e| walk(e, out)),
+                Expr::Not(e) => walk(e, out),
+                Expr::Term(t) => {
+                    if t.function
+                        .as_ref()
+                        .is_some_and(|f| f.kind == FnKind::SystemIndex)
+                    {
+                        for item in &t.items {
+                            let text = item.text.trim().to_owned();
+                            if !text.is_empty() && !out.contains(&text) {
+                                out.push(text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.ast.expr, &mut out);
+        out
     }
 }
 

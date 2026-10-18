@@ -141,7 +141,7 @@ pub(crate) fn walk(root: &Path, query: &Query) -> anyhow::Result<Vec<Hit>> {
             }
         }
         let props = WalkProps::new(&entry);
-        if (query.folders_only && !props.is_dir) || !p.query.matches(&props) {
+        if (query.folders_only && !props.is_dir) || !crate::runs::matches_in(&p.query, p.runs, &props, None) {
             continue;
         }
         if props.meta().is_none() {
