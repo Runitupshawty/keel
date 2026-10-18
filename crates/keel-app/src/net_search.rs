@@ -331,4 +331,103 @@ mod tests {
         let asked = remote_query(&q);
         assert_eq!((asked.max, asked.regex), (SEARCH_MAX, true));
     }
+
+    /// Two in-process devices: the host lets the asker search it, then shares a folder,
+    /// and the asker's search tab searcher gets the host's hits as `node://` rows.
+    #[test]
+    fn a_paired_device_searches_this_one_through_its_shares() {
+        use keel_core::{Library, SourceDef, SourceKind};
+        use keel_net::{Access, Grant, LibraryHandler, NodeOptions};
+        let (data_a, data_b, files) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let lib = Arc::new(Library::open(data_a.path(), "main").unwrap());
+        let source = lib
+            .add_source(SourceDef {
+                label: "Docs".into(),
+                root: VPath::local(files.path()),
+                kind: SourceKind::Folder,
+                include_hidden: false,
+                ignore: Vec::new(),
+                poll_secs: None,
+                hash_shares: false,
+            })
+            .unwrap();
+        let inside = VPath::local(files.path().join("report.txt"));
+        let outside = VPath::local(data_a.path().join("report-elsewhere.txt"));
+        let slot: Slot = Arc::default();
+        *slot.write() = Some(Arc::new(Fixed(vec![hit(inside), hit(outside)])));
+        let handler = Arc::new(LibraryHandler::new(lib.clone()));
+        handler.set_search(host_search(slot));
+        let other = Arc::new(Library::open(data_b.path(), "main").unwrap());
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let secrets = || Arc::new(keel_vfs::cloud::MemoryStore::default());
+        let open = |dir: &std::path::Path, h: Arc<LibraryHandler>| {
+            rt.block_on(Node::open_with_options(
+                secrets(),
+                dir,
+                h,
+                NodeOptions::offline(),
+            ))
+            .unwrap()
+        };
+        let host = open(data_a.path(), handler);
+        let asker = open(data_b.path(), Arc::new(LibraryHandler::new(other)));
+        rt.block_on(async {
+            let code = host.pair_code().await.unwrap();
+            asker
+                .pair_with(&code.ticket().parse().unwrap())
+                .await
+                .unwrap();
+        });
+        let (host_id, asker_id) = (PeerId(host.id()), PeerId(asker.id()));
+        let s = NetSearcher::new(
+            Arc::new(Fixed(Vec::new())),
+            Some(Net {
+                node: asker.clone(),
+                rt: rt.handle().clone(),
+                peers: vec![(host_id, "Desk".into())],
+            }),
+        );
+        let q = |text: &str| Query {
+            text: text.into(),
+            ..Query::default()
+        };
+        assert!(s.query(&q("report")).unwrap().is_empty(), "not allowed yet");
+
+        host.set_search_grant(&asker_id, true).unwrap();
+        let hits = s.query(&q("report")).unwrap();
+        assert_eq!(hits.len(), 2);
+        let not_shared = format!("/{}/", keel_net::NOT_SHARED);
+        assert!(hits.iter().all(|h| h.path.scheme == "node"
+            && h.path.authority == host_id.0.to_string()
+            && h.path.path.starts_with(&not_shared)));
+
+        host.grant(Grant {
+            peer: asker_id,
+            source: source.0.clone(),
+            subtree: String::new(),
+            access: Access::Read,
+            created: 1,
+        })
+        .unwrap();
+        let hits = s.query(&q("network-index-host:desk report")).unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.path.as_str()).collect();
+        assert_eq!(paths[0], format!("/{}/report.txt", source.0));
+        assert!(paths[1].starts_with(&not_shared), "outside the share");
+        assert!(s.query(&q("network-index-host:laptop report")).unwrap().is_empty());
+
+        host.set_search_grant(&asker_id, false).unwrap();
+        assert!(s.query(&q("report")).unwrap().is_empty(), "revoked");
+        rt.block_on(async {
+            host.close().await;
+            asker.close().await;
+        });
+    }
 }
