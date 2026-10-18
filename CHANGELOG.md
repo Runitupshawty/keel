@@ -6,6 +6,11 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
+- The Disk Usage window's **File Watcher**: after a scan its folders are watched and new, changed and removed files and folders reach the tree, totals, file types and chart as they happen (what is open and selected stays). A **Changes** tab lists the changes, newest first, with a regular-expression path filter; **Pause watching** holds them until resumed and **Clear changes** empties the list; **Watch for changes** turns it off. `keel_vfs::du::Tree::apply_changes` and `du::watch`. See [The Disk Usage window](docs/files.md#the-disk-usage-window).
+- Disk usage **Scan priority** (Options: Normal, Low, Background): the scan's threads run at a lower CPU and I/O priority (Windows thread priority and I/O priority hints, Linux nice and I/O class, macOS quality of service and I/O policy); `ScanOptions::priority`, `[disk_usage] priority`.
+- **Relaunch elevated** in the Disk Usage window (Windows) when folders refused access: starts Keel as administrator, after the prompt, scanning the same folders (`--du-scan`); never automatic.
+- **Recent scans** in the Disk Usage window: the previous scans of folders and drives, to run again; pruned of scans whose folders are gone, at most 12 (`[disk_usage] history`).
+- A **Disk usage** view mode for panes: the Disk Usage window's tree list for the pane's folder, from the window's scan when it holds the folder, else from a scan of its own.
 - The Disk Usage window's **Select drives** dialog lists connected phones and cameras so their individual storages can be scanned.
 - With the Everything backend, a query Keel's search language does not accept (`size:big`, an unclosed `<`) shows the problem and where it is beside the search box. Regex mode and the other backends are not checked yet.
 - **Settings → General → Language**: the interface in English or Spanish (Español), applied at once and saved per profile (`language` in `config.toml`). Translated: the panes' tab strip, search box, navigation and view buttons, path box and filter, the sidebar's section headings, places and menus, the status bar, the preview panel's tabs, the file list's context menu, the command palette, and Settings → General with the Settings page names; the rest (the Finder-style toolbar, the path bar, dialogs, toasts, the other Settings pages) is still English. Each language is one `key = "text"` table in `crates/keel-app/i18n/`, with English as the fallback; see [Interface language](docs/files.md#interface-language) for adding a language or translating more of the window.
@@ -27,6 +32,9 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 - Documented Backblaze B2 setup through the existing S3-compatible account form (application key id and application key, bucket endpoint and region), not yet checked against a live B2 bucket.
 
 ### Changed
+
+- The Disk Usage window's Owner column names each account once (cached per SID or user id) and, on Unix, through the system's user database instead of reading `/etc/passwd` per row.
+- Disk usage scans flag folders that refused access (`access denied` in exports and `ScanInfo::denied`), apart from other unreadable folders.
 
 - Source stores are now at version 14 (freezes): a store this Keel opened is refused by an older Keel ("newer than this Keel").
 - The library database is now at version 10 (collections): a library this Keel opened is refused by an older Keel ("newer than this Keel").
