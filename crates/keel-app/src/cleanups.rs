@@ -94,19 +94,20 @@ impl UserCleanup {
     /// "files and folders".
     pub fn scope_text(&self) -> String {
         let kinds: Vec<&str> = [
-            (self.files, "files"),
-            (self.folders, "folders"),
-            (self.drives, "drives"),
+            (self.files, crate::i18n::tr("cleanups.scope_files")),
+            (self.folders, crate::i18n::tr("cleanups.scope_folders")),
+            (self.drives, crate::i18n::tr("cleanups.scope_drives")),
         ]
         .iter()
         .filter(|(on, _)| *on)
         .map(|(_, k)| *k)
         .collect();
+        let and = crate::i18n::tr("cleanups.scope_and");
         match kinds.as_slice() {
-            [] => "nothing".into(),
-            [one] => (*one).into(),
-            [a, b] => format!("{a} and {b}"),
-            [a, b, c] => format!("{a}, {b} and {c}"),
+            [] => crate::i18n::tr("cleanups.scope_none").to_owned(),
+            [one] => (*one).to_owned(),
+            [a, b] => format!("{a} {and} {b}"),
+            [a, b, c] => format!("{a}, {b} {and} {c}"),
             _ => unreachable!(),
         }
     }
@@ -298,7 +299,7 @@ fn puts(words: &[String]) -> Vec<Put> {
         let name = name.as_str();
         if name == "cmd" && cfg!(windows) {
             if i > 0 {
-                refuse_after(&mut put, i, "cmd started by another program");
+                refuse_after(&mut put, i, crate::i18n::tr("cleanups.err_refuse_cmd"));
             }
             return put;
         }
@@ -307,10 +308,9 @@ fn puts(words: &[String]) -> Vec<Put> {
                 put[at] = if POSIX_SHELLS.contains(&name) {
                     Put::Posix
                 } else {
-                    Put::Refuse(format!(
-                        "{name} quotes differently from a POSIX shell: pass the value as an \
-                         argument after the script"
-                    ))
+                    Put::Refuse(
+                        crate::i18n::tr("cleanups.err_refuse_shell").replace("{name}", name),
+                    )
                 };
             }
             return put;
@@ -336,7 +336,7 @@ fn puts(words: &[String]) -> Vec<Put> {
                 if w == "-S" || w.starts_with("-S") || w.starts_with("--split-string") {
                     let at = if w == "-S" { j + 1 } else { j };
                     if at < put.len() {
-                        put[at] = Put::Refuse("env -S splits it into a command line".into());
+                        put[at] = Put::Refuse(crate::i18n::tr("cleanups.err_refuse_env").into());
                     }
                 }
             }
@@ -365,7 +365,7 @@ fn puts(words: &[String]) -> Vec<Put> {
             refuse_after(
                 &mut put,
                 i,
-                &format!("{name} joins its arguments into a command line for a shell"),
+                &crate::i18n::tr("cleanups.err_refuse_joiner").replace("{name}", name),
             );
             return put;
         }
@@ -377,9 +377,7 @@ fn puts(words: &[String]) -> Vec<Put> {
 /// Values after word `i` are refused.
 fn refuse_after(put: &mut [Put], i: usize, why: &str) {
     for p in put.iter_mut().skip(i + 1) {
-        *p = Put::Refuse(format!(
-            "{why}: Keel cannot quote a value for it (run the program directly)"
-        ));
+        *p = Put::Refuse(crate::i18n::tr("cleanups.err_refuse_suffix").replace("{why}", why));
     }
 }
 
@@ -440,7 +438,7 @@ fn powershell(words: &[String], i: usize, windows_powershell: bool, put: &mut [P
             *q = p.clone();
         }
     }
-    let switch = Put::Refuse("a PowerShell switch takes no placeholders".into());
+    let switch = Put::Refuse(crate::i18n::tr("cleanups.err_refuse_pwsh_switch").into());
     set_from(put, i + 1, &switch);
     let mut j = i + 1;
     while j < words.len() {
@@ -471,8 +469,8 @@ fn powershell(words: &[String], i: usize, windows_powershell: bool, put: &mut [P
             return;
         }
         if name == "e" || name == "ec" || is("encodedcommand", 2) {
-            let why = "an encoded PowerShell command takes no values: use -Command";
-            set_from(put, j + 1, &Put::Refuse(why.into()));
+            let why = crate::i18n::tr("cleanups.err_refuse_encoded").to_owned();
+            set_from(put, j + 1, &Put::Refuse(why));
             return;
         }
         if is("file", 1) {
@@ -492,10 +490,7 @@ fn powershell(words: &[String], i: usize, windows_powershell: bool, put: &mut [P
 /// one: `-c'…'`): values are refused in that script.
 fn inline_script(words: &[String], i: usize, switches: &[&str], put: &mut [Put]) {
     let why = |name: &str| {
-        Put::Refuse(format!(
-            "a value inside a {name} script could run as code: pass it as an argument after \
-             the script (sys.argv, ARGV, process.argv…)"
-        ))
+        Put::Refuse(crate::i18n::tr("cleanups.err_refuse_inline").replace("{name}", name))
     };
     let name = stem(&words[i]);
     for j in i + 1..words.len() {
@@ -539,11 +534,7 @@ fn awk_program(words: &[String], i: usize, put: &mut [Put]) {
         break;
     }
     if j < put.len() {
-        put[j] = Put::Refuse(
-            "a value inside an awk program could run as code: pass it as an operand or with \
-             -v instead"
-                .into(),
-        );
+        put[j] = Put::Refuse(crate::i18n::tr("cleanups.err_refuse_awk").into());
     }
 }
 
@@ -587,11 +578,11 @@ fn placeholder_in_quotes(word: &str, pwsh: bool) -> bool {
 pub fn expand(template: &str, target: &Target) -> Result<Expanded, String> {
     let words = split(template)?;
     let Some(first) = words.first() else {
-        return Err("The command line is empty".into());
+        return Err(crate::i18n::tr("cleanups.err_empty").into());
     };
     let program = substitute(first, target, &|v| Ok(v.to_owned()))?;
     if program.trim().is_empty() {
-        return Err("The command line names no program".into());
+        return Err(crate::i18n::tr("cleanups.err_no_program").into());
     }
     if shell_of(&program) == Shell::Cmd {
         return Ok(Expanded {
@@ -610,10 +601,7 @@ pub fn expand(template: &str, target: &Target) -> Result<Expanded, String> {
             _ if !has_placeholder(w) => substitute(w, target, &|v| Ok(v.to_owned()))?,
             Put::Refuse(why) => return Err(format!("{w}: {why}")),
             Put::Posix | Put::Pwsh if placeholder_in_quotes(w, pwsh) => {
-                return Err(format!(
-                    "{w}: put the placeholder outside quotes in the script; Keel quotes the \
-                     value itself"
-                ))
+                return Err(crate::i18n::tr("cleanups.err_outside_quotes").replace("{w}", w))
             }
             Put::Posix => substitute(w, target, &|v| Ok(quote_posix(v)))?,
             Put::Pwsh => substitute(w, target, &|v| Ok(quote_powershell(v)))?,
@@ -644,7 +632,7 @@ fn cmd_script(template: &str, target: &Target) -> Result<String, String> {
     let words: Vec<_> = split_windows_spans(template).into_iter().skip(1).collect();
     let Some(at) = words.iter().position(|(w, _)| cmd_switch(w)) else {
         if words.iter().any(|(w, _)| has_placeholder(w)) {
-            return Err("cmd without /c or /k gets no values: write cmd /c <command>".into());
+            return Err(crate::i18n::tr("cleanups.err_cmd_no_switch").into());
         }
         return Ok(words
             .iter()
@@ -654,16 +642,17 @@ fn cmd_script(template: &str, target: &Target) -> Result<String, String> {
     };
     let (switch, _) = &words[at];
     if switch.len() != 2 {
-        return Err(format!(
-            "{switch}: put a space after {} (cmd /c <command>)",
-            &switch[..2]
-        ));
+        return Err(crate::i18n::tr("cleanups.err_cmd_space")
+            .replace("{switch}", switch)
+            .replace("{sw}", &switch[..2]));
     }
     let (mut delayed, mut autorun_off, mut strip) = (false, false, false);
     let mut line = String::new();
     for (w, span) in &words[..at] {
         if has_placeholder(w) || w.contains('%') {
-            return Err(format!("{w}: placeholders go after {switch}"));
+            return Err(crate::i18n::tr("cleanups.err_cmd_placeholders_after")
+                .replace("{w}", w)
+                .replace("{switch}", switch));
         }
         let lower = w.to_ascii_lowercase();
         if lower.starts_with("/v") {
@@ -782,11 +771,10 @@ fn substitute(
             Some('d') => &t.folder,
             Some('e') => &t.ext,
             Some(other) => {
-                return Err(format!(
-                    "%{other} is not a placeholder (%p %n %s %d %e, %% for a percent sign)"
-                ))
+                return Err(crate::i18n::tr("cleanups.err_bad_placeholder")
+                    .replace("{other}", &other.to_string()))
             }
-            None => return Err("A lone % ends the command line (%% for a percent sign)".into()),
+            None => return Err(crate::i18n::tr("cleanups.err_lone_percent").into()),
         };
         out.push_str(&quote(value)?);
     }
@@ -869,7 +857,7 @@ pub fn split_unix(line: &str) -> Result<Vec<String>, String> {
                     match chars.next() {
                         Some('\'') => break,
                         Some(c) => word.push(c),
-                        None => return Err("A ' quote is not closed".into()),
+                        None => return Err(crate::i18n::tr("cleanups.err_quote_single").into()),
                     }
                 }
             }
@@ -885,10 +873,10 @@ pub fn split_unix(line: &str) -> Result<Vec<String>, String> {
                                 word.push('\\');
                                 word.push(c);
                             }
-                            None => return Err("A \" quote is not closed".into()),
+                            None => return Err(crate::i18n::tr("cleanups.err_quote_double").into()),
                         },
                         Some(c) => word.push(c),
-                        None => return Err("A \" quote is not closed".into()),
+                        None => return Err(crate::i18n::tr("cleanups.err_quote_double").into()),
                     }
                 }
             }
@@ -988,10 +976,9 @@ pub fn quote_powershell(s: &str) -> String {
 fn check_cmd(value: &str, delayed: bool) -> Result<(), String> {
     let bad = |c: char| matches!(c, '%' | '"' | '\n' | '\r') || (delayed && c == '!');
     match value.chars().find(|&c| bad(c)) {
-        Some(c) => Err(format!(
-            "{value} holds {c:?}, which cmd.exe would read as part of the command: run the \
-             program directly, without cmd /c"
-        )),
+        Some(c) => Err(crate::i18n::tr("cleanups.err_cmd_value")
+            .replace("{value}", value)
+            .replace("{c}", &format!("{c:?}"))),
         None => Ok(()),
     }
 }
@@ -1024,17 +1011,15 @@ pub fn targets(c: &UserCleanup, picked: &[Picked]) -> Result<Vec<Target>, String
         }
     }
     if out.is_empty() {
-        return Err(format!(
-            "\"{}\" works for {}: nothing selected is one",
-            c.title,
-            c.scope_text()
-        ));
+        return Err(crate::i18n::tr("cleanups.err_scope")
+            .replace("{title}", &c.title)
+            .replace("{scope}", &c.scope_text()));
     }
     Ok(out)
 }
 
 fn too_many() -> String {
-    format!("That is more than {MAX_RUNS} runs: pick fewer folders")
+    crate::i18n::tr("cleanups.err_too_many").replace("{n}", &MAX_RUNS.to_string())
 }
 
 /// The folders below `dir`, deepest first.
@@ -1075,10 +1060,7 @@ pub struct Prepared {
 /// Expands cleanup `index` for `picked`.
 pub fn prepare(index: usize, c: &UserCleanup, picked: &[Picked]) -> Result<Prepared, String> {
     if c.command.trim().is_empty() {
-        return Err(format!(
-            "\"{}\" has no command line (Settings → Cleanups)",
-            c.title
-        ));
+        return Err(crate::i18n::tr("cleanups.err_no_command").replace("{title}", &c.title));
     }
     let runs = targets(c, picked)?
         .iter()
@@ -1217,10 +1199,10 @@ pub fn run(
 
 /// The confirmation dialog's body: every expanded command line; Some(action) on Run.
 pub fn confirm_ui(ui: &mut egui::Ui, p: &Prepared, cancel: &mut bool) -> Option<Action> {
-    ui.strong(format!("Run \"{}\"?", p.cleanup.title));
+    ui.strong(crate::i18n::tr("cleanups.confirm_title").replace("{title}", &p.cleanup.title));
     ui.label(match p.runs.len() {
-        1 => "This command runs:".to_owned(),
-        n => format!("These {n} commands run, one after another:"),
+        1 => crate::i18n::tr("cleanups.runs_one").to_owned(),
+        n => crate::i18n::tr("cleanups.runs_n").replace("{n}", &n.to_string()),
     });
     egui::ScrollArea::vertical()
         .max_height(220.0)
@@ -1230,21 +1212,24 @@ pub fn confirm_ui(ui: &mut egui::Ui, p: &Prepared, cancel: &mut bool) -> Option<
                 ui.add(egui::Label::new(egui::RichText::new(e.line()).monospace()).wrap());
             }
             if p.runs.len() > 500 {
-                ui.weak(format!("and {} more", p.runs.len() - 500));
+                ui.weak(
+                    crate::i18n::tr("cleanups.and_more")
+                        .replace("{n}", &(p.runs.len() - 500).to_string()),
+                );
             }
         });
     if !p.cleanup.wait {
-        ui.weak("They all start at once; Keel does not wait for them.");
+        ui.weak(crate::i18n::tr("cleanups.no_wait"));
     }
     ui.add_space(8.0);
     let mut out = None;
     ui.horizontal(|ui| {
-        let run = ui.button("Run");
+        let run = ui.button(crate::i18n::tr("cleanups.run"));
         crate::a11y::first_focus(&run);
         if run.clicked() {
             out = Some(Action::CleanupConfirmed(Box::new(p.clone())));
         }
-        *cancel |= ui.button("Cancel").clicked();
+        *cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
     });
     out
 }
@@ -1264,23 +1249,26 @@ pub fn settings_page(ui: &mut egui::Ui, list: &mut Vec<UserCleanup>) {
     use crate::a11y::Named as _;
     let id = egui::Id::new("keel-cleanups-selected");
     let mut selected: usize = ui.data(|d| d.get_temp(id)).unwrap_or(0);
-    ui.label(
-        "Commands you run on the selected files, folders or drives from the context menu \
-         (Cleanups) or the command palette (\"Run cleanup\").",
-    );
+    ui.label(crate::i18n::tr("cleanups.intro"));
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button("Add").clicked() {
+        if ui.button(crate::i18n::tr("toolbar.add")).clicked() {
             list.push(UserCleanup::default());
             selected = list.len() - 1;
         }
         let some = selected < list.len();
-        if ui.add_enabled(some, egui::Button::new("Remove")).clicked() {
+        if ui
+            .add_enabled(some, egui::Button::new(crate::i18n::tr("toolbar.remove")))
+            .clicked()
+        {
             list.remove(selected);
             selected = selected.saturating_sub(1);
         }
         if ui
-            .add_enabled(some && selected > 0, egui::Button::new("Move up"))
+            .add_enabled(
+                some && selected > 0,
+                egui::Button::new(crate::i18n::tr("sidebar.move_up")),
+            )
             .clicked()
         {
             list.swap(selected, selected - 1);
@@ -1289,7 +1277,7 @@ pub fn settings_page(ui: &mut egui::Ui, list: &mut Vec<UserCleanup>) {
         if ui
             .add_enabled(
                 some && selected + 1 < list.len(),
-                egui::Button::new("Move down"),
+                egui::Button::new(crate::i18n::tr("sidebar.move_down")),
             )
             .clicked()
         {
@@ -1303,7 +1291,7 @@ pub fn settings_page(ui: &mut egui::Ui, list: &mut Vec<UserCleanup>) {
         .auto_shrink([false, true])
         .show(ui, |ui| {
             if list.is_empty() {
-                ui.weak("No cleanups yet");
+                ui.weak(crate::i18n::tr("cleanups.none"));
             }
             for (i, c) in list.iter().enumerate() {
                 if ui.selectable_label(i == selected, &c.title).clicked() {
@@ -1317,26 +1305,26 @@ pub fn settings_page(ui: &mut egui::Ui, list: &mut Vec<UserCleanup>) {
             .num_columns(2)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
-                ui.label("Title");
+                ui.label(crate::i18n::tr("cleanups.title"));
                 ui.add(egui::TextEdit::singleline(&mut c.title).desired_width(320.0))
-                    .named("Title");
+                    .named(crate::i18n::tr("cleanups.title"));
                 ui.end_row();
-                ui.label("Command line");
+                ui.label(crate::i18n::tr("cleanups.command_line"));
                 let r = ui
                     .add(
                         egui::TextEdit::singleline(&mut c.command)
                             .font(egui::TextStyle::Monospace)
                             .desired_width(320.0),
                     )
-                    .named("Command line");
+                    .named(crate::i18n::tr("cleanups.command_line"));
                 if r.changed() {
                     c.confirmed = false;
                 }
                 ui.end_row();
                 ui.label("");
-                ui.weak("%p path  %n name  %s path without trailing \\ or /  %d folder  %e extension  %% percent");
+                ui.weak(crate::i18n::tr("cleanups.placeholders"));
                 ui.end_row();
-                ui.label("Example");
+                ui.label(crate::i18n::tr("cleanups.example"));
                 match expand(&c.command, &example()) {
                     Ok(e) => {
                         ui.add(egui::Label::new(egui::RichText::new(e.line()).monospace()).wrap());
@@ -1349,24 +1337,27 @@ pub fn settings_page(ui: &mut egui::Ui, list: &mut Vec<UserCleanup>) {
                     }
                 }
                 ui.end_row();
-                ui.label("Works for");
+                ui.label(crate::i18n::tr("cleanups.works_for"));
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut c.files, "Files");
-                    ui.checkbox(&mut c.folders, "Folders");
-                    ui.checkbox(&mut c.drives, "Drives");
+                    ui.checkbox(&mut c.files, crate::i18n::tr("inspector.files"));
+                    ui.checkbox(&mut c.folders, crate::i18n::tr("inspector.folders"));
+                    ui.checkbox(&mut c.drives, crate::i18n::tr("cleanups.drives"));
                 });
                 ui.end_row();
-                ui.label("Options");
+                ui.label(crate::i18n::tr("cleanups.options"));
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut c.recurse, "Recurse into subfolders")
-                        .on_hover_text("Also run for every folder below, deepest first");
-                    ui.checkbox(&mut c.ask, "Ask before running")
-                        .on_hover_text("Show the expanded commands first (always the first time)");
-                    ui.checkbox(&mut c.wait, "Wait for each to finish")
-                        .on_hover_text("One after another, as a job you can cancel");
-                    ui.add_enabled(c.wait, egui::Checkbox::new(&mut c.refresh, "Refresh after"));
+                    ui.checkbox(&mut c.recurse, crate::i18n::tr("cleanups.recurse"))
+                        .on_hover_text(crate::i18n::tr("cleanups.recurse_tip"));
+                    ui.checkbox(&mut c.ask, crate::i18n::tr("cleanups.ask"))
+                        .on_hover_text(crate::i18n::tr("cleanups.ask_tip"));
+                    ui.checkbox(&mut c.wait, crate::i18n::tr("cleanups.wait"))
+                        .on_hover_text(crate::i18n::tr("cleanups.wait_tip"));
+                    ui.add_enabled(
+                        c.wait,
+                        egui::Checkbox::new(&mut c.refresh, crate::i18n::tr("cleanups.refresh")),
+                    );
                     if cfg!(windows) {
-                        ui.checkbox(&mut c.console, "Show a console window");
+                        ui.checkbox(&mut c.console, crate::i18n::tr("cleanups.console"));
                     }
                 });
                 ui.end_row();

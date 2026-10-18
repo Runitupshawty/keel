@@ -301,13 +301,14 @@ pub enum CleanBy {
 impl CleanBy {
     pub const ALL: [CleanBy; 4] = [Self::Name, Self::Kind, Self::Size, Self::Modified];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Name => "Name",
-            Self::Kind => "Kind",
-            Self::Size => "Size",
-            Self::Modified => "Date Modified",
+            Self::Name => crate::i18n::tr("toolbar.name"),
+            Self::Kind => crate::i18n::tr("toolbar.kind"),
+            Self::Size => crate::i18n::tr("toolbar.size"),
+            Self::Modified => crate::i18n::tr("toolbar.date_modified"),
         }
+        .to_owned()
     }
 }
 
@@ -461,12 +462,15 @@ fn arrange_menu(ui: &mut egui::Ui, opts: &mut IconOptions, act: &mut Option<Arra
         }
     }
     ui.separator();
-    let clean = ui.add_enabled(opts.arrange.by_hand(), egui::Button::new("Clean Up"));
+    let clean = ui.add_enabled(
+        opts.arrange.by_hand(),
+        egui::Button::new(crate::i18n::tr("view_grid.clean_up")),
+    );
     if clean.clicked() {
         *act = Some(Arrangement::CleanUp);
         ui.close_menu();
     }
-    ui.menu_button("Clean Up By", |ui| {
+    ui.menu_button(crate::i18n::tr("view_grid.clean_up_by"), |ui| {
         for by in CleanBy::ALL {
             if ui.button(by.label()).clicked() {
                 *act = Some(Arrangement::CleanUpBy(by));
@@ -493,40 +497,53 @@ fn options_bar(
 ) {
     use crate::a11y::Named;
     ui.horizontal(|ui| {
-        ui.menu_button("Arrange", |ui| arrange_menu(ui, opts, act))
-            .response
-            .tip("Arrange icons: in the sort order, snapped to a grid or freely; Clean Up");
-        ui.label("Size");
+        ui.menu_button(crate::i18n::tr("view_grid.arrange"), |ui| {
+            arrange_menu(ui, opts, act)
+        })
+        .response
+        .tip(crate::i18n::tr("view_grid.arrange_tip"));
+        ui.label(crate::i18n::tr("view_grid.size"));
         ui.add(
             egui::Slider::new(&mut opts.icon_size, MIN_ICON..=MAX_ICON)
                 .logarithmic(true)
                 .show_value(false),
         )
-        .named("Icon size")
-        .on_hover_text(format!("Icon size: {} points", opts.icon_size.round()));
-        ui.menu_button("View options", |ui| {
+        .named(crate::i18n::tr("view_grid.icon_size"))
+        .on_hover_text(
+            crate::i18n::tr("view_grid.icon_size_points")
+                .replace("{points}", &opts.icon_size.round().to_string()),
+        );
+        ui.menu_button(crate::i18n::tr("view_grid.view_options"), |ui| {
             ui.horizontal(|ui| {
-                ui.label("Grid spacing");
+                ui.label(crate::i18n::tr("view_grid.grid_spacing"));
                 ui.add(egui::Slider::new(&mut opts.spacing, 0.0..=MAX_SPACING).integer())
-                    .named("Grid spacing");
+                    .named(crate::i18n::tr("view_grid.grid_spacing"));
             });
             ui.horizontal(|ui| {
-                ui.label("Label position");
-                ui.radio_value(&mut opts.label, LabelPos::Bottom, "Bottom");
-                ui.radio_value(&mut opts.label, LabelPos::Right, "Right");
+                ui.label(crate::i18n::tr("view_grid.label_position"));
+                ui.radio_value(
+                    &mut opts.label,
+                    LabelPos::Bottom,
+                    crate::i18n::tr("view_grid.bottom"),
+                );
+                ui.radio_value(
+                    &mut opts.label,
+                    LabelPos::Right,
+                    crate::i18n::tr("view_grid.right"),
+                );
             });
             let mut always = cx.views.always_open(dir) == Some(crate::pane::ViewMode::Grid);
             if ui
-                .checkbox(&mut always, "Always open in Grid view")
-                .on_hover_text("This folder opens in the Grid view")
+                .checkbox(&mut always, crate::i18n::tr("view_grid.always_open"))
+                .on_hover_text(crate::i18n::tr("view_grid.always_open_tip"))
                 .changed()
             {
                 let view = always.then_some(crate::pane::ViewMode::Grid);
                 cx.views.set_always_open(dir, view);
             }
             if ui
-                .button("Use as defaults")
-                .on_hover_text("Folders without their own options use these")
+                .button(crate::i18n::tr("view_grid.use_as_defaults"))
+                .on_hover_text(crate::i18n::tr("view_grid.use_as_defaults_tip"))
                 .clicked()
             {
                 cx.views.set_icons(dir, *opts);
@@ -535,11 +552,11 @@ fn options_bar(
             }
         })
         .response
-        .tip("Grid spacing, label position, Always open in Grid view");
+        .tip(crate::i18n::tr("view_grid.view_options_tip"));
         if too_many && opts.arrange.by_hand() {
-            ui.weak(format!(
-                "Shown in sort order: arranging by hand needs {MAX_ARRANGED} items or fewer"
-            ));
+            ui.weak(
+                crate::i18n::tr("view_grid.too_many").replace("{max}", &MAX_ARRANGED.to_string()),
+            );
         }
     });
 }
@@ -641,7 +658,7 @@ pub fn ui(
             tab.selected.clear();
         }
         bg.context_menu(|ui| {
-            ui.menu_button("Arrange", |ui| {
+            ui.menu_button(crate::i18n::tr("view_grid.arrange"), |ui| {
                 arrange_menu(ui, &mut menu_opts, &mut menu_act)
             });
             ui.separator();

@@ -1580,14 +1580,16 @@ fn a_change_feed_brings_creates_changes_and_removes_without_a_walk() {
     mem.put_at("/srv/a.txt", "changed", 1_700_000_100);
     mem.remove(&mem_path("/srv/gone.txt")).unwrap();
     mem.put("/elsewhere/y.txt", "not ours");
-    eventually("changes applied", || {
-        id_of(&src, "d/e/new.txt").is_some()
-            && id_of(&src, "gone.txt").is_none()
-            && size_of(&src, "a.txt") == Some(7)
+    // The poller saves the cursor after it applies a page, and a poll can land between the
+    // puts above: wait for the cursor past all four changes, not only their records.
+    eventually("cursor advanced", || {
+        cursor_of(&src).as_deref() == Some("8")
     });
+    assert!(id_of(&src, "d/e/new.txt").is_some());
+    assert!(id_of(&src, "gone.txt").is_none());
+    assert_eq!(size_of(&src, "a.txt"), Some(7));
     assert!(id_of(&src, "d/e").is_some(), "the new folder is indexed");
     assert_eq!(src.generation.load(Ordering::SeqCst), generation, "no walk");
-    assert_eq!(cursor_of(&src).as_deref(), Some("8"), "cursor advanced");
     drop(handle);
     assert!(paths(&src)
         .iter()

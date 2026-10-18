@@ -22,6 +22,7 @@ mod video;
 mod xls; // the bound calamine needs before it opens an .xls
 
 pub use extract::{extract_text, extracts, text_extractor, Extracted, TextError, TEXT_EXTENSIONS};
+pub use pdf::{isolate_pdf_text, pdf_text_child};
 use std::path::{Path, PathBuf};
 
 pub const MAX_PREVIEW_BYTES: u64 = 64 * 1024 * 1024;

@@ -205,6 +205,8 @@ mac_app "$t/app/share" "$t/app/Keel.app" 1.2.3
 exe="$t/app/Keel.app/Contents/MacOS/Keel"
 plist="$t/app/Keel.app/Contents/Info.plist"
 if [ -L "$exe" ] && [ "$(readlink "$exe")" = "$t/app/share/keel" ]; then ok "app: the executable links to keel"
+# Git Bash on Windows copies for `ln -s`; Keel.app is only built on macOS.
+elif [ -n "${MSYSTEM:-}" ]; then ok "app: link not checked (no symlinks in Git Bash)"
 else fail "app: the executable is not a link to keel: $(ls -l "$exe")"; fi
 if [ ! -e "$t/app/Keel.app/Contents/stale" ]; then ok "app: an older bundle is replaced"
 else fail "app: an older bundle's files are left"; fi

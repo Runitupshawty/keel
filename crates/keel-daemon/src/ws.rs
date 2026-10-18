@@ -280,6 +280,7 @@ pub(crate) fn run(
         if let Some(answer) = rpc::handle(&msg, &mut |req| shared.dispatch(req, &mut session)) {
             ws.send(Message::text(answer.to_string()))?;
         }
+        shared.answered(&session);
     };
     drop(pending);
     if let Some((id, _)) = session.sub.take() {

@@ -125,9 +125,10 @@ use keel_core::chips;
 use keel_vfs::VPath;
 use session::Session;
 use settings::Settings;
-use std::path::Path;
 
 fn main() -> eframe::Result<()> {
+    // `--pdf-text-child`: this program as `isolate_pdf_text`'s PDF reader; nothing else runs.
+    keel_preview::pdf_text_child();
     // Task 79: `keel.portable` beside the executable keeps everything beside it. First, before
     // any thread starts (it sets the folder variables). A folder other users can change is
     // refused (`notice` says why).
@@ -147,13 +148,15 @@ fn main() -> eframe::Result<()> {
     let request = cli.request();
     // --- end Task 24 ---
     // pdfium sits next to the executable (copied there by build.rs); a
-    // command's library reads PDF text with it too (Task 62).
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .as_deref()
-        .and_then(Path::parent)
-    {
-        keel_preview::init_pdfium(dir);
+    // command's library reads PDF text with it too (Task 62). Resolved: Keel.app's
+    // executable and ~/.local/bin/keel are symlinks into the folder pdfium is in.
+    if let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) {
+        if let Some(dir) = exe.parent() {
+            keel_preview::init_pdfium(dir);
+        }
+        // PDF text is read by a child of this program (`--pdf-text-child`): pdfium crashing
+        // on a document then ends only that child.
+        keel_preview::isolate_pdf_text(exe);
     }
     // --- Task 37 ---
     // `keel <subcommand>`: no window, output on the shell's console.

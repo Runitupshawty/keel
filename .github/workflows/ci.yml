@@ -23,7 +23,7 @@ jobs:
         run: |
           docker run -d --name keel -p 127.0.0.1:7421:7421 -v keel-state:/var/lib/keel keel-daemon
           trap 'docker logs keel; docker rm -f keel; docker volume rm keel-state' EXIT
-          curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://localhost:7421/ -o /tmp/index.html
+          curl --fail --retry 30 --retry-all-errors --retry-delay 2 http://localhost:7421/ -o /tmp/index.html
           grep -q boot.js /tmp/index.html
           curl --fail http://localhost:7421/keel_web_bg.wasm -o /dev/null
           docker exec keel test -s /var/lib/keel/config/daemon.token
@@ -31,7 +31,7 @@ jobs:
           docker stop keel
           test "$(docker inspect --format '{{.State.ExitCode}}' keel)" = 0
           docker start keel
-          curl --fail --retry 30 --retry-connrefused --retry-delay 2 http://localhost:7421/ -o /dev/null
+          curl --fail --retry 30 --retry-all-errors --retry-delay 2 http://localhost:7421/ -o /dev/null
           docker cp keel:/var/lib/keel/config/daemon.token /tmp/keel-token-after
           cmp /tmp/keel-token /tmp/keel-token-after
 
