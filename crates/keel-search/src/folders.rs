@@ -281,6 +281,10 @@ fn poll(inner: Weak<Inner>, stop: Arc<AtomicBool>) {
 }
 
 impl Searcher for FolderIndexes {
+    fn unified_query(&self) -> bool {
+        true
+    }
+
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         let mut hits = Vec::new();
         let mut error = None;

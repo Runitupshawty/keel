@@ -1,162 +1,18 @@
-//! Query text to [`Matcher`]: Everything-style terms. Space-separated terms must all
-//! match the name; `"quoted text"` is one term; a term with `*` or `?` is a glob over
-//! the whole name; `regex:` makes the rest of a term a regular expression (or the
-//! whole text when `Query::regex` is set); `folder:` keeps folders only; `in:<path>`
-//! keeps entries under a path prefix. Anything else is a substring. The search toggles
-//! (whole words, path, diacritics, whole-filename wildcards) come from `crate::terms`.
-
-use regex::{Regex, RegexBuilder};
-
+//! Native query compiler; the shared AST owns the language.
 use super::index::Matcher;
-use crate::{terms, Query};
+use crate::Query;
 
-enum Term {
-    Literal(String),
-    Pattern(String),
-}
-
-fn split_terms(text: &str) -> Vec<String> {
-    let mut terms = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    for c in text.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    terms.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        terms.push(cur);
-    }
-    terms
-}
-
-fn strip_ci<'a>(term: &'a str, prefix: &str) -> Option<&'a str> {
-    term.get(..prefix.len())
-        .filter(|head| head.eq_ignore_ascii_case(prefix))
-        .map(|_| &term[prefix.len()..])
-}
-
-/// A pane's folder as a typed `in:` with a trailing separator (no partial name).
 pub(crate) fn folder_prefix(dir: &std::path::Path) -> String {
-    let dir = dir.display().to_string();
-    format!("{}\\", dir.trim_end_matches(['\\', '/']))
+    format!(
+        "{}\\",
+        dir.display().to_string().trim_end_matches(['\\', '/'])
+    )
 }
 
 pub(crate) fn compile(query: &Query) -> anyhow::Result<Matcher> {
-    let mut folders_only = query.folders_only;
-    // A pane's folder; a typed `in:` takes its place.
-    let mut within = query.within.as_deref().map(folder_prefix);
-    let mut terms = Vec::new();
-    if query.regex {
-        if !query.text.is_empty() {
-            terms.push(Term::Pattern(query.text.clone()));
-        }
-    } else {
-        for term in split_terms(&query.text) {
-            if let Some(rest) = strip_ci(&term, "folder:") {
-                folders_only = true;
-                if rest.is_empty() {
-                    continue;
-                }
-                terms.push(term_of(rest, query));
-            } else if let Some(rest) = strip_ci(&term, "in:") {
-                within = Some(rest.to_owned());
-            } else if let Some(rest) = strip_ci(&term, "regex:") {
-                terms.push(Term::Pattern(rest.to_owned()));
-            } else {
-                terms.push(term_of(&term, query));
-            }
-        }
-    }
-    // Scan with the longest substring (most selective), else the first pattern.
-    let lead = terms
-        .iter()
-        .enumerate()
-        .filter_map(|(i, t)| match t {
-            Term::Literal(s) => Some((s.len(), i)),
-            Term::Pattern(_) => None,
-        })
-        .max()
-        .map(|(_, i)| i)
-        .or((!terms.is_empty()).then_some(0));
-    let regex = |src: &str| -> anyhow::Result<Regex> {
-        Ok(RegexBuilder::new(src)
-            .multi_line(true)
-            .case_insensitive(!query.match_case)
-            .build()?)
-    };
-    let build = |t: &Term| match t {
-        Term::Literal(s) => regex(&terms::literal(s, query)),
-        Term::Pattern(p) => regex(p),
-    };
-    // Match Whole Words and Match Path (shared with the walk index, `terms.rs`).
-    let words = terms::word_terms(&literals(&terms), query, &regex)?;
-    if query.match_path {
-        let mut path = terms
-            .iter()
-            .map(build)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        path.extend(words);
-        return Ok(Matcher {
-            scan: None,
-            rest: Vec::new(),
-            literal: None,
-            prefix: None,
-            match_case: query.match_case,
-            folders_only,
-            within,
-            path,
-        });
-    }
-    let mut scan = None;
-    let mut literal = None;
-    let mut prefix = None;
-    let mut rest = Vec::new();
-    for (i, t) in terms.iter().enumerate() {
-        if Some(i) == lead {
-            scan = Some(build(t)?);
-            if let Term::Literal(s) = t {
-                literal = Some(s.clone());
-                prefix = Some(regex(&format!("^{}", terms::literal(s, query)))?);
-            }
-        } else {
-            rest.push(build(t)?);
-        }
-    }
-    rest.extend(words);
-    Ok(Matcher {
-        scan,
-        rest,
-        literal,
-        prefix,
-        match_case: query.match_case,
-        folders_only,
-        within,
-        path: Vec::new(),
-    })
-}
-
-fn literals(terms: &[Term]) -> Vec<&str> {
-    (terms.iter())
-        .filter_map(|t| match t {
-            Term::Literal(s) => Some(s.as_str()),
-            Term::Pattern(_) => None,
-        })
-        .collect()
-}
-
-fn term_of(text: &str, query: &Query) -> Term {
-    if text.contains(['*', '?']) {
-        Term::Pattern(terms::glob(text, query))
-    } else {
-        Term::Literal(text.to_owned())
-    }
+    let mut m = crate::walkindex::compile(query)?;
+    m.within = m.within.map(|p| p.replace('/', "\\"));
+    Ok(m)
 }
 
 #[cfg(test)]
@@ -347,9 +203,9 @@ mod tests {
             [r"C:\Windows\report.pdf"]
         );
         assert_eq!(
-            with(r"*\ann\rep* folder:", |q| q.match_path = true),
+            with(r"**\ann\rep* folder:", |q| q.match_path = true),
             [r"C:\Users\ann\report"],
-            "a wildcard over the whole path"
+            "a wildcard over the whole path (`**` crosses folders)"
         );
         assert_eq!(find("nOtés"), [r"C:\Users\ann\notes.txt"]);
         assert!(with("notés", |q| q.match_diacritics = true).is_empty());
@@ -357,6 +213,76 @@ mod tests {
         assert_eq!(
             with("*.pd", |q| q.whole_filename_wildcards = false).len(),
             3
+        );
+    }
+
+    /// The language reads the index's columns, its folder totals and its parent links.
+    #[test]
+    fn the_shared_language_reads_columns_totals_and_parents() {
+        use crate::ntfs::index::Info;
+        let mut ix = index();
+        // 2026-06-15 12:00 UTC as FILETIME (the same year in every time zone).
+        let modified = 134_259_984_000_000_000;
+        let file = |size: u64, modified: i64| Info {
+            size,
+            allocated: size.div_ceil(4096) * 4096,
+            modified,
+            created: modified,
+            attributes: 0x20,
+            links: 1,
+            ..Info::default()
+        };
+        ix.set_info(12, file(5000, modified));
+        ix.set_info(13, file(10, 0));
+        ix.set_info(21, file(7, 0));
+        ix.settle();
+        let find = |text: &str| {
+            let q = Query {
+                text: text.into(),
+                ..Query::default()
+            };
+            let mut found: Vec<String> = ix
+                .search(&compile(&q).unwrap(), 100)
+                .into_iter()
+                .map(|f| f.path)
+                .collect();
+            found.sort();
+            found
+        };
+        assert_eq!(find("file: size:>1000"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(
+            find("file: size-on-disk:8192"),
+            [r"C:\Users\ann\report.pdf"]
+        );
+        assert_eq!(find("file: dm:2026"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(find("file: dm:2025"), Vec::<String>::new());
+        assert_eq!(find("attrib:D"), find("folder:"));
+        // A folder's size is the total below it; its counts come from the folder totals.
+        assert_eq!(find("folder: size:5010"), [r"C:\Users", r"C:\Users\ann"]);
+        assert_eq!(
+            find("descendant-file-count:>=5 folder:"),
+            [r"C:\Users", r"C:\Users\ann"]
+        );
+        // Direct children and depth come from the parent links.
+        assert_eq!(find("child-file-count:5"), [r"C:\Users\ann"]);
+        assert_eq!(find("child:notes.txt"), [r"C:\Users\ann"]);
+        assert_eq!(find("depth:2 folder:"), [r"C:\Users\ann"]);
+        assert_eq!(find("file-id:12"), [r"C:\Users\ann\report.pdf"]);
+        assert_eq!(find("parent-file-id:20"), [r"C:\Windows\report.pdf"]);
+        assert_eq!(
+            find("sibling:notes.txt report"),
+            [
+                r"C:\Users\ann\Report 2026.PDF",
+                r"C:\Users\ann\my report.docx",
+                r"C:\Users\ann\report",
+                r"C:\Users\ann\report.pdf",
+                r"C:\Users\ann\reportage",
+            ]
+        );
+        // Set functions run over the whole result.
+        assert_eq!(
+            find("dupe:name"),
+            [r"C:\Users\ann\report.pdf", r"C:\Windows\report.pdf"]
         );
     }
 

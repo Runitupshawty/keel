@@ -24,13 +24,17 @@ pub const PAGE: u32 = 1_000;
 /// The Most results setting's range.
 pub const MAX_RESULTS: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;
 
+/// The search bar's width after the box and its toggles: the Search menu, the filter,
+/// bookmarks, the spinner and the result count.
+const BAR_REST: f32 = 380.0;
+
 #[cfg(test)]
 pub const NOT_RUNNING: &str =
     "Everything is not running. Start Everything.exe (voidtools) to search.";
 
 /// The query box's hint for the backend that answers it (the System backend's `name`):
-/// Everything takes its own syntax; Keel's index takes names, wildcards, quotes,
-/// `folder:`, `in:` and `regex:` (not `ext:` or `dm:`); the library its own terms.
+/// Everything takes its own syntax; Keel's indexes take the same language (`keel-query`);
+/// the library its own terms.
 pub fn hint(backend: Option<&str>, library: bool) -> String {
     match backend {
         _ if library => crate::i18n::tr("search_tab.hint_library").to_owned(),
@@ -551,23 +555,60 @@ pub fn bar(
         } else {
             hint(name, tab.library_search)
         };
+        // Room for the rest of the row: the toggles (measured, all nine), then the Search
+        // menu, the filter, bookmarks and the count (`BAR_REST`).
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+        let toggles_width: f32 = (Toggle::ALL.iter())
+            .map(|t| {
+                let text = t.icon().to_owned();
+                ui.fonts(|f| f.layout_no_wrap(text, font.clone(), egui::Color32::WHITE))
+                    .size()
+                    .x
+                    + pad
+            })
+            .sum();
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
-                .desired_width((ui.available_width() - 520.0).max(120.0))
+                .desired_width((ui.available_width() - BAR_REST - toggles_width).max(120.0))
                 .hint_text(&hint_text),
         );
-        // A query Everything's search language rejects shows its problem beside the box. Only for
-        // the Everything backend: Keel's index, locate and the library read their own terms
-        // (`in:` is a source there) until keel-query is wired into them.
+        // A query the search language rejects shows its problem beside the box: with the
+        // Everything backend (checked as typed), and with Keel's own index and file lists
+        // (checked with the tab's toggles, as the backend reads it). The library reads its
+        // own terms on top of the language and reports errors with its results.
         let everything_syntax = name == Some("Everything") && !tab.library_search && !toggles.regex;
-        if list.is_none() && everything_syntax && !query.is_empty() {
+        let native_syntax = !tab.library_search
+            && (list.is_some() || name == Some("Keel index"))
+            && name != Some("Everything");
+        if (everything_syntax || native_syntax) && !query.is_empty() {
             let cache_id = id.with("query_problem");
+            // The language is in the key: the problem is worded in it.
+            let key = format!(
+                "{}\u{0}{}{}\u{0}{}",
+                query,
+                u8::from(toggles.regex),
+                u8::from(native_syntax),
+                crate::i18n::tr("language.name")
+            );
             let problem = ui.ctx().data_mut(|d| {
                 let cache = d.get_temp_mut_or_default::<(String, Option<String>)>(cache_id);
-                if cache.0 != *query {
-                    cache.0 = query.clone();
-                    cache.1 = crate::query_check::problem(query);
+                if cache.0 != key {
+                    cache.0 = key;
+                    // The search tab reads `network-index-host:` itself (net_search.rs) before
+                    // the query reaches the system index; a file list refuses it.
+                    let checked = match list.is_none() {
+                        true => crate::net_search::split_hosts(query).1,
+                        false => query.clone(),
+                    };
+                    cache.1 = match checked.trim().is_empty() {
+                        true => None,
+                        false if native_syntax => crate::query_check::native_problem(
+                            &settings.query(checked, *toggles, 1),
+                        ),
+                        false => crate::query_check::problem(&checked),
+                    };
                 }
                 cache.1.clone()
             });
@@ -1114,13 +1155,13 @@ mod tests {
         assert!(!old.quote_copied_paths);
     }
 
-    /// The hint names only what the backend understands (Keel's index has no `ext:`).
+    /// Keel's index takes Everything's syntax, like Everything itself.
     #[test]
     fn hint_matches_the_backend() {
         assert!(hint(Some("Everything"), false).contains("ext:"));
         let native = hint(Some("Keel index"), false);
-        assert!(!native.contains("ext:") && !native.contains("dm:"));
-        assert!(native.contains("in:") && native.contains("regex:"));
+        assert!(native.contains("ext:") && native.contains("dm:"));
+        assert!(native.contains("in:"));
         assert!(hint(Some("Library"), true).contains("tag:"));
         assert_eq!(hint(None, false), "Search file names");
     }

@@ -30,6 +30,9 @@ impl Searcher for Spotlight {
             command.arg("kMDItemContentTypeTree == \"public.folder\"");
         } else if query.folders_only {
             command.arg("-name").arg(&text);
+        } else if text.is_empty() {
+            // The search language has no plain word to hand to Spotlight: every name.
+            command.arg("kMDItemFSName == \"*\"");
         } else {
             command.arg(&text);
         }

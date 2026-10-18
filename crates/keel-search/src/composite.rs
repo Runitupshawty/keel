@@ -98,6 +98,13 @@ impl Composite {
 }
 
 impl Searcher for Composite {
+    fn unified_query(&self) -> bool {
+        match self.fallback.get() {
+            Some(fallback) if !self.primary.available() => fallback.unified_query(),
+            _ => self.primary.unified_query(),
+        }
+    }
+
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         if let Some(primary) = self.live_primary() {
             match primary.query(query) {
@@ -195,6 +202,10 @@ impl Merge {
 }
 
 impl Searcher for Merge {
+    fn unified_query(&self) -> bool {
+        self.main.unified_query() && self.extra.unified_query()
+    }
+
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         let main = match crate::pane_folder(query) {
             // A pane's folder only the folder indexes hold: the main index would walk it.

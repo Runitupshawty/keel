@@ -6,11 +6,27 @@ and filter macros. This page lists what Keel's own engine (the `keel-query` crat
 today. Everything still receives the text unchanged when it is Keel's search backend, so
 everything Everything supports keeps working there.
 
-> **Status.** The `keel-query` crate parses and evaluates this language and is covered by a
-> conformance test per operator, modifier, constant and function
-> (`crates/keel-query/tests/everything.rs`). The search box, the library search, `keel search`,
-> the API and MCP do not use it yet; they move over in a following change. Until then the pane
-> and the library keep the syntax described in [Files](files.md) and [Library](library.md).
+> **Where it works.** This language is the one query language of Keel's own searches: the
+> search tab and **Search here** box of every pane, `keel search`, the API's `system.search`
+> and `search`, and MCP use it. The table says how each backend runs it.
+
+| Backend | How the language runs |
+|---|---|
+| Keel's own index (the NTFS index, the home-folder and folder/volume name indexes, a file list, the plain walk of a folder no index holds) | Whole: the index scans its names for the query's longest plain word and the compiled query decides each candidate, with the entry's path, size, dates, attributes and folder counts. Parse errors come back with the place in the text. |
+| Everything | Everything receives the text as typed and runs its own language (which has more functions than Keel's engine); the search tab shows Keel's check of the text beside the box. |
+| Spotlight, `locate` | Whole, but evaluated by Keel: the backend is asked for the names that contain the query's longest plain word (all names when it has none), up to 10,000, and Keel checks those. A query with no plain word (`ext:pdf`) therefore reads at most the first 10,000 names the backend gives. |
+| The library | OR, `!`, groups, wildcards, `regex:`, path terms and the other functions work; the library's own terms (`tag:`, `content:`, `camera:`, `kind:`, words that also match document text) keep their meaning. See [Library](library.md#searching). |
+
+What an index knows about an entry is what the language can ask: the NTFS index has size
+(a folder's is the total below it), size on disk, created, modified, accessed and recently
+changed dates, attributes, file ids, hard link and stream counts, and child and descendant
+counts from its folder totals; the home-folder and folder/volume name indexes have size
+(files), modified and created dates, attributes and child counts; a file list has what its
+columns hold; Spotlight and `locate` hits have size and modified date. A property a source does
+not have is `unknown`: it fails every comparison and matches `unknown`. Tree functions work on
+the name indexes and the NTFS index (with a table of parents built when a query first uses
+one); set functions (`dupe:`, `unique:`, `count:`) see the whole result of one index, so on a
+machine with several NTFS volumes each volume is deduplicated on its own.
 
 ## Terms and operators
 
@@ -24,7 +40,7 @@ everything Everything supports keeps working there.
 | `*`, `?` | wildcards: any run of characters, one character; neither crosses `\`. `**` crosses `\` |
 | `C:\work`, `\work` | a term with `\` matches the full path instead of the name |
 | `work\` | a trailing `\` names a folder: the items inside folders whose name ends in `work` |
-| `regex:^a.*z$` | a regular expression |
+| `regex:^a.*z$` | a regular expression; one with an escaped `\\` matches the full path. On macOS and Linux a `/` in a regex is a path separator too (`regex:/docs/[^/]+\.pdf$`) |
 | `function:value` | a search function (below) |
 | `function*:text` | the rest of the query, as typed, is the function's text (`name*:a b\|c`) |
 
@@ -384,12 +400,23 @@ so a query never silently matches the wrong thing:
 | `subject:`, `comment:`, `category:`, `tags:`, `tag:`, `rating:`, `people:`, `last-author:`, `software:`, `from:`, `to:` | document properties (Task 73) |
 | `filelist:`, `filelist-filename:`, `filelist-full-path:` | file lists (Phase 16) |
 | `network-index-host:` | read by Keel's search tab before the query reaches a backend ([network indexes](devices.md#devices-and-spacedrop)); elsewhere refused |
-| `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms; the library keeps its own parser ([Library](library.md#searching)) until it moves to this language |
+| `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms: they work in the library search only ([Library](library.md#searching)); every other search refuses them |
 | `pinyin:`, `pinyin-jian:`, `pinyin-quan:` | Pinyin matching needs a Pinyin table Keel does not ship yet |
 
 ## Where Keel differs from Everything
 
-- `in:` (a folder, at any depth) and `kind:` are Keel's own.
+- In Keel's own searches `AND`, `OR` and `NOT` are words (Everything's **Allow literal
+  operators** is off, its default): use `|`, `!` and `< >`.
+- Keel's own searches turn **Replace forward slashes with backslashes** on, so `docs/x` is a path
+  term on every system, and the pane's **Match path**, **Match whole words**, **Match
+  diacritics** and **Regular expression** toggles, **Match whole filename when using wildcards**
+  (Settings → General → Search) and the API's `prefix`, `suffix`, `ignore_punctuation` and
+  `ignore_whitespace` options are the search options above. A wildcard never crosses `\`
+  (`*\ann\rep*` with Match path does not reach back through `Users\`; `**` does).
+- `in:` (a folder, at any depth) and `kind:` are Keel's own. In Keel's own indexes `in:`
+  reads a folder path as typed, also part of the last name: `in:C:\Users\an` keeps `C:\Users\ann`
+  and everything below it (and `C:\Users\anna`); a pane's **Search here** folder keeps to whole
+  folder names.
 - `exists:` looks in Keel's index, not on disk; `dupe-from:` keeps whole duplicate groups that
   have an item in the folder; set functions skip items whose compared value is `unknown`; tree
   functions and duplicate searches are bounded (above) where Everything is not.
