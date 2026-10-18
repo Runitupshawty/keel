@@ -127,6 +127,8 @@ pub struct ViewPrefs {
     pub folders: BTreeMap<String, FolderView>,
     /// Bumped on every change of a folder's entry.
     pub clock: u64,
+    /// Task 76: the search results' columns, sort options and sidebars (`[views.search]`).
+    pub search: crate::search_columns::ResultsOptions,
 }
 
 impl ViewPrefs {
