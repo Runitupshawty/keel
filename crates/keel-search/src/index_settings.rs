@@ -26,6 +26,11 @@ pub struct IndexSettings {
     pub exclude: ExcludeSettings,
     /// The index journal ([`crate::journal`]).
     pub journal: JournalSettings,
+    /// The Properties tab: file properties read into the property store
+    /// ([`crate::propindex`]).
+    pub properties: PropertySettings,
+    /// Run counts and dates of what Keel opens ([`crate::runs`]).
+    pub run_history: crate::runs::RunHistorySettings,
 }
 
 impl Default for IndexSettings {
@@ -38,7 +43,84 @@ impl Default for IndexSettings {
             auto_remove_offline: false,
             exclude: ExcludeSettings::default(),
             journal: JournalSettings::default(),
+            properties: PropertySettings::default(),
+            run_history: Default::default(),
         }
+    }
+}
+
+/// One property of the Properties tab.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct IndexedProperty {
+    /// A property function name (`artist`, `width`, `sha256`, `digital-signature-name`)
+    /// or, on Windows, a canonical property name (`System.Photo.FNumber`).
+    pub name: String,
+    /// Keep a sort order of this property, so sorting by it is a read, not a sort.
+    pub fast_sort: bool,
+}
+
+/// Settings → Search index → Properties (Everything 1.5's Properties tab): which file
+/// properties an idle background job reads into the property store next to the index,
+/// and for which files.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct PropertySettings {
+    /// The properties indexed; empty: the job does not run.
+    pub properties: Vec<IndexedProperty>,
+    /// Only files inside these folders; empty: every folder Keel's index holds (the
+    /// home folder and the Folders and Volumes of this page).
+    pub include_only_folders: Vec<String>,
+    /// Folders left out with everything below them (paths or wildcards, as the
+    /// Exclude tab's).
+    pub exclude_folders: Vec<String>,
+    /// When not empty, only files whose name matches one of these wildcards.
+    pub include_only_files: Vec<String>,
+    /// Files whose name matches one of these wildcards are left out.
+    pub exclude_files: Vec<String>,
+    /// Leave out files with the "not content indexed" attribute (Windows).
+    pub exclude_not_content_indexed: bool,
+    /// Leave out cloud placeholders whose data is not on this device (recall on data
+    /// access, recall on open, offline): reading them would download them.
+    pub exclude_recall_on_data_access: bool,
+    /// Files over this many MB are left out; 0: no limit.
+    pub max_file_mb: u32,
+}
+
+impl Default for PropertySettings {
+    fn default() -> Self {
+        Self {
+            properties: Vec::new(),
+            include_only_folders: Vec::new(),
+            exclude_folders: Vec::new(),
+            include_only_files: Vec::new(),
+            exclude_files: Vec::new(),
+            exclude_not_content_indexed: false,
+            exclude_recall_on_data_access: true,
+            max_file_mb: 0,
+        }
+    }
+}
+
+impl PropertySettings {
+    /// The size cap in bytes; `u64::MAX` for no limit.
+    pub fn max_file_bytes(&self) -> u64 {
+        match self.max_file_mb {
+            0 => u64::MAX,
+            mb => u64::from(mb) * 1024 * 1024,
+        }
+    }
+
+    /// The property names, in order, without duplicates or blanks.
+    pub fn names(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in &self.properties {
+            let n = p.name.trim();
+            if !n.is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(n)) {
+                out.push(n.to_owned());
+            }
+        }
+        out
     }
 }
 
@@ -206,5 +288,34 @@ mod tests {
             toml::from_str("auto_remove_offline = true\n[[folders]]\npath = \"/x\"\n").unwrap();
         assert!(partial.auto_remove_offline && partial.auto_include_fixed);
         assert_eq!(partial.folders[0].scan, ScanOptions::default());
+        assert!(partial.run_history.enabled);
+        assert!(partial.properties.exclude_recall_on_data_access);
+    }
+
+    #[test]
+    fn property_settings_round_trip_and_clean_names() {
+        let mut s = IndexSettings::default();
+        s.properties.properties = vec![
+            IndexedProperty {
+                name: "artist".into(),
+                fast_sort: true,
+            },
+            IndexedProperty {
+                name: " Artist ".into(),
+                fast_sort: false,
+            },
+            IndexedProperty::default(),
+            IndexedProperty {
+                name: "System.Photo.FNumber".into(),
+                fast_sort: false,
+            },
+        ];
+        s.properties.max_file_mb = 5;
+        s.run_history.enabled = false;
+        let back: IndexSettings = toml::from_str(&toml::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(s.properties.names(), ["artist", "System.Photo.FNumber"]);
+        assert_eq!(s.properties.max_file_bytes(), 5 << 20);
+        assert_eq!(PropertySettings::default().max_file_bytes(), u64::MAX);
     }
 }

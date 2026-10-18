@@ -176,6 +176,92 @@ pub trait Props {
     fn container_file_names(&self) -> Option<Vec<String>> {
         None
     }
+    /// Whether the Windows Search index found the item for `text` (`si:text`); `None`:
+    /// the source did not ask it (no match).
+    fn system_index(&self, _text: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// An item with the run history's count and last open (`run-count:`, `date-run:`) over
+/// what its source says: Keel's run history lives beside the index, not in it.
+pub struct WithRuns<'a> {
+    pub item: &'a dyn Props,
+    pub count: Option<u64>,
+    /// When Keel last opened the item.
+    pub last_run: Option<Timestamp>,
+}
+
+impl Props for WithRuns<'_> {
+    fn name(&self) -> &str {
+        self.item.name()
+    }
+    fn path(&self) -> &str {
+        self.item.path()
+    }
+    fn is_dir(&self) -> bool {
+        self.item.is_dir()
+    }
+    fn size(&self) -> Option<u64> {
+        self.item.size()
+    }
+    fn allocated(&self) -> Option<u64> {
+        self.item.allocated()
+    }
+    fn date(&self, which: DateProp) -> Option<Timestamp> {
+        match which {
+            DateProp::Run => self.last_run.or_else(|| self.item.date(which)),
+            _ => self.item.date(which),
+        }
+    }
+    fn attributes(&self) -> Option<u32> {
+        self.item.attributes()
+    }
+    fn extension(&self) -> &str {
+        self.item.extension()
+    }
+    fn stem(&self) -> &str {
+        self.item.stem()
+    }
+    fn depth(&self) -> u32 {
+        self.item.depth()
+    }
+    fn run_count(&self) -> Option<u64> {
+        self.count.or_else(|| self.item.run_count())
+    }
+    fn child_counts(&self) -> Option<ChildCounts> {
+        self.item.child_counts()
+    }
+    fn file_id(&self) -> Option<u64> {
+        self.item.file_id()
+    }
+    fn parent_file_id(&self) -> Option<u64> {
+        self.item.parent_file_id()
+    }
+    fn type_name(&self) -> Option<Cow<'_, str>> {
+        self.item.type_name()
+    }
+    fn hard_link_count(&self) -> Option<u64> {
+        self.item.hard_link_count()
+    }
+    fn hard_link_names(&self) -> Option<Vec<String>> {
+        self.item.hard_link_names()
+    }
+    fn stream_count(&self) -> Option<u64> {
+        self.item.stream_count()
+    }
+    fn stream_names(&self) -> Option<Vec<String>> {
+        self.item.stream_names()
+    }
+    fn container_file_count(&self) -> Option<u64> {
+        self.item.container_file_count()
+    }
+    fn container_file_names(&self) -> Option<Vec<String>> {
+        self.item.container_file_names()
+    }
+    fn system_index(&self, text: &str) -> Option<bool> {
+        self.item.system_index(text)
+    }
 }
 
 /// The extension of a file name (`"a.tar.gz"` → `"gz"`, `".bashrc"` → `"bashrc"`).

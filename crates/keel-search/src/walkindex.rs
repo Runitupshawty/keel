@@ -1982,6 +1982,8 @@ impl Worker {
             return;
         }
         let events = journal::events_from(changes, renames, journal::now_ms());
+        // The property index follows the same changes (whether the journal is on or not).
+        crate::propindex::note_changes(&events);
         match &self.opts.journal {
             Some(j) => {
                 let _ = j.record_all(&events);

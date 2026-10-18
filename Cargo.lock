@@ -5036,6 +5036,8 @@ dependencies = [
  "chrono",
  "directories",
  "ignore",
+ "keel-props",
+ "keel-query",
  "keel-vfs",
  "libloading",
  "notify",

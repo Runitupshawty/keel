@@ -33,11 +33,14 @@ mod proto;
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/raw.rs"]
 mod raw;
+pub mod propindex;
 #[cfg(windows)]
 mod rdcw;
+pub mod runs;
 mod schedule;
 #[cfg(target_os = "macos")]
 mod spotlight;
+pub mod sysindex;
 mod terms;
 mod volumes;
 mod walkindex;
@@ -54,9 +57,10 @@ pub use filelist::FileListSearcher;
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
-    VolumeRoot, DEFAULT_JOURNAL_MB,
+    split_list, ExcludeSettings, FolderRoot, IndexSettings, IndexedProperty, JournalSettings,
+    PropertySettings, ScanOptions, Schedule, VolumeRoot, DEFAULT_JOURNAL_MB,
 };
+pub use runs::RunHistorySettings;
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, install_service, is_elevated, request_full_index, request_service_change,
@@ -251,7 +255,14 @@ pub fn default_searcher() -> Box<dyn Searcher> {
 
 /// [`default_searcher`] with the folders and volumes of Settings → Search
 /// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list).
+///
+/// Every backend answers `si:` terms through the Windows Search index
+/// ([`sysindex::SystemIndexed`]).
 pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
+    Box::new(sysindex::SystemIndexed::new(backend_with(settings)))
+}
+
+fn backend_with(settings: &IndexSettings) -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
         (Ok(everything), dir) => {

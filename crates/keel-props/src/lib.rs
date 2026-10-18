@@ -23,6 +23,9 @@
 //! ```
 
 pub mod audio;
+/// Digital signatures through `WinVerifyTrust` (Windows).
+#[cfg(windows)]
+pub mod authenticode;
 pub mod content;
 /// Generated test files (tests and fuzz seeds).
 #[cfg(any(test, feature = "fuzzing"))]
@@ -48,7 +51,7 @@ pub use functions::{lookup, Function, FUNCTIONS};
 pub use hash::HashAlgo;
 pub use value::{filetime_to_system_time, Prop};
 
-use functions::{AudioField, Conv, PeField, Reader, TextField};
+use functions::{AudioField, Conv, PeField, Reader, SignatureField, TextField};
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, Metadata};
@@ -172,6 +175,8 @@ pub struct FileProps<'a> {
     text: Option<Option<text::TextStats>>,
     hashes: HashMap<HashAlgo, String>,
     extracted: Option<&'a str>,
+    #[cfg(windows)]
+    signer: Option<Option<authenticode::Signer>>,
 }
 
 /// Bytes read for `.url` files.
@@ -189,6 +194,8 @@ impl<'a> FileProps<'a> {
             text: None,
             hashes: HashMap::new(),
             extracted: None,
+            #[cfg(windows)]
+            signer: None,
         }
     }
 
@@ -296,7 +303,34 @@ impl<'a> FileProps<'a> {
             Reader::DateDeleted => trash::deleted(&self.path)?
                 .and_then(|d| d.deleted)
                 .map_or(Prop::Unknown, Prop::Date),
+            Reader::Signature(field) => self.signature_field(field)?,
         })
+    }
+
+    /// The digital signature's signer or timestamp (Windows; unknown elsewhere, for
+    /// folders and for cloud placeholders, which are not downloaded to check).
+    #[cfg(windows)]
+    fn signature_field(&mut self, field: SignatureField) -> Result<Prop, Error> {
+        if self.signer.is_none() {
+            let s = if self.readable()? {
+                authenticode::read(&self.path)?
+            } else {
+                None
+            };
+            self.signer = Some(s);
+        }
+        let Some(Some(s)) = &self.signer else {
+            return Ok(Prop::Unknown);
+        };
+        Ok(match field {
+            SignatureField::Name => Prop::Str(s.name.clone()),
+            SignatureField::Timestamp => s.timestamp.map_or(Prop::Unknown, Prop::Date),
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn signature_field(&mut self, _field: SignatureField) -> Result<Prop, Error> {
+        Ok(Prop::Unknown)
     }
 
     fn content_match(&mut self, spec: content::Spec) -> Result<Prop, Error> {

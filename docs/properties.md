@@ -109,8 +109,8 @@ Function names are Everything's (audit Part 1), with their aliases in parenthese
 | `sha256:` | hash (streamed) | no |
 | `crc32:` | hash (streamed) | no |
 | `crc64:` (`crc:`) | hash (streamed) | no |
-| `digital-signature-name:` | no | no |
-| `digital-signature-timestamp:` | no | no |
+| `digital-signature-name:` | `WinVerifyTrust` (Windows only): embedded or catalog signature | no |
+| `digital-signature-timestamp:` | `WinVerifyTrust` (Windows only): embedded or catalog signature | no |
 | `version:` | PE version resource | `System.FileVersion` |
 | `product-name:` | PE version resource | `System.Software.ProductName` |
 | `product-version:` | PE version resource | `System.Software.ProductVersion` |
@@ -238,7 +238,7 @@ The other Everything functions (name, path, size, the file system dates, attribu
 ## Not yet
 
 - Keel's own readers for image (EXIF, dimensions), video and Office document properties on Linux and macOS (the Windows Property System covers them on Windows); macOS `MDItem` attributes.
-- `digital-signature-name:` and `digital-signature-timestamp:` (`WinVerifyTrust`), `volume-label:`, `location:`, `protected:`, `aspect-ratio:`, track counts and `frame-count:`, `document-content-type:` and `details:`.
+- `volume-label:`, `location:`, `protected:`, `aspect-ratio:`, track counts and `frame-count:`, `document-content-type:` and `details:`.
 - Content indexing (keeping file content in the index per folder, Everything 1.5), `pinyin:` matching, ANSI content in a system code page other than Windows-1252, and Windows XP's `INFO2` Recycle Bin records.
-- Run tracking (`run-count:`, `date-run:`, `is-running:`), property indexing (choosing properties to keep in the index, with an idle job) and Ogg/Opus and MP4 audio tags.
+- `is-running:`, and Ogg/Opus and MP4 audio tags. Run counts (`run-count:`, `date-run:`) come from Keel's run history and indexed properties from the property index ([Search: property index](files.md#property-index)), not from this crate.
 - ANSI strings in `.lnk` files, ID3v1 tags and WAV INFO chunks are read as Windows-1252, not the system's code page. Windows list values (several artists, keywords) are split at `; `, so a value that itself holds `; ` splits in two.
