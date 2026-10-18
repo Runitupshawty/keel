@@ -569,7 +569,6 @@ impl DiskUsage {
     pub fn ranks(&self) -> &HashMap<String, usize> {
         &self.ranks
     }
-
 }
 
 /// The folders of `tree` the File Watcher watches (not portable devices).
