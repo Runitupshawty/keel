@@ -93,10 +93,12 @@ pub struct PaneView {
 
 impl PaneView {
     /// The folder shown (None before the first frame).
+    #[cfg(test)]
     pub fn dir(&self) -> Option<&Path> {
         self.dir.as_deref()
     }
 
+    #[cfg(test)]
     pub fn scanning(&self) -> bool {
         self.scan.is_some()
     }

@@ -325,6 +325,7 @@ impl MetaReader {
     }
 
     /// Owner names looked up so far (each once).
+    #[cfg(test)]
     pub fn owner_lookups(&self) -> u64 {
         self.owners.cache.lookups()
     }
@@ -564,17 +565,11 @@ impl DiskUsage {
     }
 
     /// Each extension's color rank, as last built by [`types`](Self::types).
+    #[cfg(test)]
     pub fn ranks(&self) -> &HashMap<String, usize> {
         &self.ranks
     }
 
-    /// Reads the owner and times of `rows` that have not been read (one batch at a time,
-    /// on a worker).
-    pub fn want_metadata(&mut self, rows: impl Iterator<Item = NodeId>) {
-        if let Some(model) = &self.model {
-            self.meta.want(model, rows);
-        }
-    }
 }
 
 /// The folders of `tree` the File Watcher watches (not portable devices).
