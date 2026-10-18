@@ -1063,7 +1063,7 @@ replace_n = "Sustituir {n} archivos"
 
 [goto]
 title = "Ir a la carpeta"
-hint_windows = "C:\Users o ~\Documents"
+hint_windows = "C:\\Users o ~\\Documents"
 hint_other = "/usr/local o ~/Documents"
 folder_path = "Ruta de la carpeta"
 more = "{n} más"

@@ -972,7 +972,7 @@ replace_n = "Replace {n} files"
 # The Go to Folder dialog.
 [goto]
 title = "Go to Folder"
-hint_windows = "C:\Users or ~\Documents"
+hint_windows = "C:\\Users or ~\\Documents"
 hint_other = "/usr/local or ~/Documents"
 folder_path = "Folder path"
 more = "{n} more"
