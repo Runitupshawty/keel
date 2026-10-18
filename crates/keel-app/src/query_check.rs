@@ -6,9 +6,11 @@ fn describe(text: &str, e: &keel_query::Error) -> String {
         snippet = text.get(e.span.start..).unwrap_or("");
     }
     if snippet.is_empty() {
-        snippet = "end of query";
+        snippet = crate::i18n::tr("search_tab.end_of_query");
     }
-    format!("{} at \"{}\"", e.message, snippet)
+    crate::i18n::tr("search_tab.problem_at")
+        .replace("{problem}", &e.message)
+        .replace("{part}", snippet)
 }
 
 /// The problem with `text` as a search query, if the parser rejects it.
@@ -47,6 +49,17 @@ mod tests {
     fn a_bad_value_is_reported() {
         let p = problem("size:big").expect("size:big should be rejected");
         assert!(p.contains("size:big") || p.contains("big"));
+    }
+
+    #[test]
+    fn the_problem_is_worded_in_the_interface_language() {
+        crate::i18n::set("es");
+        let p = problem("size:big").expect("size:big should be rejected");
+        let end = problem("(report").expect("an open bracket should be rejected");
+        crate::i18n::set("en");
+        assert!(p.contains(" en \""), "{p}");
+        assert!(problem("size:big").unwrap().contains(" at \""));
+        assert!(!end.is_empty());
     }
 
     #[test]
