@@ -229,6 +229,28 @@ fn search_toggles() {
         with("*.pd", |q| q.whole_filename_wildcards = false),
         ["report.pdf", "Report.PDF"]
     );
+    // Everything's other four toggles, read by the same language.
+    assert_eq!(names(&s, &q("otes")), ["report notes.txt"]);
+    assert!(with("otes", |q| q.match_prefix = true).is_empty());
+    assert_eq!(
+        with("note", |q| q.match_prefix = true),
+        ["report notes.txt"]
+    );
+    assert!(with("note", |q| q.match_suffix = true).is_empty());
+    assert_eq!(
+        with("otes", |q| q.match_suffix = true),
+        ["report notes.txt"]
+    );
+    assert!(names(&s, &q("menutxt")).is_empty());
+    assert_eq!(
+        with("menutxt", |q| q.ignore_punctuation = true),
+        ["café menu.txt"]
+    );
+    assert!(names(&s, &q("reportnotes")).is_empty());
+    assert_eq!(
+        with("reportnotes", |q| q.ignore_whitespace = true),
+        ["report notes.txt"]
+    );
 }
 
 /// A subset of `keel-query`'s conformance cases through the real index: the same language,

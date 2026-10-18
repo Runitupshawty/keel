@@ -24,6 +24,10 @@ pub const PAGE: u32 = 1_000;
 /// The Most results setting's range.
 pub const MAX_RESULTS: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;
 
+/// The search bar's width after the box and its toggles: the Search menu, the filter,
+/// bookmarks, the spinner and the result count.
+const BAR_REST: f32 = 380.0;
+
 #[cfg(test)]
 pub const NOT_RUNNING: &str =
     "Everything is not running. Start Everything.exe (voidtools) to search.";
@@ -547,10 +551,23 @@ pub fn bar(
         } else {
             hint(name, tab.library_search)
         };
+        // Room for the rest of the row: the toggles (measured, all nine), then the Search
+        // menu, the filter, bookmarks and the count (`BAR_REST`).
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        let pad = 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+        let toggles_width: f32 = (Toggle::ALL.iter())
+            .map(|t| {
+                let text = t.icon().to_owned();
+                ui.fonts(|f| f.layout_no_wrap(text, font.clone(), egui::Color32::WHITE))
+                    .size()
+                    .x
+                    + pad
+            })
+            .sum();
         let r = ui.add(
             egui::TextEdit::singleline(query)
                 .id(id)
-                .desired_width((ui.available_width() - 520.0).max(120.0))
+                .desired_width((ui.available_width() - BAR_REST - toggles_width).max(120.0))
                 .hint_text(&hint_text),
         );
         // A query the search language rejects shows its problem beside the box: with the
