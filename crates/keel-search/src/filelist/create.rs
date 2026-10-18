@@ -179,6 +179,16 @@ fn push(list: &mut FileList, entry: Entry, limits: &Limits) -> anyhow::Result<()
     Ok(())
 }
 
+/// One file or folder as [`create`] lists it (a link as what it points at), or `None`
+/// when it cannot be read.
+pub(super) fn entry_of(path: &Path) -> Option<Entry> {
+    let md = std::fs::metadata(path).ok()?;
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    Some(entry(path, &name, &md, md.is_dir()))
+}
+
 fn entry(path: &Path, name: &str, md: &std::fs::Metadata, is_dir: bool) -> Entry {
     #[cfg(windows)]
     let attributes = {

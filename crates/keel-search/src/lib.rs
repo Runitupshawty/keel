@@ -54,7 +54,7 @@ pub use filelist::FileListSearcher;
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
+    split_list, ExcludeSettings, FileListRoot, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
     VolumeRoot, DEFAULT_JOURNAL_MB,
 };
 #[cfg(windows)]
@@ -250,8 +250,18 @@ pub fn default_searcher() -> Box<dyn Searcher> {
 }
 
 /// [`default_searcher`] with the folders and volumes of Settings → Search
-/// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list).
+/// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list), and
+/// the file lists of its File lists tab added to whatever answers
+/// ([`filelist::FileListIndexes`], read on a background thread).
 pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
+    Box::new(filelist::WithFileLists::new(
+        base_searcher(settings),
+        filelist::FileListIndexes::open(settings),
+    ))
+}
+
+/// [`default_searcher_with`] without the file lists.
+fn base_searcher(settings: &IndexSettings) -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
         (Ok(everything), dir) => {

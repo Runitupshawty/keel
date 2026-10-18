@@ -3,18 +3,27 @@
 //! dates as FILETIME numbers or ISO 8601), plain `.txt` / `.m3u` lists (one path per line)
 //! and `.csv` / `.tsv` tables. Reading is bounded ([`Limits`]: rows and line length) and
 //! never touches the paths a list names. A list can be searched like an index
-//! ([`FileListSearcher`]), written in other formats ([`export`]) and made from a folder
-//! ([`create`]).
+//! ([`FileListSearcher`]; queries that need it use the whole search language, with
+//! `filelist:`, `filelist-filename:` and `filelist-full-path:`), written in other formats
+//! ([`export`]), made from a folder ([`create`]), edited ([`edit`]: the File List Editor)
+//! and searched with the index ([`FileListIndexes`]: Settings → Search index → File
+//! lists). A folder's `.metadata.efu` gives its files extra properties ([`sidecar`]).
 
 mod create;
 mod csv;
+pub mod edit;
 mod export;
+mod index;
 mod search;
+pub mod sidecar;
 mod time;
 
 pub use create::{create, split_wildcards, CreateOptions};
 pub use export::{export, write_efu, ExportOptions, Format};
-pub use search::FileListSearcher;
+pub(crate) use index::WithFileLists;
+pub use index::{FileListIndexes, POLL};
+pub use search::{FileListSearcher, ListItem};
+pub use sidecar::{Sidecar, SIDECAR_NAME};
 pub use time::{filetime_from_system, format_iso, parse_date, system_from_filetime};
 
 use std::io::BufRead;
@@ -333,3 +342,5 @@ fn read_lines(mut r: impl BufRead, comments: bool, limits: &Limits) -> anyhow::R
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod more_tests;

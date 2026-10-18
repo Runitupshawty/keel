@@ -20,6 +20,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories.workspace = true
 ignore.workspace = true
 keel-vfs = { path = "../keel-vfs", default-features = false }
+# File lists are searched with the whole search language when a query needs it.
+keel-query = { path = "../keel-query" }
 notify.workspace = true
 nucleo.workspace = true
 parking_lot.workspace = true
