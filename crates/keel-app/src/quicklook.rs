@@ -359,12 +359,20 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
     );
     if t < 1.0 {
         ctx.request_repaint();
-        let a = ((1.0 - t) * 255.0).round() as u8;
-        ctx.layer_painter(egui::Layer::Background).rect_filled(
-            resp.response.rect,
-            0.0,
-            ctx.style().visuals.window_fill.add_alpha(a),
-        );
+        if let Some(inner) = &resp {
+            // A veil in the window's own fill that fades out: the window fades in.
+            let a = ((1.0 - t) * 255.0).round() as u8;
+            let f = ctx.style().visuals.window_fill;
+            ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("keel-quicklook-fade"),
+            ))
+            .rect_filled(
+                inner.response.rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(f.r(), f.g(), f.b(), a),
+            );
+        }
     }
     if play {
         if let Some(e) = shown.as_ref().filter(|_| video) {

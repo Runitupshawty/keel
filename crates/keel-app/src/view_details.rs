@@ -938,7 +938,7 @@ fn triangle(ui: &mut egui::Ui, t: f32, color: egui::Color32) -> egui::Response {
     let s = 3.5;
     // The collapsed triangle, rotated toward the expanded one (a 90-degree turn).
     let (sin, cos) = (t * std::f32::consts::FRAC_PI_2).sin_cos();
-    let turn = |p: egui::Vec2| {
+    let turn = |p: egui::Pos2| {
         let d = p - c;
         c + egui::vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
     };
@@ -947,7 +947,8 @@ fn triangle(ui: &mut egui::Ui, t: f32, color: egui::Color32) -> egui::Response {
         c + egui::vec2(-s * 0.6, s),
         c + egui::vec2(s * 0.7, 0.0),
     ]
-    .map(turn);
+    .map(turn)
+    .to_vec();
     ui.painter().add(egui::Shape::convex_polygon(
         points,
         color,

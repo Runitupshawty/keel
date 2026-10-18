@@ -604,7 +604,7 @@ fn section_body(
     section: Section,
     open: bool,
     finder: bool,
-    content: impl Fn(&mut egui::Ui),
+    mut content: impl FnMut(&mut egui::Ui),
 ) {
     let t = if finder {
         crate::anim::value_d(
@@ -636,7 +636,7 @@ fn section_body(
     meas.set_enabled(false);
     content(&mut meas);
     let full = (meas.cursor().min.y - meas.max_rect().min.y).max(0.0);
-    let (rect, _) = ui.allocate_space(vec2(w, full * t));
+    let (_, rect) = ui.allocate_space(vec2(w, full * t));
     ui.scope(|ui2| {
         ui2.set_clip_rect(rect);
         content(ui2);
