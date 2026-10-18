@@ -211,6 +211,31 @@ per device and minute (the rest waits for the next minute) through
 (`forget_peer` turns sync with it off; what arrived stays). A pull that changed the
 library emits `NetEvent::LibrarySynced`. Sync pulls are not written to the op log.
 
+## Network indexes
+
+A paired device can search this device's system index (Everything's Network Indexes)
+once it is given **Search my files**: `Node::set_search_grant(peer, true)`, a grant of
+its own beside the shares, off by default, persisted with them and dropped by
+`forget_peer`. `Node::search(peer, SearchQuery)` sends `Request::Search`, answered by
+`Response::Hits { hits, more }` with at most `SEARCH_MAX` (1,000) hits, each the host's
+full path, size, date, folder flag and, when a read share of the host covers it, the
+`(source, path)` it opens at (`SearchHit::vpath`: `node://<host>/<source>/<path>`, else
+`node://<host>/~/<host path>`, which shows but never opens: no share is called `~`).
+
+The host checks the grant on every request (a device without it gets
+`Response::Denied("grant required")` and the index is never asked), refuses text
+longer than `SEARCH_TEXT_MAX` (1 KiB), empty or with control characters, caps `max`,
+runs one search per device at a time and at most `NodeOptions::search_rate` (60) per
+device and minute, answers `Response::Error("search timed out")` after
+`NodeOptions::search_timeout` (10 s; the slot is freed only when the search really
+ends), and keeps a reply under 512 KiB of paths (`more` is then set). No file contents
+are ever sent; hits with an empty or overlong path are left out. Turning the grant off
+closes the device's sessions, so a search under way is dropped. `Handler::search`
+(blocking) runs the query; `LibraryHandler::set_search` supplies the system search,
+fills `open` for hits inside the library's local sources and writes every search to the
+op log as `net.search` (device, query text, number of hits). A host searches only its
+own index: searches are never relayed.
+
 ## Spacedrop
 
 `spacedrop::send(node, lib, peer, paths)` starts a durable keel-core job (kind

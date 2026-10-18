@@ -16,6 +16,9 @@ pub(crate) struct Data {
     pub label: String,
     pub peers: Vec<Record>,
     pub grants: Vec<Grant>,
+    /// Network indexes: the devices given **Search my files**.
+    #[serde(default)]
+    pub search: Vec<PeerId>,
 }
 impl Default for Data {
     fn default() -> Self {
@@ -23,6 +26,7 @@ impl Default for Data {
             label: "Keel".into(),
             peers: Vec::new(),
             grants: Vec::new(),
+            search: Vec::new(),
         }
     }
 }
