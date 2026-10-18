@@ -46,7 +46,13 @@ pub struct Inspector {
     /// Phase 15: the index journal's entries of `entry`, newest first.
     pub journal: Option<Result<Vec<Event>, String>>,
     journal_answer: JournalAnswer,
+    /// Task 77: what the folder's `.metadata.efu` says about `entry` (column, value).
+    pub sidecar: Vec<(String, String)>,
+    sidecar_answer: SidecarAnswer,
 }
+
+/// A sidecar lookup's answer: (request, properties).
+type SidecarAnswer = Arc<Mutex<Option<(u64, Vec<(String, String)>)>>>;
 
 /// A journal lookup's answer: (request, entries or error).
 type JournalAnswer = Arc<Mutex<Option<(u64, Result<Vec<Event>, String>)>>>;
@@ -66,6 +72,7 @@ impl Inspector {
             self.entry = entry.cloned();
             self.answer = None;
             self.journal = None;
+            self.sidecar.clear();
             self.max = MAX;
             self.req += 1;
             self.changed = entry.map(|_| Instant::now());
@@ -78,7 +85,34 @@ impl Inspector {
         self.changed = None;
         let path = self.entry.as_ref()?.path.clone();
         self.ask_journal(ctx, &path);
+        self.ask_sidecar(ctx, &path);
         Some((path, self.req, self.max))
+    }
+
+    /// Reads the `.metadata.efu` of a local file's folder on a worker (Task 77).
+    fn ask_sidecar(&mut self, ctx: &egui::Context, path: &VPath) {
+        let Some(local) = path.to_local_path() else {
+            return;
+        };
+        let (req, slot, ctx) = (self.req, self.sidecar_answer.clone(), ctx.clone());
+        crate::worker::spawn("keel-inspect-sidecar", move || {
+            // A sidecar that cannot be read gives no properties.
+            let props =
+                keel_search::filelist::sidecar::properties_of(&local).unwrap_or_default();
+            if !props.is_empty() {
+                *slot.lock() = Some((req, props));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Takes the sidecar lookup's answer when it is for the latest request.
+    fn poll_sidecar(&mut self) {
+        if let Some((req, props)) = self.sidecar_answer.lock().take() {
+            if req == self.req {
+                self.sidecar = props;
+            }
+        }
     }
 
     /// Looks `path` up in the index journal on a worker (local paths only).
@@ -213,6 +247,7 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
     };
     let mut show_all = false;
     ins.poll_journal();
+    ins.poll_sidecar();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -239,6 +274,14 @@ pub fn ui(ui: &mut egui::Ui, ins: &mut Inspector, muted: Color32, out: &mut Vec<
                     Some(crate::i18n::tr("menu.copy_path")),
                 );
             });
+            if !ins.sidecar.is_empty() {
+                heading(ui, crate::i18n::tr("inspector.sidecar"), muted);
+                grid(ui, "inspector-sidecar", |ui| {
+                    for (column, value) in &ins.sidecar {
+                        row(ui, column, value, None);
+                    }
+                });
+            }
             journal(ui, ins.journal.as_ref(), muted, out);
             let lib = match &ins.answer {
                 None => {

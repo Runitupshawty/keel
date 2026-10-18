@@ -556,7 +556,20 @@ impl App {
                             None
                         }
                     };
-                    if let (Some((p, pos)), Some((paths, _))) = (target, self.pending_drop.take()) {
+                    // Task 77: dropped on the File List Editor (where the pointer is, or
+                    // was last seen when no move came).
+                    let over_editor = target.is_some() && {
+                        let at = moved.or_else(|| ctx.input(|i| i.pointer.latest_pos()));
+                        s.filelist_editor.takes_drop(at)
+                    };
+                    if over_editor {
+                        if let Some((paths, _)) = self.pending_drop.take() {
+                            let add = crate::filelist_ui::FileListCmd::EditorAdd(paths);
+                            out.push((s.active, Action::FileList(add)));
+                        }
+                    } else if let (Some((p, pos)), Some((paths, _))) =
+                        (target, self.pending_drop.take())
+                    {
                         // Task 23: the column under the pointer, not the keyboard column.
                         let dst = pos
                             .filter(|_| s.panes[p].view == pane::ViewMode::Columns)
@@ -687,6 +700,13 @@ impl App {
         crate::library_ui::windows(ctx, s, &mut acts);
         crate::devices::windows(ctx, s, &mut acts); // Task 36
         crate::dialogs::properties::windows(ctx, s, &mut acts); // Task 67
+        // Task 77: the File List Editor; "Search in a tab" opens its list as a tab.
+        if let Some((path, list)) =
+            crate::filelist_editor::window(ctx, &mut s.filelist_editor, &s.tx)
+        {
+            let searcher = crate::filelist_ui::searcher(&path, list);
+            s.open_list_tab(s.active, &path, searcher);
+        }
         crate::bookmarks::windows(ctx, s, &mut acts); // Task 76
         s.disk_usage_tick();
         crate::disk_usage::ui::window(

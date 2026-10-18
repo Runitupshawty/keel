@@ -361,6 +361,8 @@ pub struct AppState {
     pub find: crate::bookmarks::Find,
     /// Settings → Search index: the page's edits and the offline roots it marks.
     pub search_page: crate::search_settings::SearchPage,
+    /// Task 77: the File List Editor window.
+    pub filelist_editor: crate::filelist_editor::FileListEditor,
 }
 
 impl AppState {
@@ -472,6 +474,7 @@ impl AppState {
             color_themes: crate::color_theme::ColorThemes::new(ctx.clone()),
             info: Default::default(),
             search_page: Default::default(),
+            filelist_editor: Default::default(),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),
