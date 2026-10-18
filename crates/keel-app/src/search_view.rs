@@ -56,7 +56,12 @@ pub fn snapshot(tab: &Tab) -> FileList {
         .filter_map(|&i| tab.entries().get(i))
         .filter_map(|e| {
             let path = e.path.to_local_path()?;
-            let created = tab.results.meta.by_name.get(&e.name).and_then(|m| m.created);
+            let created = tab
+                .results
+                .meta
+                .by_name
+                .get(&e.name)
+                .and_then(|m| m.created);
             Some(keel_search::filelist::Entry {
                 path: path.to_string_lossy().into_owned(),
                 is_dir: e.kind == Kind::Dir,
@@ -129,9 +134,13 @@ pub fn menu_items(
     use crate::keys::Action;
     let mut item = |ui: &mut egui::Ui, on: bool, key: &str, cmd: ResultsCmd| {
         let label = crate::i18n::tr(key);
-        let button = egui::Button::new(label).selected(on).shortcut_text(
-            crate::keymap::shortcut(ui.ctx(), &Action::Results(cmd.clone()), ""),
-        );
+        let button = egui::Button::new(label)
+            .selected(on)
+            .shortcut_text(crate::keymap::shortcut(
+                ui.ctx(),
+                &Action::Results(cmd.clone()),
+                "",
+            ));
         if ui.add(button).clicked() {
             out.push(Action::Results(cmd));
             ui.close_menu();
@@ -284,10 +293,9 @@ fn folder_rows(
                 true => crate::i18n::tr("search_results.collapse_folder"),
                 false => crate::i18n::tr("search_results.expand_folder"),
             };
-            if crate::a11y::Named::named(ui.add(arrow), &format!("{name} {label}")).clicked() {
-                if !tab.results.toggled.remove(&node.path) {
-                    tab.results.toggled.insert(node.path.clone());
-                }
+            let r = crate::a11y::Named::named(ui.add(arrow), &format!("{name} {label}"));
+            if r.clicked() && !tab.results.toggled.remove(&node.path) {
+                tab.results.toggled.insert(node.path.clone());
             }
         }
         let selected = tab.results.folder.as_ref() == Some(&node.path);
@@ -384,14 +392,15 @@ fn folders_section(ui: &mut egui::Ui, tab: &mut Tab) {
     ui.label(egui::RichText::new(crate::i18n::tr("search_results.folders")).strong());
     let tree = tree_of(tab);
     let all = tab.results.folder.is_none();
-    let text =
-        crate::i18n::tr("search_results.all_results").replace("{n}", &tab.entries().len().to_string());
+    let text = crate::i18n::tr("search_results.all_results")
+        .replace("{n}", &tab.entries().len().to_string());
     if ui.selectable_label(all, text).clicked() {
         tab.results.folder = None;
     }
     if tab.entries().len() > TREE_RESULTS {
         ui.weak(
-            crate::i18n::tr("search_results.tree_first_n").replace("{n}", &TREE_RESULTS.to_string()),
+            crate::i18n::tr("search_results.tree_first_n")
+                .replace("{n}", &TREE_RESULTS.to_string()),
         );
     }
     for &r in &tree.roots {
@@ -411,10 +420,7 @@ fn breaks_word(c: char) -> bool {
 
 /// The words Ctrl+Space offers: the history's (functions left out), then the result
 /// names, each once (any case), in that order.
-pub fn candidates<'a>(
-    history: &'a [String],
-    names: impl Iterator<Item = &'a str>,
-) -> Vec<&'a str> {
+pub fn candidates<'a>(history: &'a [String], names: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
     let mut seen = std::collections::HashSet::new();
     let words = (history.iter())
         .flat_map(|h| h.split_whitespace())
@@ -447,7 +453,9 @@ pub fn complete_word(
     let lower = word.to_lowercase();
     let quoted = start > 0 && chars[start - 1] == '"';
     let found = (words.iter())
-        .filter(|w| w.chars().count() > word.chars().count() && w.to_lowercase().starts_with(&lower))
+        .filter(|w| {
+            w.chars().count() > word.chars().count() && w.to_lowercase().starts_with(&lower)
+        })
         .nth(skip)?;
     let insert = match found.contains(char::is_whitespace) && !quoted {
         true => format!("\"{found}\""),

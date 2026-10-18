@@ -40,7 +40,10 @@ fn ctrl_space_completes_the_word_before_the_cursor() {
 
 #[test]
 fn words_come_from_the_history_then_the_names() {
-    let history = vec!["ext:pdf invoice".to_owned(), "\"tax return\" Invoice".to_owned()];
+    let history = vec![
+        "ext:pdf invoice".to_owned(),
+        "\"tax return\" Invoice".to_owned(),
+    ];
     let names = ["invoice-2026.pdf", "taxes.xlsx"];
     let got = candidates(&history, names.iter().copied());
     assert_eq!(
@@ -94,7 +97,7 @@ fn the_folders_tree_counts_results_and_folds_chains() {
     let root = VPath::parse("mem://t/").unwrap();
     let a = root.join("a");
     let deep = a.join("b").join("c");
-    let entries = vec![
+    let entries = [
         test_entry(&deep, "x.txt", Kind::File, 1),
         test_entry(&deep, "y.txt", Kind::File, 1),
         test_entry(&root.join("z"), "w.txt", Kind::File, 1),

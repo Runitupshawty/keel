@@ -53,8 +53,14 @@ fn a_click_makes_the_primary_sort_and_keeps_two_more() {
         ]
     );
     // Descending first: sizes and dates start biggest and newest first, names do not.
-    assert_eq!(click(&[], ResultCol::Modified, true)[0], (ResultCol::Modified, false));
-    assert_eq!(click(&[], ResultCol::Name, true)[0], (ResultCol::Name, true));
+    assert_eq!(
+        click(&[], ResultCol::Modified, true)[0],
+        (ResultCol::Modified, false)
+    );
+    assert_eq!(
+        click(&[], ResultCol::Name, true)[0],
+        (ResultCol::Name, true)
+    );
 }
 
 #[test]
@@ -137,7 +143,13 @@ fn the_folders_sidebar_keeps_a_subtree() {
     let meta = MetaCache::default();
     let get = |c: ResultCol, e: &Entry| value(c, e, &meta, &|_| None, &|_| None);
     let keep = |e: &Entry| is_within(&e.path, &sub);
-    let rows = order(&d, &[(ResultCol::Name, true)], FoldersFirst::Always, &get, &keep);
+    let rows = order(
+        &d,
+        &[(ResultCol::Name, true)],
+        FoldersFirst::Always,
+        &get,
+        &keep,
+    );
     assert_eq!(names(&d, &rows), ["w.txt", "x.txt"]);
     assert!(is_within(&sub, &sub));
     assert!(!is_within(&root, &sub));

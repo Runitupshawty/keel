@@ -159,7 +159,10 @@ impl ResultCol {
     pub fn needs_meta(self) -> bool {
         matches!(
             self,
-            ResultCol::SizeOnDisk | ResultCol::Created | ResultCol::Accessed | ResultCol::Attributes
+            ResultCol::SizeOnDisk
+                | ResultCol::Created
+                | ResultCol::Accessed
+                | ResultCol::Attributes
         )
     }
 }
@@ -483,7 +486,10 @@ fn read_meta(path: &std::path::Path) -> Option<ResultMeta> {
     #[cfg(unix)]
     let (attributes, on_disk) = {
         use std::os::unix::fs::MetadataExt;
-        (Some(md.mode() & 0o7777), Some(md.blocks().saturating_mul(512)))
+        (
+            Some(md.mode() & 0o7777),
+            Some(md.blocks().saturating_mul(512)),
+        )
     };
     #[cfg(not(any(windows, unix)))]
     let (attributes, on_disk) = (None, None);
@@ -669,7 +675,10 @@ pub fn is_within(path: &VPath, dir: &VPath) -> bool {
     if path.scheme != dir.scheme || path.authority != dir.authority {
         return false;
     }
-    let (p, d) = (path.path.trim_end_matches('/'), dir.path.trim_end_matches('/'));
+    let (p, d) = (
+        path.path.trim_end_matches('/'),
+        dir.path.trim_end_matches('/'),
+    );
     let eq = |a: &str, b: &str| match cfg!(windows) {
         true => a.eq_ignore_ascii_case(b) || a.to_lowercase() == b.to_lowercase(),
         false => a == b,
@@ -693,8 +702,8 @@ pub fn prepare(ctx: &egui::Context, tab: &mut Tab, cx: &crate::pane::ViewCx) {
     if meta_wanted {
         want_meta(tab, ctx);
     }
-    let opened_wanted = cols.contains(&ResultCol::Opened)
-        || sort.iter().any(|(c, _)| *c == ResultCol::Opened);
+    let opened_wanted =
+        cols.contains(&ResultCol::Opened) || sort.iter().any(|(c, _)| *c == ResultCol::Opened);
     let opened = match opened_wanted {
         true => list_view::with_opened(ctx, |o| {
             o.want(cx.library, ctx);
@@ -704,11 +713,20 @@ pub fn prepare(ctx: &egui::Context, tab: &mut Tab, cx: &crate::pane::ViewCx) {
     };
     let (lib, walked) = (cx.library, cx.sizes);
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (tab.generation(), &sort, opts.folders_first, &tab.results.folder).hash(&mut h);
+    (
+        tab.generation(),
+        &sort,
+        opts.folders_first,
+        &tab.results.folder,
+    )
+        .hash(&mut h);
     if meta_wanted {
         tab.results.meta.gen.hash(&mut h);
     }
-    if sort.iter().any(|(c, _)| matches!(c, ResultCol::Size | ResultCol::FolderSize)) {
+    if sort
+        .iter()
+        .any(|(c, _)| matches!(c, ResultCol::Size | ResultCol::FolderSize))
+    {
         (lib.sizes_gen, walked.gen).hash(&mut h);
     }
     if opened_wanted {
@@ -753,7 +771,10 @@ pub fn chooser_ui(
 ) {
     ui.label(egui::RichText::new(crate::i18n::tr("search_results.columns")).strong());
     let mut name = true;
-    ui.add_enabled(false, egui::Checkbox::new(&mut name, ResultCol::Name.label()));
+    ui.add_enabled(
+        false,
+        egui::Checkbox::new(&mut name, ResultCol::Name.label()),
+    );
     ui.add_enabled_ui(!own_columns, |ui| {
         for c in ResultCol::CHOOSABLE {
             let mut on = opts.shows(c);

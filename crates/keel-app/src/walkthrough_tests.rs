@@ -4283,7 +4283,14 @@ fn search_results_columns_sidebars_and_refine() {
     let two = |s: &AppState| !s.tab(0).loading && s.tab(0).entries().len() == 2;
     assert!(wait(&mut h, 30, &two), "{:?}", names(s(&h), 0));
     h.run_steps(3);
-    for label in ["Path", "Extension", "Attributes", "Filters", "Folders", "Audio"] {
+    for label in [
+        "Path",
+        "Extension",
+        "Attributes",
+        "Filters",
+        "Folders",
+        "Audio",
+    ] {
         assert!(has(&h, label), "{label}");
     }
     assert!(has(&h, "All results (2)"));

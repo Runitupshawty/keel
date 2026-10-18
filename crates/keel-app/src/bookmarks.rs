@@ -131,6 +131,7 @@ pub fn suggestions(history: &[String], typed: &str, n: usize) -> Vec<String> {
 
 // --- Sort and layout as stored in a bookmark ---
 
+#[cfg(test)]
 fn sort_word(key: SortKey) -> &'static str {
     match key {
         SortKey::Name => "name",

@@ -116,6 +116,7 @@ impl Toggle {
     ];
 
     /// The toggles with a default key (Everything's Ctrl+I, B, U, M and R).
+    #[cfg(test)]
     pub const KEYED: [Toggle; 5] = [
         Toggle::Case,
         Toggle::WholeWord,
@@ -327,7 +328,11 @@ fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Ac
             ui.close_menu();
         }
     };
+    // Everything's five with keys, then Match prefix, suffix and the two Ignore toggles.
     for t in Toggle::ALL {
+        if t == Toggle::Prefix {
+            ui.separator();
+        }
         let button = egui::Button::new(t.label())
             .selected(t.get(toggles))
             .shortcut_text(crate::keymap::shortcut(
