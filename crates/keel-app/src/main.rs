@@ -24,6 +24,7 @@ mod disk_usage;
 mod dropzone;
 mod du_tabs; // Task 84: the Disk Usage window's analysis tabs
 mod explorer_menu; // Task 85: Search in Keel / Analyze disk usage in Explorer's menu
+mod filelist_editor; // Task 77: the File List Editor window
 mod filelist_ui; // Task 77: file list tabs, Export, `keel filelist`
 mod finder; // Phase 14 Task 67: Quick Look, path bar, spring-loading, Go to Folder
 mod finder_icons; // Task 68: the built-in Keel Finder icon theme

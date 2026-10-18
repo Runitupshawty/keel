@@ -23,8 +23,8 @@ keel-vfs = { path = "../keel-vfs", default-features = false }
 # The property index reads file properties through keel-props (Settings → Search index →
 # Properties).
 keel-props = { path = "../keel-props" }
-# Keel's search language; `si:` hits from the Windows Search index are checked against the
-# rest of the query too.
+# Keel's search language; `si:` hits from the Windows Search index and file lists are
+# checked against the rest of the query too.
 keel-query = { path = "../keel-query" }
 notify.workspace = true
 nucleo.workspace = true

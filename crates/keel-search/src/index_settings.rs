@@ -31,6 +31,9 @@ pub struct IndexSettings {
     pub properties: PropertySettings,
     /// Run counts and dates of what Keel opens ([`crate::runs`]).
     pub run_history: crate::runs::RunHistorySettings,
+    /// File lists (EFU, TXT, CSV, ...) whose entries are searched with the index
+    /// ([`crate::filelist::FileListIndexes`]).
+    pub file_lists: Vec<FileListRoot>,
 }
 
 impl Default for IndexSettings {
@@ -45,6 +48,26 @@ impl Default for IndexSettings {
             journal: JournalSettings::default(),
             properties: PropertySettings::default(),
             run_history: Default::default(),
+            file_lists: Vec::new(),
+        }
+    }
+}
+
+/// One entry of the File lists tab: a file list searched with the index.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct FileListRoot {
+    /// The list's file.
+    pub path: String,
+    /// Read the list again when its file changes (checked every few seconds).
+    pub monitor: bool,
+}
+
+impl Default for FileListRoot {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            monitor: true,
         }
     }
 }

@@ -100,6 +100,8 @@ enum Test {
     PathList(HashSet<String>, Fold),
     /// The Windows Search index finds the item for this text.
     SystemIndex(String),
+    /// Folded names (`filelist:`).
+    NameList(HashSet<String>, Fold),
 }
 
 /// An `exists:` value: a full path, or names from the item's folder.
@@ -549,6 +551,27 @@ impl Compiler<'_> {
                     _ => Node::Or(alts),
                 });
             }
+            FnKind::FileList => {
+                let mut set = HashSet::new();
+                for item in &t.items {
+                    if !matches!(item.op, None | Some(CmpOp::Eq)) {
+                        return Err(value_err(item, "filelist: takes file names".into()));
+                    }
+                    for name in item.text.split('|').map(str::trim) {
+                        if !name.is_empty() {
+                            set.insert(s.fold.apply(name).into_owned());
+                        }
+                    }
+                }
+                if set.is_empty() {
+                    return Err(Error {
+                        span: t.span.clone(),
+                        kind: ErrorKind::Value,
+                        message: "filelist: needs file names (`filelist:\"a.txt|b.txt\"`)".into(),
+                    });
+                }
+                return Ok(leaf(Test::NameList(set, s.fold), 2));
+            }
             FnKind::Set(_) => {
                 return Err(Error {
                     span: t.span.clone(),
@@ -676,6 +699,7 @@ impl Compiler<'_> {
             | FnKind::OfParent(_)
             | FnKind::PathList
             | FnKind::SystemIndex
+            | FnKind::FileList
             | FnKind::Set(_) => Node::And(Vec::new()),
         })
     }
@@ -911,6 +935,7 @@ fn text_cost(p: TextProp, s: &Settings) -> u32 {
         TextProp::FullPath | TextProp::Parent | TextProp::ParentName => 4,
         TextProp::Ancestor | TextProp::AncestorName => 5,
         TextProp::Type => 10,
+        TextProp::FileListName | TextProp::FileListPath => 3,
         TextProp::HardLinkNames | TextProp::StreamNames => 30,
         TextProp::ContainerNames => 40,
     };
@@ -1012,6 +1037,8 @@ fn text_value<'a>(prop: TextProp, p: &'a dyn Props) -> Option<Cow<'a, str>> {
         TextProp::Parent => Cow::Owned(trim_sep(&parent_of(&normalize(p.path()))?).to_string()),
         TextProp::ParentName => Cow::Owned(name_of(&parent_of(&normalize(p.path()))?).to_string()),
         TextProp::Type => p.type_name().unwrap_or_else(|| Cow::Owned(builtin_type(p))),
+        TextProp::FileListPath => Cow::Owned(normalize(&p.file_list()?).into_owned()),
+        TextProp::FileListName => Cow::Owned(name_of(&normalize(&p.file_list()?)).to_string()),
         list => Cow::Owned(text_list(list, p)?.join(";")),
     })
 }
@@ -1444,6 +1471,7 @@ impl Test {
                 set.contains(fold.apply(trim_sep(&normalize(p.path()))).as_ref())
             }
             Test::SystemIndex(text) => p.system_index(text).unwrap_or(false),
+            Test::NameList(set, fold) => set.contains(fold.apply(p.name()).as_ref()),
         }
     }
 }

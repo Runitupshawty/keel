@@ -311,6 +311,10 @@ pub fn system_index_query(q: &Query) -> Option<(keel_query::Query, Vec<String>)>
 }
 
 impl Searcher for SystemIndexed {
+    /// `si:` queries are evaluated here in full; the rest as the backend reads them.
+    fn unified_query(&self) -> bool {
+        self.inner.unified_query()
+    }
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         match system_index_query(q) {
             Some((compiled, texts)) => hits(q, &compiled, texts),

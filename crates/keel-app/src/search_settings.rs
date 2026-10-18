@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use keel_search::{
-    split_list, FolderRoot, IndexSettings, IndexedProperty, ScanOptions, Schedule, VolumeRoot,
+    split_list, FileListRoot, FolderRoot, IndexSettings, IndexedProperty, ScanOptions, Schedule,
+    VolumeRoot,
 };
 
 use crate::a11y::Named;
@@ -24,6 +25,8 @@ pub enum Tab {
     Journal,
     Properties,
     RunHistory,
+    /// Task 77: file lists searched with the index.
+    FileLists,
 }
 
 /// The page's state between frames.
@@ -34,6 +37,9 @@ pub struct SearchPage {
     draft: Option<(IndexSettings, IndexSettings)>,
     new_folder: String,
     new_volume: String,
+    new_list: String,
+    /// A file list picked with Browse… (on a worker), for `new_list`.
+    picked: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
     /// Text of the `;`-separated list fields and times as typed, by field id.
     texts: HashMap<String, String>,
     /// Folders and volumes the backend reports offline (set before each frame).
@@ -220,6 +226,11 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
             Tab::RunHistory,
             tr("search_settings.tab_run_history"),
         );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::FileLists,
+            tr("search_settings.tab_file_lists"),
+        );
     });
     ui.separator();
     egui::ScrollArea::vertical()
@@ -231,6 +242,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
             Tab::Journal => journal(ui, &mut draft),
             Tab::Properties => properties(ui, &mut draft, page),
             Tab::RunHistory => run_history(ui, &mut draft, page),
+            Tab::FileLists => file_lists(ui, &mut draft, page),
         });
     ui.separator();
     ui.horizontal(|ui| {
@@ -424,6 +436,72 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
             );
         });
     ui.weak(tr("search_settings.lists_note"));
+}
+
+/// The File lists tab: file lists (EFU, TXT, CSV, ...) whose entries are searched with the
+/// index, each read again when its file changes unless **Monitor changes** is off.
+fn file_lists(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
+    ui.label(tr("search_settings.file_lists_intro"));
+    ui.add_space(4.0);
+    let mut remove = None;
+    for (i, l) in d.file_lists.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(&l.path).truncate());
+            ui.checkbox(&mut l.monitor, tr("search_settings.monitor_changes"))
+                .on_hover_text(tr("search_settings.monitor_list_tip"));
+            if ui.button(tr("search_settings.remove_file_list")).clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        d.file_lists.remove(i);
+    }
+    if d.file_lists.is_empty() {
+        ui.weak(tr("search_settings.no_file_lists_yet"));
+    }
+    ui.horizontal(|ui| {
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut page.new_list)
+                .hint_text(r"D:\Lists\music.efu")
+                .desired_width(280.0),
+        );
+        let _ = r.named(tr("search_settings.new_file_list"));
+        if let Some(p) = page.picked.lock().take() {
+            page.new_list = p;
+        }
+        if ui.button(tr("search_settings.browse")).clicked() {
+            let title = tr("search_settings.pick_file_list").to_owned();
+            let filter = tr("filelist_editor.filter_lists").to_owned();
+            let (slot, ctx) = (page.picked.clone(), ui.ctx().clone());
+            crate::worker::spawn("keel-pick-file-list", move || {
+                let picked = crate::platform::file_dialog(&title, |dlg| {
+                    dlg.add_filter(&filter, crate::filelist_ui::OPEN_EXTENSIONS)
+                        .pick_file()
+                });
+                if let Some(p) = picked {
+                    *slot.lock() = Some(p.display().to_string());
+                    ctx.request_repaint();
+                }
+            });
+        }
+        let path = page.new_list.trim().to_owned();
+        let known = d.file_lists.iter().any(|l| l.path == path);
+        if ui
+            .add_enabled(
+                !path.is_empty() && !known,
+                egui::Button::new(tr("search_settings.add_file_list")),
+            )
+            .clicked()
+        {
+            d.file_lists.push(FileListRoot {
+                path,
+                ..FileListRoot::default()
+            });
+            page.new_list.clear();
+        }
+    });
+    ui.weak(tr("search_settings.file_lists_note"));
 }
 
 /// The Journal tab: the index journal on or off, and its size.

@@ -1,7 +1,7 @@
 //! What the evaluator asks of an item: [`Props`]. Indexed properties (name, path, size,
 //! dates, attributes) are plain reads; the optional ones (`type_name`, child counts, run
 //! count, file ids, dates other than the indexed four, hard links, streams, archive
-//! contents) default to unknown, and the evaluator asks for them only after the cheap terms
+//! contents, the file list an item comes from) default to unknown, and the evaluator asks for them only after the cheap terms
 //! passed.
 
 use std::borrow::Cow;
@@ -181,6 +181,11 @@ pub trait Props {
     fn system_index(&self, _text: &str) -> Option<bool> {
         None
     }
+    /// The full path of the file list (EFU, TXT, CSV) the item was read from: a file list
+    /// tab's, or a file list in the index. `None`: the item does not come from a list.
+    fn file_list(&self) -> Option<Cow<'_, str>> {
+        None
+    }
 }
 
 /// An item with the run history's count and last open (`run-count:`, `date-run:`) over
@@ -261,6 +266,9 @@ impl Props for WithRuns<'_> {
     }
     fn system_index(&self, text: &str) -> Option<bool> {
         self.item.system_index(text)
+    }
+    fn file_list(&self) -> Option<Cow<'_, str>> {
+        self.item.file_list()
     }
 }
 

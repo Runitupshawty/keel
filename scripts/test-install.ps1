@@ -184,6 +184,38 @@ try {
       $run | ForEach-Object { try { [void]$_.WaitForExit(5000) } catch {} }
     }
   }
+  Check 'efu association: set, kept for another program, removed when it is ours' {
+    # Under a throwaway key of this user, not the real Classes.
+    $saved = $script:ClassesRoot
+    $script:ClassesRoot = 'HKCU:\Software\KeelInstallTest-' + [guid]::NewGuid().ToString('N')
+    try {
+      $exe = 'C:\Program Files\Keel Test\keel.exe'
+      Set-EfuAssociation $exe $true
+      $cmd = (Get-Item "$ClassesRoot\Keel.FileList\shell\open\command").GetValue('')
+      if ($cmd -ne "`"$exe`" --filelist `"%1`"") { throw "command '$cmd'" }
+      if ((Get-Item "$ClassesRoot\.efu").GetValue('') -ne 'Keel.FileList') { throw 'not the default' }
+      if ($null -eq (Get-Item "$ClassesRoot\.efu\OpenWithProgids").GetValue('Keel.FileList')) { throw 'not in OpenWithProgids' }
+      # Another program also offers itself: removing ours leaves it.
+      New-ItemProperty "$ClassesRoot\.efu\OpenWithProgids" -Name 'Other.FileList' -Value '' -Force | Out-Null
+      Set-EfuAssociation 'C:\elsewhere\keel.exe' $false
+      if (-not (Test-Path "$ClassesRoot\Keel.FileList")) { throw "another install's removal took ours" }
+      Set-EfuAssociation $exe $false
+      if (Test-Path "$ClassesRoot\Keel.FileList") { throw 'ProgID left' }
+      $ext = Get-Item "$ClassesRoot\.efu"
+      if ($ext.GetValue('')) { throw 'default left' }
+      $progids = Get-Item "$ClassesRoot\.efu\OpenWithProgids"
+      if ($null -ne $progids.GetValue('Keel.FileList')) { throw 'ours left in OpenWithProgids' }
+      if ($null -eq $progids.GetValue('Other.FileList')) { throw "the other program's entry went" }
+      # Nothing else left: .efu goes too.
+      Remove-ItemProperty "$ClassesRoot\.efu\OpenWithProgids" -Name 'Other.FileList'
+      Set-EfuAssociation $exe $true
+      Set-EfuAssociation $exe $false
+      if (Test-Path "$ClassesRoot\.efu") { throw '.efu left' }
+    } finally {
+      Remove-Item $script:ClassesRoot -Recurse -Force -ErrorAction SilentlyContinue
+      $script:ClassesRoot = $saved
+    }
+  }
 } finally {
   Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
 }

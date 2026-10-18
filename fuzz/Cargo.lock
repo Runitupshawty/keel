@@ -3612,6 +3612,7 @@ dependencies = [
  "anyhow",
  "directories",
  "ignore",
+ "keel-query",
  "keel-vfs",
  "libloading",
  "notify",

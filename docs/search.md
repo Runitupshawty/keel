@@ -188,6 +188,9 @@ compare as typed (case still folds).
 | `ancestor-name:` | a folder above the item has a name containing the text |
 | `pathlist:` | the full path is one of a `;` list (`pathlist:C:\a.txt;C:\b.txt`); any case |
 | `system-index:`, `si:` | the Windows Search index finds the item for these words (`si:budget`): in its text, properties or name; the hits are merged into the results and checked against the rest of the query (Windows only, [Windows Search](files.md#windows-search-si)) |
+| `filelist:` | the name is one of a `\|` or `;` list (`filelist:"a.txt\|b.txt"`, quoted so `\|` is not OR); whole names, any case unless `case:` |
+| `filelist-filename:` | the name of the file list the item comes from (a file list tab's, or a list in Settings → Search index → File lists) contains the text (`filelist-filename:music.efu`); unknown for items not from a list |
+| `filelist-full-path:` | the full path of the file list the item comes from contains the text (`filelist-full-path:D:\lists`) |
 
 Paths are compared with `/` read as `\`, so the same terms work on Windows, macOS and Linux
 (`\home\me` matches `/home/me`).
@@ -399,7 +402,6 @@ so a query never silently matches the wrong thing:
 | `width:`, `wide:`, `height:`, `high:`, `dimensions:`, `orientation:`, `bit-depth:`, `bpp:`, `horizontal-resolution:`, `vertical-resolution:`, `aspect-ratio:`, `camera-maker:`, `camera-model:`, `lens-model:`, `aperture:`, `f-stop:`, `max-aperture:`, `exposure-time:`, `exposure-bias:`, `exposure-program:`, `exif-version:`, `flash-mode:`, `focal-length:`, `35mm-focal-length:`, `iso-speed:`, `light-source:`, `metering-mode:`, `brightness:`, `contrast:`, `saturation:`, `white-balance:`, `subject-distance:`, `latitude:`, `longitude:`, `altitude:` | image properties (Task 73) |
 | `album:`, `album-artist:`, `artist:`, `authors:`, `composer:`, `conductor:`, `director:`, `producer:`, `writer:`, `genre:`, `mood:`, `title:`, `subtitle:`, `track:`, `year:`, `beats-per-minute:`, `bpm:`, `initial-key:`, `length:`, `duration:`, `audio-bitrate:`, `audio-bits-per-sample:`, `audio-channels:`, `audio-format:`, `audio-sample-rate:`, `audio-track-count:`, `video-bitrate:`, `video-format:`, `video-track-count:`, `subtitle-track-count:`, `total-bitrate:`, `frame-count:`, `frame-rate:`, `fps:`, `language:`, `part-of-a-compilation:`, `part-of-set:`, `period:`, `encoded-by:`, `publisher:`, `parental-rating:`, `parental-rating-reason:` | audio and video properties (Task 73) |
 | `subject:`, `comment:`, `category:`, `tags:`, `tag:`, `rating:`, `people:`, `last-author:`, `software:`, `from:`, `to:` | document properties (Task 73) |
-| `filelist:`, `filelist-filename:`, `filelist-full-path:` | file lists (Phase 16) |
 | `network-index-host:` | read by Keel's search tab before the query reaches a backend ([network indexes](devices.md#devices-and-spacedrop)); elsewhere refused |
 | `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms: they work in the library search only ([Library](library.md#searching)); every other search refuses them |
 | `pinyin:`, `pinyin-jian:`, `pinyin-quan:` | Pinyin matching needs a Pinyin table Keel does not ship yet |

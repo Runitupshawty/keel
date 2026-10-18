@@ -363,6 +363,8 @@ pub struct AppState {
     pub search_page: crate::search_settings::SearchPage,
     /// Task 76: Settings → Advanced.
     pub advanced: crate::settings_io::AdvancedUi,
+    /// Task 77: the File List Editor window.
+    pub filelist_editor: crate::filelist_editor::FileListEditor,
 }
 
 impl AppState {
@@ -475,6 +477,7 @@ impl AppState {
             info: Default::default(),
             search_page: Default::default(),
             advanced: Default::default(),
+            filelist_editor: Default::default(),
             instance: None,
             thumbs,
             search: worker::SearchWorker::new(tx.clone(), ctx.clone()),

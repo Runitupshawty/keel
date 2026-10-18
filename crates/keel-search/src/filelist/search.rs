@@ -1,6 +1,9 @@
 //! A file list as a search backend: the same search language as Keel's indexes
 //! (`keel-query`: Everything's syntax), matched against the listed names, paths, sizes,
-//! dates and attributes. Nothing on disk is read.
+//! dates and attributes, and the list's own file (`filelist-filename:`,
+//! `filelist-full-path:`). Nothing on disk is read.
+
+use std::borrow::Cow;
 
 use keel_query::{DateProp, Props, Timestamp};
 
@@ -8,17 +11,19 @@ use crate::walkindex::compile;
 use crate::{Hit, Query, Searcher};
 
 use super::time::system_from_filetime;
-use super::{Entry, FileList};
+use super::{Entry, FileList, ATTR_DIRECTORY};
 
 /// Searches the entries of one file list.
 pub struct FileListSearcher {
     label: String,
     list: FileList,
     cap: Option<u32>,
+    /// The list's own file, for `filelist-filename:` and `filelist-full-path:`.
+    source: Option<String>,
 }
 
-/// A listed entry as the evaluator sees it.
-struct ListProps<'a>(&'a Entry);
+/// A listed entry as the evaluator sees it, with the list's own file.
+struct ListProps<'a>(&'a Entry, Option<&'a str>);
 
 impl Props for ListProps<'_> {
     fn name(&self) -> &str {
@@ -51,7 +56,14 @@ impl Props for ListProps<'_> {
     }
 
     fn attributes(&self) -> Option<u32> {
-        self.0.attributes
+        match (self.0.attributes, self.0.is_dir) {
+            (Some(a), true) => Some(a | ATTR_DIRECTORY),
+            (a, _) => a,
+        }
+    }
+
+    fn file_list(&self) -> Option<Cow<'_, str>> {
+        self.1.map(Cow::Borrowed)
     }
 }
 
@@ -62,6 +74,7 @@ impl FileListSearcher {
             label: label.into(),
             list,
             cap: None,
+            source: None,
         }
     }
 
@@ -72,8 +85,19 @@ impl FileListSearcher {
         self
     }
 
+    /// The file the list was read from (its full path): `filelist-filename:` and
+    /// `filelist-full-path:` match it.
+    pub fn with_source(mut self, path: impl Into<String>) -> Self {
+        self.source = Some(path.into());
+        self
+    }
+
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     pub fn list(&self) -> &FileList {
@@ -102,6 +126,7 @@ impl Searcher for FileListSearcher {
         if max == 0 {
             return Ok(Vec::new());
         }
+        let source = self.source.as_deref();
         let mut found: Vec<(u8, usize)> = Vec::new();
         for (i, e) in self.list.entries.iter().enumerate() {
             if m.folders_only && !e.is_dir {
@@ -116,7 +141,7 @@ impl Searcher for FileListSearcher {
                     continue;
                 }
             }
-            if !m.matches_in(&ListProps(e), None) {
+            if !m.matches_in(&ListProps(e, source), None) {
                 continue;
             }
             found.push((m.quality(name), i));
@@ -133,7 +158,7 @@ impl Searcher for FileListSearcher {
         if let Some(mut pass) = m.query.set_pass() {
             found.sort_unstable_by(order);
             for &(_, i) in &found {
-                if !pass.push(i as u64, &ListProps(&self.list.entries[i]), None)? {
+                if !pass.push(i as u64, &ListProps(&self.list.entries[i], source), None)? {
                     break;
                 }
             }
