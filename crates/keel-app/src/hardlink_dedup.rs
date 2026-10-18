@@ -55,13 +55,13 @@ pub enum Skip {
 impl Skip {
     pub fn text(self) -> &'static str {
         match self {
-            Skip::NotLocal => "not on this computer",
-            Skip::Offline => "offline",
-            Skip::OtherVolume => "on another volume",
-            Skip::AlreadyLinked => "already hard links",
-            Skip::Changed => "changed or gone",
-            Skip::Permissions => "other permissions or attributes",
-            Skip::Streams => "has alternate data streams",
+            Skip::NotLocal => crate::i18n::tr("hardlink_dedup.not_local"),
+            Skip::Offline => crate::i18n::tr("hardlink_dedup.offline"),
+            Skip::OtherVolume => crate::i18n::tr("hardlink_dedup.other_volume"),
+            Skip::AlreadyLinked => crate::i18n::tr("hardlink_dedup.already_linked"),
+            Skip::Changed => crate::i18n::tr("hardlink_dedup.changed"),
+            Skip::Permissions => crate::i18n::tr("hardlink_dedup.permissions"),
+            Skip::Streams => crate::i18n::tr("hardlink_dedup.streams"),
         }
     }
 }
@@ -81,18 +81,19 @@ impl DedupPlan {
     /// "5 duplicates (1.2 GB) become hard links; 2 left alone (on another volume)".
     pub fn summary(&self) -> String {
         let n = match self.pairs.len() {
-            1 => "1 duplicate".to_owned(),
-            n => format!("{n} duplicates"),
+            1 => crate::i18n::tr("hardlink_dedup.duplicate_one").to_owned(),
+            n => crate::i18n::tr("hardlink_dedup.duplicates_n").replace("{n}", &n.to_string()),
         };
-        let mut text = format!(
-            "{n} ({}) become hard links to the copy kept",
-            format_size(self.bytes(), DECIMAL)
-        );
+        let mut text = crate::i18n::tr("hardlink_dedup.summary")
+            .replace("{n}", &n)
+            .replace("{size}", &format_size(self.bytes(), DECIMAL));
         if !self.skipped.is_empty() {
             let mut why: Vec<&str> = self.skipped.iter().map(|(_, s)| s.text()).collect();
             why.sort_unstable();
             why.dedup();
-            text += &format!("; {} left alone ({})", self.skipped.len(), why.join(", "));
+            text += &crate::i18n::tr("hardlink_dedup.left_alone")
+                .replace("{n}", &self.skipped.len().to_string())
+                .replace("{why}", &why.join(", "));
         }
         text
     }
@@ -658,20 +659,17 @@ pub struct Preview {
 /// 200), the copies left alone, and the button.
 pub fn ui(ui: &mut egui::Ui, d: &mut Preview, cancel: &mut bool) -> Option<Action> {
     let mut out = None;
-    ui.strong("Replace duplicates with hard links");
+    ui.strong(crate::i18n::tr("hardlink_dedup.title"));
     if d.plan.pairs.is_empty() {
         ui.label(if d.plan.skipped.is_empty() {
-            "No duplicates to replace.".to_owned()
+            crate::i18n::tr("hardlink_dedup.none").to_owned()
         } else {
-            format!("Nothing to replace: {}", d.plan.summary())
+            crate::i18n::tr("hardlink_dedup.nothing")
+                .replace("{summary}", &d.plan.summary())
         });
     } else {
         ui.label(d.plan.summary());
-        ui.weak(
-            "Each pair is compared byte by byte right before it is linked. Linked files \
-             share their bytes: a change to one shows in all of them. Undo gives each its \
-             own copy again.",
-        );
+        ui.weak(crate::i18n::tr("hardlink_dedup.note"));
     }
     egui::ScrollArea::vertical()
         .max_height(220.0)
@@ -686,7 +684,10 @@ pub fn ui(ui: &mut egui::Ui, d: &mut Preview, cancel: &mut bool) -> Option<Actio
                 );
             }
             if d.plan.pairs.len() > 200 {
-                ui.weak(format!("and {} more", d.plan.pairs.len() - 200));
+                ui.weak(
+                    crate::i18n::tr("hardlink_dedup.and_more")
+                        .replace("{n}", &(d.plan.pairs.len() - 200).to_string()),
+                );
             }
             for (path, why) in d.plan.skipped.iter().take(50) {
                 ui.add(
@@ -702,8 +703,8 @@ pub fn ui(ui: &mut egui::Ui, d: &mut Preview, cancel: &mut bool) -> Option<Actio
         let n = d.plan.pairs.len();
         if n > 0 {
             let label = match n {
-                1 => "Replace 1 file".to_owned(),
-                n => format!("Replace {n} files"),
+                1 => crate::i18n::tr("hardlink_dedup.replace_one").to_owned(),
+                n => crate::i18n::tr("hardlink_dedup.replace_n").replace("{n}", &n.to_string()),
             };
             let b = ui.button(label);
             crate::a11y::first_focus(&b);
@@ -711,7 +712,7 @@ pub fn ui(ui: &mut egui::Ui, d: &mut Preview, cancel: &mut bool) -> Option<Actio
                 out = Some(Action::System(SysCmd::DedupRun(Box::new(d.plan.clone()))));
             }
         }
-        *cancel |= ui.button("Cancel").clicked();
+        *cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
     });
     out
 }

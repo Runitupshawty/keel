@@ -28,6 +28,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Changed
 
+- More of the interface in Spanish: system cleanups, NTFS compression, delete permanently, hard links, Go to Folder and the gallery view.
 - Source stores are now at version 14 (freezes): a store this Keel opened is refused by an older Keel ("newer than this Keel").
 - The library database is now at version 10 (collections): a library this Keel opened is refused by an older Keel ("newer than this Keel").
 

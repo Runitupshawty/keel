@@ -100,36 +100,21 @@ pub enum Task {
 impl Task {
     pub fn title(&self) -> String {
         match self {
-            Task::Hibernation => "Disable hibernation".into(),
-            Task::DismAnalyze => "Analyze the component store".into(),
-            Task::DismCleanup => "Clean up the component store".into(),
-            Task::OptimizeVhd { path, .. } => format!(
-                "Optimize {}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            ),
+            Task::Hibernation => crate::i18n::tr("system_cleanup.hibernation").to_owned(),
+            Task::DismAnalyze => crate::i18n::tr("system_cleanup.dism_analyze").to_owned(),
+            Task::DismCleanup => crate::i18n::tr("system_cleanup.dism_cleanup").to_owned(),
+            Task::OptimizeVhd { path, .. } => crate::i18n::tr("system_cleanup.optimize")
+                .replace("{name}", &path.file_name().unwrap_or_default().to_string_lossy()),
         }
     }
 
     /// What it does and what it costs.
     pub fn about(&self) -> &'static str {
         match self {
-            Task::Hibernation => {
-                "Turns hibernation off and deletes hiberfil.sys. Hibernate and Fast Startup \
-                 stop working until you run \"powercfg /h on\" as administrator."
-            }
-            Task::DismAnalyze => {
-                "Reads the Windows component store (WinSxS) and reports its size and what a \
-                 cleanup would free. Changes nothing; takes a few minutes."
-            }
-            Task::DismCleanup => {
-                "Removes superseded versions of Windows components. Updates installed before \
-                 may no longer be uninstallable. Takes several minutes."
-            }
-            Task::OptimizeVhd { .. } => {
-                "Attaches the virtual disk read-only, gives the space of deleted files back to \
-                 this drive, and detaches it. The disk must not be in use (shut down the VM \
-                 or detach it first)."
-            }
+            Task::Hibernation => crate::i18n::tr("system_cleanup.hibernation_about"),
+            Task::DismAnalyze => crate::i18n::tr("system_cleanup.dism_analyze_about"),
+            Task::DismCleanup => crate::i18n::tr("system_cleanup.dism_cleanup_about"),
+            Task::OptimizeVhd { .. } => crate::i18n::tr("system_cleanup.optimize_about"),
         }
     }
 
@@ -178,17 +163,17 @@ pub fn check_vhd(path: &Path) -> Result<(), String> {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase());
     if !matches!(ext.as_deref(), Some("vhd" | "vhdx")) {
-        return Err(format!("{} is not a .vhd or .vhdx file", path.display()));
+        return Err(crate::i18n::tr("system_cleanup.not_vhd")
+            .replace("{path}", &path.display().to_string()));
     }
     if !path.is_absolute() {
-        return Err(format!("{} is not a full path", path.display()));
+        return Err(crate::i18n::tr("system_cleanup.not_full_path")
+            .replace("{path}", &path.display().to_string()));
     }
     let text = path.to_string_lossy();
     if text.contains(['"', '\n', '\r']) {
-        return Err(format!(
-            "{} has characters a script cannot quote",
-            path.display()
-        ));
+        return Err(crate::i18n::tr("system_cleanup.not_quotable")
+            .replace("{path}", &path.display().to_string()));
     }
     Ok(())
 }
@@ -729,22 +714,20 @@ impl TaskDialog {
             _ => (None, Vec::new()),
         };
         let what = match (&self.task, size) {
-            (Task::Hibernation, Some(s)) => {
-                format!(" hiberfil.sys ({}) is deleted.", format_size(s, DECIMAL))
-            }
-            (Task::DismCleanup, Some(s)) => {
-                format!(" Up to {} is freed.", format_size(s, BINARY))
-            }
+            (Task::Hibernation, Some(s)) => crate::i18n::tr("system_cleanup.confirm_hiberfil")
+                .replace("{size}", &format_size(s, DECIMAL)),
+            (Task::DismCleanup, Some(s)) => crate::i18n::tr("system_cleanup.confirm_freed")
+                .replace("{size}", &format_size(s, BINARY)),
             _ => String::new(),
         };
         let cmd = match lines.as_slice() {
             [one] if one.len() < 80 => format!(" ({})", one.trim()),
             _ => String::new(),
         };
-        format!(
-            "{}{cmd} as administrator now?{what} Windows asks for permission next.",
-            self.task.title()
-        )
+        crate::i18n::tr("system_cleanup.confirm")
+            .replace("{title}", &self.task.title())
+            .replace("{cmd}", &cmd)
+            .replace("{what}", &what)
     }
 }
 
@@ -755,9 +738,9 @@ fn task_ui(ui: &mut egui::Ui, d: &mut TaskDialog, cancel: &mut bool) -> Option<A
         ui.label(d.confirm_text());
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let run = ui.button("Run as administrator");
-            let back = ui.button("Back");
-            let no = ui.button("Cancel");
+            let run = ui.button(crate::i18n::tr("system_cleanup.run_as_admin"));
+            let back = ui.button(crate::i18n::tr("system_cleanup.back"));
+            let no = ui.button(crate::i18n::tr("dialogs.cancel"));
             // Enter on the second confirmation cancels: running takes a click or Tab.
             crate::a11y::first_focus(&no);
             if run.clicked() {
@@ -775,7 +758,7 @@ fn task_ui(ui: &mut egui::Ui, d: &mut TaskDialog, cancel: &mut bool) -> Option<A
             None => {
                 ui.horizontal(|ui| {
                     crate::anim::spinner(ui);
-                    ui.weak("Measuring…");
+                    ui.weak(crate::i18n::tr("system_cleanup.measuring"));
                 });
             }
             Some(Err(e)) => {
@@ -784,7 +767,7 @@ fn task_ui(ui: &mut egui::Ui, d: &mut TaskDialog, cancel: &mut bool) -> Option<A
             Some(Ok(info)) => {
                 ui.label(&info.note);
                 ui.add_space(4.0);
-                ui.weak("Runs as administrator:");
+                ui.weak(crate::i18n::tr("system_cleanup.runs_as_admin"));
                 for s in &info.steps {
                     ui.add(egui::Label::new(egui::RichText::new(s.shown()).monospace()).wrap());
                 }
@@ -793,8 +776,8 @@ fn task_ui(ui: &mut egui::Ui, d: &mut TaskDialog, cancel: &mut bool) -> Option<A
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let ready = matches!(&d.info, Some(Ok(_)));
-            let go = ui.add_enabled(ready, egui::Button::new("Continue…"));
-            let no = ui.button("Cancel");
+            let go = ui.add_enabled(ready, egui::Button::new(crate::i18n::tr("system_cleanup.continue_")));
+            let no = ui.button(crate::i18n::tr("dialogs.cancel"));
             if ready {
                 crate::a11y::first_focus(&go);
             }
@@ -826,7 +809,7 @@ pub fn dialog_ui(ui: &mut egui::Ui, d: &mut SysDialog, cancel: &mut bool) -> Opt
                     ));
                 });
             ui.add_space(8.0);
-            let ok = ui.button("OK");
+            let ok = ui.button(crate::i18n::tr("system_cleanup.ok"));
             crate::a11y::first_focus(&ok);
             *cancel |= ok.clicked();
             None
@@ -1025,10 +1008,10 @@ pub enum Launcher {
 impl Launcher {
     pub fn label(self) -> &'static str {
         match self {
-            Launcher::DiskCleanup => "Disk Cleanup",
-            Launcher::InstalledApps => "Installed apps",
-            Launcher::ProgramsAndFeatures => "Programs and Features",
-            Launcher::StorageSettings => "Storage settings",
+            Launcher::DiskCleanup => crate::i18n::tr("system_cleanup.disk_cleanup"),
+            Launcher::InstalledApps => crate::i18n::tr("system_cleanup.installed_apps"),
+            Launcher::ProgramsAndFeatures => crate::i18n::tr("system_cleanup.programs_and_features"),
+            Launcher::StorageSettings => crate::i18n::tr("system_cleanup.storage_settings"),
         }
     }
 }
@@ -1129,7 +1112,7 @@ pub fn drive_menu(ui: &mut egui::Ui, name: &str, out: &mut Vec<Action>) {
             ui.close_menu();
         }
     };
-    ui.menu_button("Clean up", |ui| {
+    ui.menu_button(crate::i18n::tr("system_cleanup.clean_up"), |ui| {
         for &l in launchers(OS) {
             item(
                 ui,
@@ -1142,21 +1125,25 @@ pub fn drive_menu(ui: &mut egui::Ui, name: &str, out: &mut Vec<Action>) {
             if is_system_drive(name) {
                 item(
                     ui,
-                    "Disable hibernation…",
+                    crate::i18n::tr("system_cleanup.hibernation_menu"),
                     Action::System(SysCmd::Preview(Task::Hibernation)),
                 );
                 item(
                     ui,
-                    "Analyze the component store…",
+                    crate::i18n::tr("system_cleanup.dism_analyze_menu"),
                     Action::System(SysCmd::Preview(Task::DismAnalyze)),
                 );
                 item(
                     ui,
-                    "Clean up the component store…",
+                    crate::i18n::tr("system_cleanup.dism_cleanup_menu"),
                     Action::System(SysCmd::Preview(Task::DismCleanup)),
                 );
             }
-            item(ui, "Optimize VHD/VHDX…", Action::System(SysCmd::PickVhd));
+            item(
+                ui,
+                crate::i18n::tr("system_cleanup.optimize_menu"),
+                Action::System(SysCmd::PickVhd),
+            );
         }
     });
 }
@@ -1166,7 +1153,7 @@ pub fn palette_items(selection: bool) -> Vec<crate::palette::Item> {
     let mut items: Vec<(String, Action)> = Vec::new();
     if selection {
         items.push((
-            "Delete permanently…".into(),
+            crate::i18n::tr("system_cleanup.delete_permanently").to_owned(),
             Action::System(SysCmd::DeletePermanently),
         ));
     }
@@ -1180,7 +1167,10 @@ pub fn palette_items(selection: bool) -> Vec<crate::palette::Item> {
                 Action::System(SysCmd::Preview(task)),
             ));
         }
-        items.push(("Optimize VHD/VHDX…".into(), Action::System(SysCmd::PickVhd)));
+        items.push((
+            crate::i18n::tr("system_cleanup.optimize_menu").to_owned(),
+            Action::System(SysCmd::PickVhd),
+        ));
     }
     items
         .into_iter()
@@ -1202,7 +1192,7 @@ fn store_id() -> egui::Id {
 impl AppState {
     fn system_dialog(&mut self, d: SysDialog) {
         if self.dialog.is_some() {
-            return self.toasts.error("Another dialog is open");
+            return self.toasts.error(crate::i18n::tr("system_cleanup.another_dialog"));
         }
         self.dialog = Some(Dialog::System(Box::new(d)));
     }
@@ -1223,7 +1213,8 @@ impl AppState {
             }
             SysCmd::DeletePermanentlyNow(m) => {
                 self.undo.refuse(crate::state::PERMANENT);
-                let title = format!("Deleting {} permanently", crate::jobs::items(m.paths.len()));
+                let title = crate::i18n::tr("system_cleanup.deleting")
+                    .replace("{n}", &crate::jobs::items(m.paths.len()));
                 self.jobs.spawn(title, tx, move |report, cancel| {
                     permanent_delete::run(&m, report, cancel)
                 });
@@ -1231,7 +1222,7 @@ impl AppState {
             SysCmd::DedupPreview => {
                 let groups = match self.library.dups.as_ref().and_then(|d| d.groups.as_ref()) {
                     Some(Ok(g)) => g.clone(),
-                    _ => return self.toasts.error("Find duplicates first"),
+                    _ => return self.toasts.error(crate::i18n::tr("system_cleanup.find_dups_first")),
                 };
                 worker::spawn("keel-dedup-plan", move || {
                     let plan = hardlink_dedup::plan(&groups);
@@ -1240,7 +1231,8 @@ impl AppState {
             }
             SysCmd::DedupRun(plan) => {
                 let n = plan.pairs.len();
-                let title = format!("Replacing {} with hard links", crate::jobs::items(n));
+                let title = crate::i18n::tr("system_cleanup.replacing")
+                    .replace("{n}", &crate::jobs::items(n));
                 let (router, generation) = (self.router.clone(), self.undo.generation());
                 let (utx, uctx) = (tx.clone(), ctx);
                 self.jobs.spawn(title, tx, move |report, cancel| {
@@ -1281,16 +1273,19 @@ impl AppState {
             }
             SysCmd::Launch(l, drive) => {
                 if let Err(e) = launch(l, drive.as_deref()) {
-                    self.toasts
-                        .error(format!("Could not open {}: {e}", l.label()));
+                    self.toasts.error(
+                        crate::i18n::tr("system_cleanup.could_not_open")
+                            .replace("{name}", l.label())
+                            .replace("{error}", &e.to_string()),
+                    );
                 }
             }
             SysCmd::Preview(task) => {
                 if OS != Os::Windows {
-                    return self.toasts.error("System cleanups are Windows only");
+                    return self.toasts.error(crate::i18n::tr("system_cleanup.windows_only"));
                 }
                 if self.dialog.is_some() {
-                    return self.toasts.error("Another dialog is open");
+                    return self.toasts.error(crate::i18n::tr("system_cleanup.another_dialog"));
                 }
                 let last = ctx.data(|d| d.get_temp::<StoreReport>(store_id()));
                 let dialog = TaskDialog::new(task.clone());
@@ -1313,7 +1308,8 @@ impl AppState {
             }
             #[cfg(windows)]
             SysCmd::Run(task) => {
-                let title = format!("{} (administrator)", task.title());
+                let title = crate::i18n::tr("system_cleanup.administrator")
+                    .replace("{title}", &task.title());
                 let (mtx, mctx) = (tx.clone(), ctx);
                 self.jobs.spawn(title, tx, move |_, _| {
                     let (result, output) = run_job(&task);
@@ -1328,7 +1324,7 @@ impl AppState {
                 });
             }
             #[cfg(not(windows))]
-            SysCmd::Run(_) => self.toasts.error("System cleanups are Windows only"),
+            SysCmd::Run(_) => self.toasts.error(crate::i18n::tr("system_cleanup.windows_only")),
         }
     }
 

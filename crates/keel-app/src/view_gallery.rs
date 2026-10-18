@@ -54,10 +54,11 @@ pub fn strip_page(width: f32) -> usize {
 /// "Folder", "Link", "PDF file", "File".
 fn kind_text(e: &Entry) -> String {
     match (&e.kind, e.is_link) {
-        (_, true) => "Link".into(),
-        (Kind::Dir, _) => "Folder".into(),
-        _ if e.ext.is_empty() => "File".into(),
-        _ => format!("{} file", e.ext.to_uppercase()),
+        (_, true) => crate::i18n::tr("view_gallery.link").to_owned(),
+        (Kind::Dir, _) => crate::i18n::tr("view_gallery.folder").to_owned(),
+        _ if e.ext.is_empty() => crate::i18n::tr("view_gallery.file").to_owned(),
+        _ => crate::i18n::tr("view_gallery.ext_file")
+            .replace("{ext}", &e.ext.to_uppercase()),
     }
 }
 
@@ -77,7 +78,7 @@ pub fn ui(
     let n = tab.visible_cached().len();
     if n == 0 {
         ui.add_space(12.0);
-        ui.vertical_centered(|ui| ui.weak("This folder is empty"));
+        ui.vertical_centered(|ui| ui.weak(crate::i18n::tr("view_gallery.empty")));
         crate::view_details::empty_area(ui, tab, out);
         return;
     }
@@ -320,24 +321,30 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                     });
                 }
             };
-            row(ui, "Size", &size);
-            row(ui, "Modified", &crate::view_details::date_text(e));
+            row(ui, crate::i18n::tr("view_gallery.size"), &size);
+            row(ui, crate::i18n::tr("view_gallery.modified"), &crate::view_details::date_text(e));
             let wherein = e.path.parent().map(|p| p.display()).unwrap_or_default();
-            row(ui, "Where", &wherein);
+            row(ui, crate::i18n::tr("view_gallery.where_"), &wherein);
             // What the preview found out (video and audio details, lines of text).
             if let Some(panel) = cx.preview.as_deref() {
                 if panel.key.as_ref().is_some_and(|k| k.path == e.path) {
                     match &panel.current {
                         Some(Preview::Video { meta, .. } | Preview::Audio { meta, .. }) => {
-                            row(ui, "Media", meta);
+                            row(ui, crate::i18n::tr("view_gallery.media"), meta);
                         }
                         Some(Preview::Pdf { pages, .. }) => {
-                            row(ui, "Pages", &pages.to_string());
+                            row(ui, crate::i18n::tr("view_gallery.pages"), &pages.to_string());
                         }
                         Some(Preview::Text {
                             language, lines, ..
                         }) => {
-                            row(ui, "Text", &format!("{language}, {} lines", lines.len()));
+                            row(
+                                ui,
+                                crate::i18n::tr("view_gallery.text"),
+                                &crate::i18n::tr("view_gallery.text_value")
+                                    .replace("{language}", language)
+                                    .replace("{n}", &lines.len().to_string()),
+                            );
                         }
                         _ => {}
                     }
@@ -345,7 +352,7 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
             }
             ui.add_space(8.0);
             ui.separator();
-            ui.strong("Quick Actions");
+            ui.strong(crate::i18n::tr("view_gallery.quick_actions"));
             ui.add_space(2.0);
             let width = ui.available_width();
             let mut action = |ui: &mut egui::Ui, text: &str, tip: &str, a: Action| {
@@ -357,28 +364,33 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                     out.push(a);
                 }
             };
-            action(ui, "Open", "Open (Enter)", Action::Enter);
+            action(
+                ui,
+                crate::i18n::tr("view_gallery.open"),
+                crate::i18n::tr("view_gallery.open_tip"),
+                Action::Enter,
+            );
             if e.kind != Kind::Dir {
                 action(
                     ui,
-                    "Open with…",
-                    "Choose the app to open it with (Ctrl+Shift+O)",
+                    crate::i18n::tr("view_gallery.open_with"),
+                    crate::i18n::tr("view_gallery.open_with_tip"),
                     Action::OpenWith,
                 );
             }
             if e.kind != Kind::Dir && crate::image_convert::supported(&e.path) {
                 action(
                     ui,
-                    "Convert image…",
-                    "Convert to PNG, JPEG or WebP, or resize",
+                    crate::i18n::tr("view_gallery.convert"),
+                    crate::i18n::tr("view_gallery.convert_tip"),
                     Action::ConvertImage,
                 );
             }
             if crate::jobs::is_archive_file(e) {
                 action(
                     ui,
-                    "Extract here",
-                    "Extract next to the archive",
+                    crate::i18n::tr("view_gallery.extract"),
+                    crate::i18n::tr("view_gallery.extract_tip"),
                     Action::ExtractHere,
                 );
             }
@@ -386,23 +398,28 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
             if tab.dir.to_local_path().is_some() {
                 action(
                     ui,
-                    "Compress…",
-                    "Compress the selection to a zip",
+                    crate::i18n::tr("view_gallery.compress"),
+                    crate::i18n::tr("view_gallery.compress_tip"),
                     Action::CompressToZip,
                 );
             }
             action(
                 ui,
-                "Show in system file manager",
-                "Show it in the system's own file manager",
+                crate::i18n::tr("view_gallery.reveal"),
+                crate::i18n::tr("view_gallery.reveal_tip"),
                 Action::RevealInSystem,
             );
-            action(ui, "Properties", "Properties", Action::Properties);
+            action(
+                ui,
+                crate::i18n::tr("view_gallery.properties"),
+                crate::i18n::tr("view_gallery.properties"),
+                Action::Properties,
+            );
             ui.add_space(8.0);
             let mut always = cx.views.always_open(&tab.dir) == Some(ViewMode::Gallery);
             if ui
-                .checkbox(&mut always, "Always open in Gallery view")
-                .on_hover_text("This folder opens in the Gallery view")
+                .checkbox(&mut always, crate::i18n::tr("view_gallery.always_gallery"))
+                .on_hover_text(crate::i18n::tr("view_gallery.always_gallery_tip"))
                 .changed()
             {
                 cx.views

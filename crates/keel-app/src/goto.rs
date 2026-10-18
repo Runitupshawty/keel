@@ -185,7 +185,7 @@ impl GoTo {
         };
         let modal = Modal::new(Id::new("keel-goto")).show(ctx, |ui| {
             ui.set_width(520.0);
-            ui.heading("Go to Folder");
+            ui.heading(crate::i18n::tr("goto.title"));
             let (up, down, enter, tab) = ui.input_mut(|i| {
                 (
                     i.count_and_consume_key(Modifiers::NONE, Key::ArrowUp),
@@ -202,13 +202,13 @@ impl GoTo {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.text)
                     .hint_text(if cfg!(windows) {
-                        r"C:\Users or ~\Documents"
+                        crate::i18n::tr("goto.hint_windows")
                     } else {
-                        "/usr/local or ~/Documents"
+                        crate::i18n::tr("goto.hint_other")
                     })
                     .desired_width(f32::INFINITY),
             );
-            let r = crate::a11y::Named::named(r, "Folder path");
+            let r = crate::a11y::Named::named(r, crate::i18n::tr("goto.folder_path"));
             let mut caret_to_end = false;
             if tab {
                 let next = match self.pick.and_then(|p| found.get(p)) {
@@ -269,10 +269,12 @@ impl GoTo {
                 }
             }
             if found.len() > LIMIT {
-                ui.weak(format!("{} more", found.len() - LIMIT));
+                ui.weak(
+                    crate::i18n::tr("goto.more").replace("{n}", &(found.len() - LIMIT).to_string()),
+                );
             }
             ui.add_space(4.0);
-            ui.weak("Tab completes · Enter goes · Esc closes");
+            ui.weak(crate::i18n::tr("goto.keys"));
         });
         if modal.should_close() || out.is_some() {
             self.open = false;

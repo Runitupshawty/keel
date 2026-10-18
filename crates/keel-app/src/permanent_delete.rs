@@ -43,21 +43,20 @@ impl Measured {
 /// folders only, never a drive or volume root.
 pub fn refusal(paths: &[VPath]) -> Option<String> {
     if paths.is_empty() {
-        return Some("Select the files or folders to delete permanently".into());
+        return Some(crate::i18n::tr("permanent_delete.select").to_owned());
     }
     for p in paths {
         if p.split_archive().is_some() || p.to_local_path().is_none() {
-            return Some(
-                "Delete permanently works on files and folders on this computer only (use \
-                 Delete elsewhere)"
-                    .into(),
-            );
+            return Some(crate::i18n::tr("permanent_delete.local_only").to_owned());
         }
         if p.parent().is_none()
             || p.to_local_path()
                 .is_some_and(|l| l.parent().is_none() || l.file_name().is_none())
         {
-            return Some(format!("{} is a drive; it is never deleted", p.display()));
+            return Some(
+                crate::i18n::tr("permanent_delete.is_drive")
+                    .replace("{path}", &p.display().to_string()),
+            );
         }
     }
     None
@@ -217,19 +216,19 @@ fn remove(path: &Path, kind: Kind) -> std::io::Result<()> {
 /// "3 items (12 files, 4 folders, 1.2 GB)".
 pub fn summary(m: &Measured) -> String {
     let files = match m.files {
-        1 => "1 file".to_owned(),
-        n => format!("{n} files"),
+        1 => crate::i18n::tr("permanent_delete.file_one").to_owned(),
+        n => crate::i18n::tr("permanent_delete.files_n").replace("{n}", &n.to_string()),
     };
     let folders = match m.folders {
         0 => String::new(),
-        1 => ", 1 folder".to_owned(),
-        n => format!(", {n} folders"),
+        1 => crate::i18n::tr("permanent_delete.folder_one").to_owned(),
+        n => crate::i18n::tr("permanent_delete.folders_n").replace("{n}", &n.to_string()),
     };
-    format!(
-        "{} ({files}{folders}, {})",
-        items(m.paths.len()),
-        format_size(m.bytes, DECIMAL)
-    )
+    crate::i18n::tr("permanent_delete.summary")
+        .replace("{items}", &items(m.paths.len()))
+        .replace("{files}", &files)
+        .replace("{folders}", &folders)
+        .replace("{size}", &format_size(m.bytes, DECIMAL))
 }
 
 /// The typed confirmation: shows the count and the bytes; Delete is enabled only once
@@ -252,16 +251,14 @@ impl Confirm {
 
     /// What must be typed.
     pub fn phrase(&self) -> String {
-        format!("delete {}", self.measured.count())
+        crate::i18n::tr("permanent_delete.phrase")
+            .replace("{n}", &self.measured.count().to_string())
     }
 
     pub fn text(&self) -> String {
-        format!(
-            "Permanently delete {}? They do not go to the {} and cannot be restored or \
-             undone.",
-            summary(&self.measured),
-            keel_vfs::trashbin::label()
-        )
+        crate::i18n::tr("permanent_delete.question")
+            .replace("{what}", &summary(&self.measured))
+            .replace("{trash}", keel_vfs::trashbin::label())
     }
 
     /// Whether the typed text is the phrase.
@@ -289,19 +286,25 @@ impl Confirm {
 /// The dialog body (inside `dialogs::show`'s modal).
 pub fn ui(ui: &mut egui::Ui, c: &mut Confirm, cancel: &mut bool) -> Option<Action> {
     let mut out = None;
-    ui.strong("Delete permanently");
+    ui.strong(crate::i18n::tr("permanent_delete.title"));
     ui.label(c.text());
     for p in c.measured.paths.iter().take(5) {
         ui.add(egui::Label::new(format!("  {}", p.display())).truncate());
     }
     if c.measured.paths.len() > 5 {
-        ui.weak(format!("  and {} more", c.measured.paths.len() - 5));
+        ui.weak(
+            crate::i18n::tr("permanent_delete.and_more")
+                .replace("{n}", &(c.measured.paths.len() - 5).to_string()),
+        );
     }
     ui.add_space(6.0);
     let phrase = c.phrase();
-    ui.label(format!("Type \"{phrase}\" to confirm:"));
+    ui.label(
+        crate::i18n::tr("permanent_delete.type_to_confirm")
+            .replace("{phrase}", &phrase),
+    );
     let r = ui.add(egui::TextEdit::singleline(&mut c.typed).desired_width(f32::INFINITY));
-    let r = crate::a11y::Named::named(r, "Type the confirmation");
+    let r = crate::a11y::Named::named(r, crate::i18n::tr("permanent_delete.type_confirmation"));
     if std::mem::take(&mut c.focus) {
         r.request_focus();
     }
@@ -309,11 +312,11 @@ pub fn ui(ui: &mut egui::Ui, c: &mut Confirm, cancel: &mut bool) -> Option<Actio
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         let ok = c.matches();
-        let delete = ui.add_enabled(ok, egui::Button::new("Delete permanently"));
+        let delete = ui.add_enabled(ok, egui::Button::new(crate::i18n::tr("permanent_delete.delete_btn")));
         if delete.clicked() || (enter && ok) {
             out = c.answer();
         }
-        *cancel |= ui.button("Cancel").clicked();
+        *cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
     });
     out
 }
