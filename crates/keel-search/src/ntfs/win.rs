@@ -41,7 +41,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
-use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL};
 
 use super::usn::{parse_buffer, Record, Stat};
 use crate::raw::{NtfsData, RawVolume};
@@ -643,6 +643,28 @@ pub fn is_elevated() -> bool {
     // SAFETY: opened above.
     let _ = unsafe { CloseHandle(token) };
     ok && elevation.TokenIsElevated != 0
+}
+
+/// Starts `exe args` through the UAC prompt ("runas") as a window of its own and returns
+/// without waiting (the Disk Usage window's "Relaunch elevated"). Fails when the prompt is
+/// declined.
+pub fn launch_elevated(exe: &Path, args: &str) -> io::Result<()> {
+    if keel_vfs::headless::skip(format_args!("runas {} {args}", exe.display())) {
+        return Err(io::Error::other("no UAC prompt while headless"));
+    }
+    let verb = HSTRING::from("runas");
+    let file = HSTRING::from(exe.as_os_str());
+    let params = HSTRING::from(args);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    // SAFETY: the strings outlive the call; no process handle is asked for.
+    unsafe { ShellExecuteExW(&mut info) }.map_err(|e| io::Error::other(e.message()))
 }
 
 /// Runs `exe args` through the UAC prompt ("runas"), waits, returns its exit code.

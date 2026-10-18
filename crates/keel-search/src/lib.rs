@@ -71,7 +71,7 @@ pub use walkindex::{
 };
 // Task 85: the system cleanups' one-shot elevated helper.
 #[cfg(windows)]
-pub use ntfs::run_elevated;
+pub use ntfs::{launch_elevated, run_elevated};
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

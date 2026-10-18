@@ -131,6 +131,9 @@ pub const UNREGISTERED: &str = "Unregistered";
 
 pub struct Model {
     pub tree: Arc<Tree>,
+    /// The item the rows start below: the top item (every root), or one folder (a pane's
+    /// Disk usage view). Shares "of the whole scan" are of this item.
+    pub base: NodeId,
     pub expanded: HashSet<NodeId>,
     /// The visible rows: `(item, depth)`, roots at depth 0.
     pub rows: Vec<(NodeId, usize)>,
@@ -155,24 +158,24 @@ pub struct Model {
 
 impl Model {
     pub fn new(tree: Arc<Tree>) -> Self {
-        let expanded = tree.roots().iter().map(|r| r.node).collect();
-        let mut extensions: BTreeMap<String, FileType> = BTreeMap::new();
-        for (id, n) in tree.nodes().filter(|(_, n)| n.kind == NodeKind::File) {
-            // The scanner's totals leave out a file's other hard-link names: so do these.
-            if n.has(flag::HARDLINK_DUP) {
-                continue;
-            }
-            let ext = tree.ext(id);
-            let t = extensions.entry(ext.to_owned()).or_default();
-            if t.extensions.is_empty() {
-                t.extensions.insert(ext.to_owned());
-            }
-            t.logical = t.logical.saturating_add(n.size);
-            t.physical = t.physical.saturating_add(n.allocated);
-            t.files += 1;
-        }
+        Self::below(tree, TOP)
+    }
+
+    /// The rows below `base` only (its children at depth 0), nothing opened.
+    pub fn below(tree: Arc<Tree>, base: NodeId) -> Self {
+        let base = if tree.get(base).is_some_and(|n| n.is_container()) {
+            base
+        } else {
+            TOP
+        };
+        let expanded = match base {
+            TOP => tree.roots().iter().map(|r| r.node).collect(),
+            _ => HashSet::new(),
+        };
+        let extensions = Self::totals(&tree, base);
         let mut out = Self {
             tree,
+            base,
             expanded,
             rows: Vec::new(),
             sort: (Column::Size, false),
@@ -188,6 +191,63 @@ impl Model {
         };
         out.rebuild();
         out
+    }
+
+    /// The files below `base` by extension.
+    fn totals(tree: &Tree, base: NodeId) -> BTreeMap<String, FileType> {
+        let mut extensions: BTreeMap<String, FileType> = BTreeMap::new();
+        let below = |mut id: NodeId| {
+            while id != NONE {
+                if id == base {
+                    return true;
+                }
+                id = tree.node(id).parent;
+            }
+            false
+        };
+        for (id, n) in tree.nodes().filter(|(_, n)| n.kind == NodeKind::File) {
+            // The scanner's totals leave out a file's other hard-link names: so do these.
+            if n.has(flag::HARDLINK_DUP) || (base != TOP && !below(id)) {
+                continue;
+            }
+            let ext = tree.ext(id);
+            let t = extensions.entry(ext.to_owned()).or_default();
+            if t.extensions.is_empty() {
+                t.extensions.insert(ext.to_owned());
+            }
+            t.logical = t.logical.saturating_add(n.size);
+            t.physical = t.physical.saturating_add(n.allocated);
+            t.files += 1;
+        }
+        extensions
+    }
+
+    /// Shows `tree`, a newer version of the scan shown (the File Watcher's changes),
+    /// keeping what is open, selected and read: `remap` gives each old id's new one (None:
+    /// ids are unchanged). Items that are gone drop out.
+    pub fn replace_tree(&mut self, tree: Arc<Tree>, remap: Option<&[NodeId]>) {
+        let live = |id: NodeId| tree.get(id).is_some_and(|n| n.kind != NodeKind::Dead);
+        let map = |id: NodeId| -> Option<NodeId> {
+            let new = match remap {
+                Some(r) => *r.get(id as usize)?,
+                None => id,
+            };
+            (new != NONE && live(new)).then_some(new)
+        };
+        self.base = match self.base {
+            TOP => TOP,
+            b => map(b).unwrap_or(TOP),
+        };
+        self.expanded = self.expanded.iter().filter_map(|&i| map(i)).collect();
+        self.selected = self.selected.iter().filter_map(|&i| map(i)).collect();
+        self.cursor = self.cursor.and_then(map);
+        self.anchor = self.anchor.and_then(map);
+        self.metadata = (std::mem::take(&mut self.metadata).into_iter())
+            .filter_map(|(i, m)| Some((map(i)?, m)))
+            .collect();
+        self.extensions = Self::totals(&tree, self.base);
+        self.tree = tree;
+        self.rebuild();
     }
 
     /// The extensions found (lowercase, "" for none).
@@ -217,7 +277,7 @@ impl Model {
                 .and_then(|r| r.space)
                 .map_or(0, |s| s.total)
         } else {
-            let of = if relative { n.parent } else { TOP };
+            let of = if relative { n.parent } else { self.base };
             if of == NONE {
                 0
             } else {
@@ -279,14 +339,14 @@ impl Model {
                 }
             }
         }
-        let mut stack = vec![(TOP, 0)];
+        let mut stack = vec![(self.base, 0)];
         let mut rows = Vec::new();
         while let Some((id, depth)) = stack.pop() {
-            if id != TOP {
+            if id != self.base {
                 rows.push((id, depth - 1));
             }
             // A filter shows every folder holding a match, open.
-            if id == TOP || self.expanded.contains(&id) || self.filter.is_some() {
+            if id == self.base || self.expanded.contains(&id) || self.filter.is_some() {
                 let mut children: Vec<NodeId> = (self.tree.children(id))
                     .filter(|c| self.filter.is_none() || allowed.contains(c))
                     .collect();
@@ -376,7 +436,7 @@ impl Model {
             return;
         }
         let mut at = self.tree.node(id).parent;
-        while at != NONE && at != TOP {
+        while at != NONE && at != TOP && at != self.base {
             self.expanded.insert(at);
             at = self.tree.node(at).parent;
         }
@@ -416,7 +476,7 @@ impl Model {
             self.toggle(id);
         } else {
             let parent = self.tree.node(id).parent;
-            if parent != TOP && parent != NONE {
+            if parent != TOP && parent != NONE && parent != self.base {
                 self.select(parent, false, false);
             }
         }

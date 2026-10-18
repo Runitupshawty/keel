@@ -225,6 +225,7 @@ pub fn view_name(view: ViewMode) -> &'static str {
         ViewMode::Media => "Media",
         ViewMode::Sizes => "Sizes",
         ViewMode::Gallery => "Gallery",
+        ViewMode::DiskUsage => "Disk usage",
     }
 }
 

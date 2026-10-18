@@ -679,6 +679,13 @@ pub fn commands() -> Vec<Command> {
         )
         .global(),
         cmd(
+            "view.disk_usage",
+            "Disk usage view",
+            View(crate::pane::ViewMode::DiskUsage),
+            &[],
+        )
+        .global(),
+        cmd(
             "view.details",
             "Details view",
             View(crate::pane::ViewMode::Details),

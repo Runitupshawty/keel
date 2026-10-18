@@ -283,12 +283,12 @@ fn a_scan_runs_on_a_worker_and_fills_the_window() {
     du.start(vec![Root::Path(dir.path().into())]);
     assert!(du.picker.is_none());
     let ctx = egui::Context::default();
-    let settings = DuSettings {
+    let mut settings = DuSettings {
         physical: true,
         ..Default::default()
     };
     for _ in 0..500 {
-        du.poll(&ctx, &settings);
+        du.poll(&ctx, &mut settings);
         if du.model.is_some() {
             break;
         }
@@ -541,4 +541,121 @@ fn the_chart_follows_the_tree_lists_selection() {
         h.state().0.chart.highlighted(),
         ["bin".to_owned()].as_slice()
     );
+}
+
+/// The scan priority, the File Watcher switch and the previous scans are settings.
+#[test]
+fn priority_watch_and_history_round_trip_through_the_settings() {
+    let mut s = DuSettings::default();
+    assert_eq!(s.priority, du::Priority::Normal);
+    assert!(s.watch, "watching is on by default");
+    s.priority = du::Priority::Background;
+    s.watch = false;
+    super::history::remember(
+        &mut s.history,
+        super::history::Entry {
+            roots: vec!["/data".into()],
+            scanned: 1_700_000_000,
+            bytes: 10,
+            files: 2,
+        },
+    );
+    let text = toml::to_string(&s).unwrap();
+    assert!(text.contains("priority = \"background\""), "{text}");
+    let back: DuSettings = toml::from_str(&text).unwrap();
+    assert_eq!(back, s);
+}
+
+/// A newer version of the tree (the File Watcher's) keeps what is open and selected,
+/// through the id map; items that are gone drop out.
+#[test]
+fn a_replaced_tree_keeps_the_selection_and_what_is_open() {
+    let (dir, mut model) = fixture();
+    let nested = id(&model, dir.path(), "nested");
+    let other = id(&model, dir.path(), "nested/other.txt");
+    let small = id(&model, dir.path(), "small.TXT");
+    model.toggle(nested);
+    model.select(other, false, false);
+    model.select(small, true, false);
+    std::fs::remove_file(dir.path().join("small.TXT")).unwrap();
+    std::fs::write(dir.path().join("nested/new.bin"), vec![0; 50]).unwrap();
+    let mut tree = (*model.tree).clone();
+    let applied = tree
+        .apply_changes(&[
+            dir.path().join("small.TXT"),
+            dir.path().join("nested/new.bin"),
+        ])
+        .unwrap();
+    model.replace_tree(Arc::new(tree), applied.remap.as_deref());
+    let nested = id(&model, dir.path(), "nested");
+    let other = id(&model, dir.path(), "nested/other.txt");
+    assert!(model.expanded.contains(&nested));
+    assert_eq!(model.selected, BTreeSet::from([other]), "the removed file dropped out");
+    assert_eq!(model.cursor, None, "the cursor was on the removed file");
+    let new = id(&model, dir.path(), "nested/new.bin");
+    assert!(model.row_of(new).is_some(), "shown in the open folder");
+    assert_eq!(model.bytes(nested), 81);
+    assert!(model.extensions().any(|e| e == "bin"));
+}
+
+/// A pane's Disk usage view takes the folder from the window's scan when it holds it,
+/// and scans the folder itself otherwise.
+#[test]
+fn the_pane_view_reuses_the_windows_scan_or_scans_the_folder() {
+    let (dir, model) = fixture();
+    let nested = dir.path().join("nested");
+    let shared = super::view::Shared::from_settings(
+        &DuSettings::default(),
+        Some((7, model.tree.clone())),
+    );
+    let mut view = super::view::PaneView::default();
+    view.follow(&nested, &shared);
+    assert!(!view.scanning(), "no scan of its own");
+    let m = view.model.as_ref().expect("the window's tree");
+    assert!(Arc::ptr_eq(&m.tree, &model.tree));
+    let names: Vec<String> = (m.rows.iter())
+        .map(|r| m.tree.node(r.0).name.to_string())
+        .collect();
+    assert_eq!(names, ["other.txt", "deeper"], "the folder's children, biggest first");
+    // A folder the window did not scan: scanned here.
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("x.dat"), vec![0; 7]).unwrap();
+    view.follow(elsewhere.path(), &shared);
+    assert!(view.scanning() && view.model.is_none());
+    let ctx = egui::Context::default();
+    for _ in 0..500 {
+        view.poll(&ctx, &shared);
+        if view.model.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let m = view.model.as_ref().expect("scanned");
+    assert_eq!(m.rows.len(), 1);
+    assert_eq!(m.bytes(m.base), 7);
+    assert_eq!(view.dir(), Some(elsewhere.path()));
+}
+
+/// Owners are read for the rows asked for, and named once per account.
+#[test]
+fn owners_are_read_lazily_and_named_once() {
+    let (dir, model) = fixture();
+    let mut reader = super::MetaReader::default();
+    let rows: Vec<NodeId> = model.rows.iter().map(|r| r.0).collect();
+    let mut model = model;
+    reader.want(&model, rows.clone());
+    let ctx = egui::Context::default();
+    for _ in 0..500 {
+        reader.poll(&ctx, Some(&mut model));
+        if !model.metadata.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let small = id(&model, dir.path(), "small.TXT");
+    let owner = (model.metadata.get(&small)).and_then(|m| m.owner.clone());
+    if cfg!(any(windows, unix)) {
+        assert!(owner.is_some_and(|o| !o.is_empty()));
+        assert_eq!(reader.owner_lookups(), 1, "one account, one lookup");
+    }
 }

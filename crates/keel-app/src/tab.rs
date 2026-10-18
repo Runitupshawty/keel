@@ -254,6 +254,8 @@ pub struct Tab {
     group_starts: Vec<(usize, u32)>,
     /// Creation times read off the UI thread.
     pub meta: crate::list_view::Meta,
+    /// Phase 17: the Disk usage view's scan and tree list (made when first shown).
+    pub du_view: Option<Box<crate::disk_usage::view::PaneView>>,
 }
 
 impl Tab {
@@ -333,6 +335,7 @@ impl Tab {
             group_gen: 0,
             group_starts: Vec::new(),
             meta: Default::default(),
+            du_view: None,
         }
     }
 

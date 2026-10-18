@@ -493,6 +493,7 @@ fn item_menu(ui: &mut Ui, item: Item, s: &mut AppState, out: &mut Vec<Action>) {
                 (ViewMode::Columns, "as Columns"),
                 (ViewMode::Media, "as Media"),
                 (ViewMode::Sizes, "as Sizes"),
+                (ViewMode::DiskUsage, crate::i18n::tr("toolbar.as_disk_usage")),
             ] {
                 if ui.selectable_label(view == mode, label).clicked() {
                     out.push(Action::View(mode));
