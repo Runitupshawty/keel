@@ -1007,3 +1007,8 @@ empty = "Arrastra aquí archivos y carpetas, o usa Añadir archivos… y Añadir
 path = "Ruta"
 size = "Tamaño"
 modified = "Fecha de modificación"
+
+[disk_usage]
+phones_and_cameras = "Teléfonos y cámaras"
+looking_for_devices = "Buscando dispositivos…"
+double_click_to_scan = "Haz doble clic para analizar {name}"

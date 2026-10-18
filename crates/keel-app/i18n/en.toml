@@ -909,3 +909,9 @@ empty = "Drag files and folders here, or use Add files… and Add folder…"
 path = "Path"
 size = "Size"
 modified = "Date modified"
+
+# The Disk Usage window's Select drives dialog.
+[disk_usage]
+phones_and_cameras = "Phones and cameras"
+looking_for_devices = "Looking for devices…"
+double_click_to_scan = "Double-click to scan {name}"
