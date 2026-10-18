@@ -40,7 +40,7 @@ machine with several NTFS volumes each volume is deduplicated on its own.
 | `*`, `?` | wildcards: any run of characters, one character; neither crosses `\`. `**` crosses `\` |
 | `C:\work`, `\work` | a term with `\` matches the full path instead of the name |
 | `work\` | a trailing `\` names a folder: the items inside folders whose name ends in `work` |
-| `regex:^a.*z$` | a regular expression |
+| `regex:^a.*z$` | a regular expression; one with an escaped `\\` matches the full path. On macOS and Linux a `/` in a regex is a path separator too (`regex:/docs/[^/]+\.pdf$`) |
 | `function:value` | a search function (below) |
 | `function*:text` | the rest of the query, as typed, is the function's text (`name*:a b\|c`) |
 

@@ -58,7 +58,53 @@ fn parse(q: &Query, opts: &Options) -> Result<Ast, keel_query::Error> {
     // Keel's indexes always read `in:` as a path prefix, a partly typed last folder
     // included (`in:C:\Users\an`). Lower the parsed function; never tokenize twice.
     lower_in(&mut ast.expr);
+    // Paths are matched with `\` separators; off Windows a regex is typed with `/`.
+    if !cfg!(windows) {
+        unix_regex_slashes(&mut ast.expr);
+    }
     Ok(ast)
+}
+
+/// Makes each `/` in a regex term (an escaped `\/` too) an escaped `\`, so a regex typed
+/// with Unix separators matches the normalized path.
+fn unix_regex_slashes(expr: &mut Expr) {
+    match expr {
+        Expr::And(xs) | Expr::Or(xs) => xs.iter_mut().for_each(unix_regex_slashes),
+        Expr::Not(x) => unix_regex_slashes(x),
+        Expr::Term(t) => {
+            let regex = t.modifiers.iter().rev().find_map(|m| match m {
+                Modifier::Regex(on) => Some(*on),
+                _ => None,
+            });
+            if regex == Some(true) {
+                for item in &mut t.items {
+                    if item.text.contains('/') {
+                        item.text = regex_slashes(&item.text);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn regex_slashes(re: &str) -> String {
+    let mut out = String::with_capacity(re.len() + 8);
+    let mut chars = re.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('/') => out.push_str(r"\\"),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            },
+            '/' => out.push_str(r"\\"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Compiles a native query with the pane's options. Errors say where in the text.
@@ -463,6 +509,16 @@ mod tests {
     use keel_vfs::VPath;
     use std::sync::Mutex;
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn a_regex_with_unix_separators_reads_the_normalized_path() {
+        assert_eq!(regex_slashes(r"/docs/.*\.pdf$"), r"\\docs\\.*\.pdf$");
+        assert_eq!(regex_slashes(r"a\/b[/]"), r"a\\b[\\]");
+        assert_eq!(regex_slashes(r"\\x\d"), r"\\x\d");
+        let re = Regex::new(&regex_slashes(r"/docs/[^/]+\.pdf$")).unwrap();
+        assert!(re.is_match(r"\data\docs\Report-Final.pdf"));
+        assert!(!re.is_match(r"\data\docs\sub\Report-Final.pdf"));
+    }
 
     fn q(text: &str) -> Query {
         Query {
