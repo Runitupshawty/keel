@@ -1243,7 +1243,11 @@ impl AppState {
         );
         q.folders_only = applied.folders_only;
         q.within = within.as_ref().and_then(VPath::to_local_path);
-        tab.highlight = keel_search::Highlighter::new(&q);
+        // Task 76: `no-highlight:` terms are found but not highlighted.
+        tab.highlight = keel_search::Highlighter::new(&keel_search::Query {
+            text: crate::search_view::without_no_highlight(&q.text, q.regex),
+            ..q.clone()
+        });
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         match searcher {
             Some(searcher) => self.search.search(
@@ -2886,6 +2890,7 @@ impl AppState {
             Action::FileList(cmd) => self.filelist_cmd(p, cmd),
             Action::Finder(cmd) => crate::finder::run(self, p, cmd),
             Action::Find(cmd) => self.find_cmd(p, cmd), // Task 76
+            Action::Results(cmd) => self.results_cmd(p, cmd), // Task 76
             // --- Task 65 ---
             Action::ToggleSidebar => self.settings.show_sidebar = !self.settings.show_sidebar,
             Action::CustomizeToolbar => crate::toolbar::open_customize(&self.ctx),

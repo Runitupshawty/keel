@@ -581,11 +581,12 @@ pub fn prepare(ctx: &egui::Context, tab: &mut Tab, view: ViewMode, search: bool,
         ViewMode::Details | ViewMode::Grid => cx.list.group_by,
         _ => GroupBy::None,
     };
-    let created_col = view == ViewMode::Details && cx.list.shows(ListColumn::Created);
+    // Task 76: search results read their own dates (`search_columns`).
+    let created_col = view == ViewMode::Details && !search && cx.list.shows(ListColumn::Created);
     if by == GroupBy::Created || created_col {
         want_created(tab, ctx);
     }
-    if view == ViewMode::Details && cx.list.shows(ListColumn::Opened) {
+    if view == ViewMode::Details && !search && cx.list.shows(ListColumn::Opened) {
         with_opened(ctx, |o| o.want(cx.library, ctx));
     }
     if by == GroupBy::None {

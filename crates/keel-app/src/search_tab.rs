@@ -49,6 +49,12 @@ pub struct Toggles {
     pub match_path: bool,
     pub match_diacritics: bool,
     pub regex: bool,
+    /// Match Prefix, Match Suffix, Ignore Punctuation and Ignore White-space (Everything's
+    /// Search menu; no default keys there).
+    pub prefix: bool,
+    pub suffix: bool,
+    pub ignore_punctuation: bool,
+    pub ignore_whitespace: bool,
 }
 
 /// The toggles as a bookmark or filter keeps them (`keel_core::MatchToggles`).
@@ -59,12 +65,14 @@ pub fn match_toggles(t: Toggles) -> keel_core::MatchToggles {
         path: t.match_path,
         diacritics: t.match_diacritics,
         regex: t.regex,
-        ..Default::default()
+        prefix: t.prefix,
+        suffix: t.suffix,
+        ignore_punctuation: t.ignore_punctuation,
+        ignore_whitespace: t.ignore_whitespace,
     }
 }
 
-/// The tab's toggles for a bookmark's or filter's (`prefix`, `suffix`, `ignore_punctuation`
-/// and `ignore_whitespace` are the HTTP search's and not the search tab's).
+/// The tab's toggles for a bookmark's or filter's.
 pub fn toggles_of(m: keel_core::MatchToggles) -> Toggles {
     Toggles {
         match_case: m.case,
@@ -72,6 +80,10 @@ pub fn toggles_of(m: keel_core::MatchToggles) -> Toggles {
         match_path: m.path,
         match_diacritics: m.diacritics,
         regex: m.regex,
+        prefix: m.prefix,
+        suffix: m.suffix,
+        ignore_punctuation: m.ignore_punctuation,
+        ignore_whitespace: m.ignore_whitespace,
     }
 }
 
@@ -84,10 +96,28 @@ pub enum Toggle {
     Path,
     Diacritics,
     Regex,
+    Prefix,
+    Suffix,
+    Punctuation,
+    Whitespace,
 }
 
 impl Toggle {
-    pub const ALL: [Toggle; 5] = [
+    pub const ALL: [Toggle; 9] = [
+        Toggle::Case,
+        Toggle::WholeWord,
+        Toggle::Path,
+        Toggle::Diacritics,
+        Toggle::Regex,
+        Toggle::Prefix,
+        Toggle::Suffix,
+        Toggle::Punctuation,
+        Toggle::Whitespace,
+    ];
+
+    /// The toggles with a default key (Everything's Ctrl+I, B, U, M and R).
+    #[cfg(test)]
+    pub const KEYED: [Toggle; 5] = [
         Toggle::Case,
         Toggle::WholeWord,
         Toggle::Path,
@@ -102,6 +132,10 @@ impl Toggle {
             Toggle::Path => crate::i18n::tr("search_tab.match_path").to_owned(),
             Toggle::Diacritics => crate::i18n::tr("search_tab.match_diacritics").to_owned(),
             Toggle::Regex => crate::i18n::tr("bookmarks.regex").to_owned(),
+            Toggle::Prefix => crate::i18n::tr("search_tab.match_prefix").to_owned(),
+            Toggle::Suffix => crate::i18n::tr("search_tab.match_suffix").to_owned(),
+            Toggle::Punctuation => crate::i18n::tr("search_tab.ignore_punctuation").to_owned(),
+            Toggle::Whitespace => crate::i18n::tr("search_tab.ignore_whitespace").to_owned(),
         }
     }
 
@@ -113,11 +147,15 @@ impl Toggle {
             Toggle::Path => "\\",
             Toggle::Diacritics => "\u{e9}",
             Toggle::Regex => ".*",
+            Toggle::Prefix => "^a",
+            Toggle::Suffix => "a$",
+            Toggle::Punctuation => ".,",
+            Toggle::Whitespace => "[ ]",
         }
     }
 
     /// Everything's shortcuts, the default keys (`keymap::commands`; in a search tab,
-    /// Ctrl+I is the Inspector elsewhere).
+    /// Ctrl+I is the Inspector elsewhere); "" for the toggles without one.
     pub fn shortcut(self) -> &'static str {
         match self {
             Toggle::Case => "Ctrl+I",
@@ -125,6 +163,7 @@ impl Toggle {
             Toggle::Path => "Ctrl+U",
             Toggle::Diacritics => "Ctrl+M",
             Toggle::Regex => "Ctrl+R",
+            Toggle::Prefix | Toggle::Suffix | Toggle::Punctuation | Toggle::Whitespace => "",
         }
     }
 
@@ -135,6 +174,10 @@ impl Toggle {
             Toggle::Path => &mut t.match_path,
             Toggle::Diacritics => &mut t.match_diacritics,
             Toggle::Regex => &mut t.regex,
+            Toggle::Prefix => &mut t.prefix,
+            Toggle::Suffix => &mut t.suffix,
+            Toggle::Punctuation => &mut t.ignore_punctuation,
+            Toggle::Whitespace => &mut t.ignore_whitespace,
         }
     }
 
@@ -206,6 +249,10 @@ impl SearchSettings {
             whole_word: t.whole_word,
             match_path: t.match_path,
             match_diacritics: t.match_diacritics,
+            match_prefix: t.prefix,
+            match_suffix: t.suffix,
+            ignore_punctuation: t.ignore_punctuation,
+            ignore_whitespace: t.ignore_whitespace,
             whole_filename_wildcards: self.whole_filename_wildcards,
             ..Query::default()
         }
@@ -281,7 +328,11 @@ fn search_menu(ui: &mut egui::Ui, toggles: Toggles, more: bool, out: &mut Vec<Ac
             ui.close_menu();
         }
     };
+    // Everything's five with keys, then Match prefix, suffix and the two Ignore toggles.
     for t in Toggle::ALL {
+        if t == Toggle::Prefix {
+            ui.separator();
+        }
         let button = egui::Button::new(t.label())
             .selected(t.get(toggles))
             .shortcut_text(crate::keymap::shortcut(
@@ -342,6 +393,7 @@ pub fn bar(
     pane: &mut Pane,
     platform: Option<&str>,
     lib: &crate::library::LibraryUi,
+    results: &crate::search_columns::ResultsOptions,
     out: &mut Vec<Action>,
 ) {
     let library = lib.is_open();
@@ -352,6 +404,11 @@ pub fn bar(
     let focus = std::mem::take(&mut pane.focus_filter);
     let tab = pane.tab_mut();
     let (count, busy) = (tab.entries().len(), tab.loading);
+    // Task 76: Ctrl+Space completes a word from the history and the result names.
+    let complete_names: Option<Vec<String>> = ui
+        .input(|i| i.modifiers.command && i.key_pressed(Key::Space))
+        .then(|| crate::search_view::result_names(tab));
+    let refining = tab.results.refine.is_some();
     let TabKind::Search {
         query,
         due,
@@ -468,6 +525,19 @@ pub fn bar(
                     out.push(Action::OpenLocation);
                 }
             });
+        }
+        if let Some(names) = complete_names.as_ref().filter(|_| focused) {
+            if crate::search_view::complete_pressed(ui) {
+                let names = names.iter().map(String::as_str);
+                let words = crate::search_view::candidates(&shared.history, names);
+                if crate::search_view::complete_key(ui, id, query, &words) {
+                    *limit = 0;
+                    if let Some(delay) = settings.delay() {
+                        *due = Some(Instant::now() + delay);
+                        ui.ctx().request_repaint_after(delay);
+                    }
+                }
+            }
         }
         if let Some(name) = &scoped {
             ui.weak(crate::i18n::tr("search_tab.in_scope").replace("{name}", name));
@@ -627,7 +697,9 @@ pub fn bar(
         let capped = *limit > 0 && count as u32 >= *limit;
         let can_more = capped && *more && !tab.library_search;
         ui.menu_button(crate::i18n::tr("tab.search"), |ui| {
-            search_menu(ui, *toggles, can_more, out)
+            search_menu(ui, *toggles, can_more, out);
+            ui.separator();
+            crate::search_view::menu_items(ui, refining, results, out);
         });
         // Task 76: the filter (Everything, Audio, …, the profile's own) and bookmarks.
         let before = tab.search_filter.clone();
@@ -1038,6 +1110,7 @@ mod tests {
                 match_path: true,
                 match_diacritics: true,
                 regex: true,
+                ..Toggles::default()
             },
             7,
         );
@@ -1066,7 +1139,7 @@ mod tests {
     fn toggle_shortcuts() {
         let ctx = egui::Context::default();
         let keys = crate::keymap::Bindings::default();
-        for t in Toggle::ALL {
+        for t in Toggle::KEYED {
             let chord = crate::keymap::Chord::parse(t.shortcut()).unwrap();
             let mut out = Vec::new();
             let _ = ctx.run(
