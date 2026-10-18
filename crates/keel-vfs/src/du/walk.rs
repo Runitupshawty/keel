@@ -657,7 +657,7 @@ pub(super) fn scan_with(
         true => Vec::new(),
         false => mtp::on_device_thread(|| resolve(devices, &devs))?,
     };
-    let pool = pool(&opts)?;
+    let pool = pool(opts)?;
     handle.start();
     let started = now_ns().div_euclid(1_000_000_000);
     let mut nodes = vec![Node::new(NodeKind::Top, "")];

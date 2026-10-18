@@ -165,7 +165,7 @@ fn filters_still_apply_to_watched_items() {
     write(&r.join("keep.txt"), 10);
     let opts = ScanOptions {
         filters: Filters {
-            min_size: 100,
+            min_size: Some(100),
             ..Filters::default()
         },
         ..ScanOptions::default()
