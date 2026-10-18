@@ -1557,6 +1557,12 @@ impl Worker {
     fn run(mut self, rx: mpsc::Receiver<Cmd>) {
         let sh = self.shared.clone();
         let mut rules_ok = false;
+        // Offline is known before the saved index is served (`ready`), so a caller that
+        // waits for ready sees the root as offline.
+        let online = self.online();
+        if !online {
+            sh.offline.store(true, Relaxed);
+        }
         if let Some((mut table, stamp)) = load(&self.db, &self.roots) {
             sh.progress.store(table.live, Relaxed);
             table.log = Some(Vec::new());
@@ -1568,9 +1574,8 @@ impl Worker {
             sh.ready.store(true, Relaxed);
             sh.swapped.store(true, Relaxed);
         }
-        if !self.online() {
+        if !online {
             // Serve the last scan (if any); never walk a missing root.
-            sh.offline.store(true, Relaxed);
             sh.building.store(false, Relaxed);
         } else {
             // Started before the first walk so changes made meanwhile queue up.
