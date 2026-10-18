@@ -379,6 +379,10 @@ fn same(a: &Value, b: &Value) -> bool {
         (Value::Float(x), Value::Float(y)) => {
             x == y || (x - y).abs() <= 1e-6 * x.abs().max(y.abs()).max(1.0)
         }
+        // `[120]` for a list of numbers is read as 120.0.
+        (Value::Integer(i), Value::Float(f)) | (Value::Float(f), Value::Integer(i)) => {
+            same(&Value::Float(*i as f64), &Value::Float(*f))
+        }
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same(a, b))
         }
