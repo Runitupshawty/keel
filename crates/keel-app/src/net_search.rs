@@ -150,7 +150,8 @@ impl Searcher for NetSearcher {
         for (peer, mut task) in asked {
             let rt = &self.net.as_ref().expect("asked devices have a node").rt;
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match rt.block_on(tokio::time::timeout(left, &mut task)) {
+            // The timer needs the runtime: made inside it.
+            match rt.block_on(async { tokio::time::timeout(left, &mut task).await }) {
                 Ok(Ok(Ok(result))) => found.extend(result.hits.iter().map(|h| hit_of(&peer, h))),
                 // Not granted, offline, too slow: that device is left out.
                 Ok(Ok(Err(e))) => tracing::debug!(peer = %peer.0, "network index: {e:#}"),
