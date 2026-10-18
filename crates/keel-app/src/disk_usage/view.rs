@@ -114,7 +114,11 @@ impl PaneView {
                 if self.source != Some(Source::Window(*generation)) {
                     self.cancel();
                     let sort = self.model.as_ref().map(|m| m.sort);
-                    self.show(Model::below(tree.clone(), node), shared, Source::Window(*generation));
+                    self.show(
+                        Model::below(tree.clone(), node),
+                        shared,
+                        Source::Window(*generation),
+                    );
                     if let (Some(sort), Some(m)) = (sort, &mut self.model) {
                         m.sort = sort;
                         m.rebuild();
@@ -222,13 +226,7 @@ impl Drop for PaneView {
 }
 
 /// The view in a pane: a line about the folder, then its tree list.
-pub fn ui(
-    ui: &mut Ui,
-    id: (usize, usize),
-    tab: &mut Tab,
-    cx: &mut ViewCx,
-    out: &mut Vec<Action>,
-) {
+pub fn ui(ui: &mut Ui, id: (usize, usize), tab: &mut Tab, cx: &mut ViewCx, out: &mut Vec<Action>) {
     let Some(dir) = tab.dir.to_local_path() else {
         ui.weak(tr("disk_usage.view_local_only"));
         return;
@@ -261,7 +259,10 @@ pub fn ui(
             }
         }
         if ui
-            .add_enabled(view.scan.is_none(), egui::Button::new(tr("disk_usage.rescan")))
+            .add_enabled(
+                view.scan.is_none(),
+                egui::Button::new(tr("disk_usage.rescan")),
+            )
             .on_hover_text(tr("disk_usage.view_rescan_tip"))
             .clicked()
         {
@@ -291,7 +292,7 @@ pub fn ui(
         ranks,
         scroll,
         ..
-    } = view;
+    } = &mut **view;
     let Some(model) = model.as_mut() else {
         return;
     };

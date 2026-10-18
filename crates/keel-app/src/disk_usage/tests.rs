@@ -590,7 +590,11 @@ fn a_replaced_tree_keeps_the_selection_and_what_is_open() {
     let nested = id(&model, dir.path(), "nested");
     let other = id(&model, dir.path(), "nested/other.txt");
     assert!(model.expanded.contains(&nested));
-    assert_eq!(model.selected, BTreeSet::from([other]), "the removed file dropped out");
+    assert_eq!(
+        model.selected,
+        BTreeSet::from([other]),
+        "the removed file dropped out"
+    );
     assert_eq!(model.cursor, None, "the cursor was on the removed file");
     let new = id(&model, dir.path(), "nested/new.bin");
     assert!(model.row_of(new).is_some(), "shown in the open folder");
@@ -604,10 +608,8 @@ fn a_replaced_tree_keeps_the_selection_and_what_is_open() {
 fn the_pane_view_reuses_the_windows_scan_or_scans_the_folder() {
     let (dir, model) = fixture();
     let nested = dir.path().join("nested");
-    let shared = super::view::Shared::from_settings(
-        &DuSettings::default(),
-        Some((7, model.tree.clone())),
-    );
+    let shared =
+        super::view::Shared::from_settings(&DuSettings::default(), Some((7, model.tree.clone())));
     let mut view = super::view::PaneView::default();
     view.follow(&nested, &shared);
     assert!(!view.scanning(), "no scan of its own");
@@ -616,7 +618,11 @@ fn the_pane_view_reuses_the_windows_scan_or_scans_the_folder() {
     let names: Vec<String> = (m.rows.iter())
         .map(|r| m.tree.node(r.0).name.to_string())
         .collect();
-    assert_eq!(names, ["other.txt", "deeper"], "the folder's children, biggest first");
+    assert_eq!(
+        names,
+        ["other.txt", "deeper"],
+        "the folder's children, biggest first"
+    );
     // A folder the window did not scan: scanned here.
     let elsewhere = tempfile::tempdir().unwrap();
     std::fs::write(elsewhere.path().join("x.dat"), vec![0; 7]).unwrap();

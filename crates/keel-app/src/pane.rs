@@ -398,7 +398,11 @@ fn nav_bar(ui: &mut egui::Ui, pane: &mut Pane, out: &mut Vec<Action>) {
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             for (mode, text, tip) in [
-                (ViewMode::DiskUsage, "pane.disk_usage", "pane.disk_usage_tip"),
+                (
+                    ViewMode::DiskUsage,
+                    "pane.disk_usage",
+                    "pane.disk_usage_tip",
+                ),
                 (ViewMode::Sizes, "pane.sizes", "pane.sizes_tip"),
                 (ViewMode::Media, "pane.media", "pane.media_tip"),
                 (ViewMode::Gallery, "pane.gallery", "pane.gallery_tip"),

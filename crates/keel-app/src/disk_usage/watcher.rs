@@ -275,7 +275,11 @@ mod tests {
         w.start(vec![root.clone()], 1);
         let deadline = Instant::now() + Duration::from_secs(20);
         while !w.watching() {
-            assert!(Instant::now() < deadline, "watcher did not start: {:?}", w.error);
+            assert!(
+                Instant::now() < deadline,
+                "watcher did not start: {:?}",
+                w.error
+            );
             w.poll(&ctx, Some(&tree), 1);
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -292,11 +296,20 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(w.log.newest_first(&w.filter).any(|c| c.path.ends_with("new.txt")));
+        assert!(w
+            .log
+            .newest_first(&w.filter)
+            .any(|c| c.path.ends_with("new.txt")));
         w.set_filter(r"old\.".into());
-        assert!(!w.log.newest_first(&w.filter).any(|c| c.path.ends_with("new.txt")));
+        assert!(!w
+            .log
+            .newest_first(&w.filter)
+            .any(|c| c.path.ends_with("new.txt")));
         w.set_filter("[".into());
-        assert!(w.filter_error.is_some(), "a bad expression is shown, not applied");
+        assert!(
+            w.filter_error.is_some(),
+            "a bad expression is shown, not applied"
+        );
         // Paused: the change waits.
         w.set_paused(true);
         std::fs::remove_file(root.join("old.txt")).unwrap();
@@ -304,14 +317,20 @@ mod tests {
         while w.waiting() == 0 {
             assert!(Instant::now() < deadline, "no change seen");
             if let Some(u) = w.poll(&ctx, Some(&tree), 1) {
-                assert!(u.tree.find(&root.join("old.txt")).is_some(), "applied while paused");
+                assert!(
+                    u.tree.find(&root.join("old.txt")).is_some(),
+                    "applied while paused"
+                );
                 tree = Arc::new(u.tree);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         for _ in 0..10 {
             if let Some(u) = w.poll(&ctx, Some(&tree), 1) {
-                assert!(u.tree.find(&root.join("old.txt")).is_some(), "applied while paused");
+                assert!(
+                    u.tree.find(&root.join("old.txt")).is_some(),
+                    "applied while paused"
+                );
             }
             std::thread::sleep(Duration::from_millis(20));
         }

@@ -47,7 +47,6 @@ mod win {
         ) -> i32;
     }
 
-
     const ASSOCF_NOTRUNCATE: u32 = 0x20;
     const ASSOCSTR_FRIENDLYDOCNAME: u32 = 3;
 
