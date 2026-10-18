@@ -670,7 +670,9 @@ pub(crate) fn eq_case(a: &str, b: &str, match_case: bool) -> bool {
 pub(crate) struct Matcher {
     /// Finds candidates over the whole name buffer (multi-line mode).
     pub(crate) scan: Option<Regex>,
-    /// `^` + the scan: every exact and prefix match of the literal, found in one pass.
+    /// `^` + the scan: every exact and prefix match of the literal, found in one pass
+    /// (read by the NTFS index, which is Windows only).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) prefix: Option<Regex>,
     /// The lead literal (a plain word every match contains): drives exact/prefix ranking.
     pub(crate) literal: Option<String>,
