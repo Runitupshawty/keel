@@ -887,3 +887,9 @@ err_no_command = "\"{title}\" has no command line (Settings → Cleanups)"
 [columns]
 run_count = "Run count"
 date_run = "Date run"
+
+# The Disk Usage window's Select drives dialog.
+[disk_usage]
+phones_and_cameras = "Phones and cameras"
+looking_for_devices = "Looking for devices…"
+double_click_to_scan = "Double-click to scan {name}"

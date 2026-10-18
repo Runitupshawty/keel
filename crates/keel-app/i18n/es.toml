@@ -985,3 +985,8 @@ err_no_command = "\"{title}\" no tiene línea de comandos (Ajustes → Limpiezas
 [columns]
 run_count = "Veces abierto"
 date_run = "Fecha de apertura"
+
+[disk_usage]
+phones_and_cameras = "Teléfonos y cámaras"
+looking_for_devices = "Buscando dispositivos…"
+double_click_to_scan = "Haz doble clic para analizar {name}"
