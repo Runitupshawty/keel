@@ -299,10 +299,7 @@ pub fn ui(ui: &mut egui::Ui, c: &mut Confirm, cancel: &mut bool) -> Option<Actio
     }
     ui.add_space(6.0);
     let phrase = c.phrase();
-    ui.label(
-        crate::i18n::tr("permanent_delete.type_to_confirm")
-            .replace("{phrase}", &phrase),
-    );
+    ui.label(crate::i18n::tr("permanent_delete.type_to_confirm").replace("{phrase}", &phrase));
     let r = ui.add(egui::TextEdit::singleline(&mut c.typed).desired_width(f32::INFINITY));
     let r = crate::a11y::Named::named(r, crate::i18n::tr("permanent_delete.type_confirmation"));
     if std::mem::take(&mut c.focus) {
@@ -312,7 +309,10 @@ pub fn ui(ui: &mut egui::Ui, c: &mut Confirm, cancel: &mut bool) -> Option<Actio
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         let ok = c.matches();
-        let delete = ui.add_enabled(ok, egui::Button::new(crate::i18n::tr("permanent_delete.delete_btn")));
+        let delete = ui.add_enabled(
+            ok,
+            egui::Button::new(crate::i18n::tr("permanent_delete.delete_btn")),
+        );
         if delete.clicked() || (enter && ok) {
             out = c.answer();
         }

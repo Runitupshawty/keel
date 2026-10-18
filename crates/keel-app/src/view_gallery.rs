@@ -57,8 +57,7 @@ fn kind_text(e: &Entry) -> String {
         (_, true) => crate::i18n::tr("view_gallery.link").to_owned(),
         (Kind::Dir, _) => crate::i18n::tr("view_gallery.folder").to_owned(),
         _ if e.ext.is_empty() => crate::i18n::tr("view_gallery.file").to_owned(),
-        _ => crate::i18n::tr("view_gallery.ext_file")
-            .replace("{ext}", &e.ext.to_uppercase()),
+        _ => crate::i18n::tr("view_gallery.ext_file").replace("{ext}", &e.ext.to_uppercase()),
     }
 }
 
@@ -322,7 +321,11 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                 }
             };
             row(ui, crate::i18n::tr("view_gallery.size"), &size);
-            row(ui, crate::i18n::tr("view_gallery.modified"), &crate::view_details::date_text(e));
+            row(
+                ui,
+                crate::i18n::tr("view_gallery.modified"),
+                &crate::view_details::date_text(e),
+            );
             let wherein = e.path.parent().map(|p| p.display()).unwrap_or_default();
             row(ui, crate::i18n::tr("view_gallery.where_"), &wherein);
             // What the preview found out (video and audio details, lines of text).
@@ -333,7 +336,11 @@ fn sidebar(ui: &mut egui::Ui, tab: &Tab, e: &Entry, cx: &mut ViewCx, out: &mut V
                             row(ui, crate::i18n::tr("view_gallery.media"), meta);
                         }
                         Some(Preview::Pdf { pages, .. }) => {
-                            row(ui, crate::i18n::tr("view_gallery.pages"), &pages.to_string());
+                            row(
+                                ui,
+                                crate::i18n::tr("view_gallery.pages"),
+                                &pages.to_string(),
+                            );
                         }
                         Some(Preview::Text {
                             language, lines, ..

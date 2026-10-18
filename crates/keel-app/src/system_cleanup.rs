@@ -103,8 +103,10 @@ impl Task {
             Task::Hibernation => crate::i18n::tr("system_cleanup.hibernation").to_owned(),
             Task::DismAnalyze => crate::i18n::tr("system_cleanup.dism_analyze").to_owned(),
             Task::DismCleanup => crate::i18n::tr("system_cleanup.dism_cleanup").to_owned(),
-            Task::OptimizeVhd { path, .. } => crate::i18n::tr("system_cleanup.optimize")
-                .replace("{name}", &path.file_name().unwrap_or_default().to_string_lossy()),
+            Task::OptimizeVhd { path, .. } => crate::i18n::tr("system_cleanup.optimize").replace(
+                "{name}",
+                &path.file_name().unwrap_or_default().to_string_lossy(),
+            ),
         }
     }
 
@@ -776,7 +778,10 @@ fn task_ui(ui: &mut egui::Ui, d: &mut TaskDialog, cancel: &mut bool) -> Option<A
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let ready = matches!(&d.info, Some(Ok(_)));
-            let go = ui.add_enabled(ready, egui::Button::new(crate::i18n::tr("system_cleanup.continue_")));
+            let go = ui.add_enabled(
+                ready,
+                egui::Button::new(crate::i18n::tr("system_cleanup.continue_")),
+            );
             let no = ui.button(crate::i18n::tr("dialogs.cancel"));
             if ready {
                 crate::a11y::first_focus(&go);
@@ -1010,7 +1015,9 @@ impl Launcher {
         match self {
             Launcher::DiskCleanup => crate::i18n::tr("system_cleanup.disk_cleanup"),
             Launcher::InstalledApps => crate::i18n::tr("system_cleanup.installed_apps"),
-            Launcher::ProgramsAndFeatures => crate::i18n::tr("system_cleanup.programs_and_features"),
+            Launcher::ProgramsAndFeatures => {
+                crate::i18n::tr("system_cleanup.programs_and_features")
+            }
             Launcher::StorageSettings => crate::i18n::tr("system_cleanup.storage_settings"),
         }
     }
@@ -1192,7 +1199,9 @@ fn store_id() -> egui::Id {
 impl AppState {
     fn system_dialog(&mut self, d: SysDialog) {
         if self.dialog.is_some() {
-            return self.toasts.error(crate::i18n::tr("system_cleanup.another_dialog"));
+            return self
+                .toasts
+                .error(crate::i18n::tr("system_cleanup.another_dialog"));
         }
         self.dialog = Some(Dialog::System(Box::new(d)));
     }
@@ -1222,7 +1231,11 @@ impl AppState {
             SysCmd::DedupPreview => {
                 let groups = match self.library.dups.as_ref().and_then(|d| d.groups.as_ref()) {
                     Some(Ok(g)) => g.clone(),
-                    _ => return self.toasts.error(crate::i18n::tr("system_cleanup.find_dups_first")),
+                    _ => {
+                        return self
+                            .toasts
+                            .error(crate::i18n::tr("system_cleanup.find_dups_first"))
+                    }
                 };
                 worker::spawn("keel-dedup-plan", move || {
                     let plan = hardlink_dedup::plan(&groups);
@@ -1282,10 +1295,14 @@ impl AppState {
             }
             SysCmd::Preview(task) => {
                 if OS != Os::Windows {
-                    return self.toasts.error(crate::i18n::tr("system_cleanup.windows_only"));
+                    return self
+                        .toasts
+                        .error(crate::i18n::tr("system_cleanup.windows_only"));
                 }
                 if self.dialog.is_some() {
-                    return self.toasts.error(crate::i18n::tr("system_cleanup.another_dialog"));
+                    return self
+                        .toasts
+                        .error(crate::i18n::tr("system_cleanup.another_dialog"));
                 }
                 let last = ctx.data(|d| d.get_temp::<StoreReport>(store_id()));
                 let dialog = TaskDialog::new(task.clone());
@@ -1324,7 +1341,9 @@ impl AppState {
                 });
             }
             #[cfg(not(windows))]
-            SysCmd::Run(_) => self.toasts.error(crate::i18n::tr("system_cleanup.windows_only")),
+            SysCmd::Run(_) => self
+                .toasts
+                .error(crate::i18n::tr("system_cleanup.windows_only")),
         }
     }
 

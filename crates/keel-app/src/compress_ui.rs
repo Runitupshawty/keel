@@ -77,8 +77,7 @@ pub fn ui(ui: &mut egui::Ui, d: &mut CompressDialog, cancel: &mut bool) -> Optio
     ui.strong(crate::i18n::tr("compress_ui.title"));
     ui.label(match d.paths.as_slice() {
         [one] => format!("{}", one.display()),
-        many => crate::i18n::tr("compress_ui.n_items")
-            .replace("{n}", &many.len().to_string()),
+        many => crate::i18n::tr("compress_ui.n_items").replace("{n}", &many.len().to_string()),
     });
     ui.add_space(4.0);
     ui.radio_value(
@@ -98,7 +97,11 @@ pub fn ui(ui: &mut egui::Ui, d: &mut CompressDialog, cancel: &mut bool) -> Optio
             _ => crate::i18n::tr("compress_ui.wof_tip"),
         });
     }
-    ui.radio_value(&mut d.what, Do::Uncompress, crate::i18n::tr("compress_ui.uncompress"));
+    ui.radio_value(
+        &mut d.what,
+        Do::Uncompress,
+        crate::i18n::tr("compress_ui.uncompress"),
+    );
     if d.any_folder {
         ui.checkbox(&mut d.recurse, crate::i18n::tr("compress_ui.recurse"));
     }
@@ -118,7 +121,10 @@ pub fn ui(ui: &mut egui::Ui, d: &mut CompressDialog, cancel: &mut bool) -> Optio
             ui.label(
                 crate::i18n::tr("compress_ui.counted")
                     .replace("{files}", &files_of(c.files as usize))
-                    .replace("{size}", &humansize::format_size(c.bytes, humansize::DECIMAL))
+                    .replace(
+                        "{size}",
+                        &humansize::format_size(c.bytes, humansize::DECIMAL),
+                    )
                     .replace("{folders}", &folders_of(c.folders)),
             );
         }
@@ -176,16 +182,14 @@ pub fn summary(what: Do, r: &keel_vfs::compress::Report) -> String {
         Do::Compress(alg) => crate::i18n::tr("compress_ui.compressed_with")
             .replace("{files}", &files)
             .replace("{alg}", alg.label()),
-        Do::Uncompress => crate::i18n::tr("compress_ui.uncompressed")
-            .replace("{files}", &files),
+        Do::Uncompress => crate::i18n::tr("compress_ui.uncompressed").replace("{files}", &files),
     };
     let saved = r.saved();
     let sizes = crate::i18n::tr("compress_ui.on_disk_was")
         .replace("{after}", &format_size(r.after, DECIMAL))
         .replace("{before}", &format_size(r.before, DECIMAL));
     let change = if saved >= 0 {
-        crate::i18n::tr("compress_ui.saved")
-            .replace("{size}", &format_size(saved as u64, DECIMAL))
+        crate::i18n::tr("compress_ui.saved").replace("{size}", &format_size(saved as u64, DECIMAL))
     } else {
         crate::i18n::tr("compress_ui.more")
             .replace("{size}", &format_size(saved.unsigned_abs(), DECIMAL))

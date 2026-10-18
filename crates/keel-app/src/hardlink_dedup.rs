@@ -664,8 +664,7 @@ pub fn ui(ui: &mut egui::Ui, d: &mut Preview, cancel: &mut bool) -> Option<Actio
         ui.label(if d.plan.skipped.is_empty() {
             crate::i18n::tr("hardlink_dedup.none").to_owned()
         } else {
-            crate::i18n::tr("hardlink_dedup.nothing")
-                .replace("{summary}", &d.plan.summary())
+            crate::i18n::tr("hardlink_dedup.nothing").replace("{summary}", &d.plan.summary())
         });
     } else {
         ui.label(d.plan.summary());
