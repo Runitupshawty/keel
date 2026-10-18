@@ -31,16 +31,22 @@ pub enum ListColumn {
     Created,
     /// When Keel last opened the file (the library's recents; in-process library only).
     Opened,
+    /// How many times Keel opened the file or folder (the run history, any path).
+    RunCount,
+    /// When Keel last opened it (the run history).
+    DateRun,
 }
 
 impl ListColumn {
-    pub const ALL: [ListColumn; 6] = [
+    pub const ALL: [ListColumn; 8] = [
         ListColumn::Ext,
         ListColumn::Kind,
         ListColumn::Size,
         ListColumn::Modified,
         ListColumn::Created,
         ListColumn::Opened,
+        ListColumn::RunCount,
+        ListColumn::DateRun,
     ];
 
     /// The name in the column menu and the View Options panel.
@@ -52,6 +58,8 @@ impl ListColumn {
             ListColumn::Modified => "Date Modified",
             ListColumn::Created => "Date Created",
             ListColumn::Opened => "Date Last Opened",
+            ListColumn::RunCount => crate::i18n::tr("columns.run_count"),
+            ListColumn::DateRun => crate::i18n::tr("columns.date_run"),
         }
     }
 }
@@ -494,6 +502,16 @@ impl Opened {
             self.job = Some(slot);
         }
     }
+}
+
+/// How often and when Keel opened `e` (the run history; local paths only).
+pub fn run_of(e: &Entry) -> Option<keel_search::runs::RunInfo> {
+    keel_search::runs::info(&e.path.to_local_path()?)
+}
+
+/// A run count as the Run count column shows it (empty: never opened).
+pub fn run_count_text(run: Option<keel_search::runs::RunInfo>) -> String {
+    run.map_or_else(String::new, |r| r.count.to_string())
 }
 
 /// When `e` was last opened, from `Opened::by_path`.

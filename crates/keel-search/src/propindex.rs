@@ -1110,6 +1110,15 @@ fn activity() -> &'static Arc<Activity> {
     ACTIVITY.get_or_init(Arc::default)
 }
 
+/// Whether `name` can be indexed: a property function some platform reads (`artist`,
+/// `sha256`), or on Windows a canonical property name (`System.Photo.FNumber`).
+pub fn is_property_name(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty()
+        && (keel_props::lookup(n).is_some_and(|f| f.supported())
+            || (cfg!(windows) && keel_props::functions::is_canonical_name(n)))
+}
+
 /// User input: the property job pauses for [`ACTIVITY_PAUSE`].
 pub fn note_activity() {
     activity().note(journal::now_ms());

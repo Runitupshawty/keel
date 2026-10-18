@@ -427,6 +427,18 @@ fn rules_leave_out_placeholders_big_and_unindexed_files() {
 }
 
 #[test]
+fn property_names_are_checked() {
+    assert!(is_property_name("artist"));
+    assert!(is_property_name(" SHA256 "));
+    assert!(is_property_name("digital-signature-name"));
+    assert!(!is_property_name("no-such-property"));
+    assert!(!is_property_name(""));
+    // Known to Everything, read by no platform yet.
+    assert!(!is_property_name("aspect-ratio"));
+    assert_eq!(is_property_name("System.Photo.FNumber"), cfg!(windows));
+}
+
+#[test]
 fn events_become_changes() {
     let p = Path::new("x");
     let events = [
