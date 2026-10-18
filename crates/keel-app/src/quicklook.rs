@@ -347,9 +347,11 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
         });
     });
     // Task 68: the window fades in (Finder; Reduce motion: instant).
-    let dur = (s.settings.style == crate::design::Style::Finder)
-        .then(|| crate::anim::dur(ctx, crate::anim::QUICK_LOOK))
-        .unwrap_or(0.0);
+    let dur = if s.settings.style == crate::design::Style::Finder {
+        crate::anim::dur(ctx, crate::anim::QUICK_LOOK)
+    } else {
+        0.0
+    };
     let since = ql.opened_at.unwrap_or_else(|| ctx.input(|i| i.time));
     let t = crate::anim::at(
         0.0,
