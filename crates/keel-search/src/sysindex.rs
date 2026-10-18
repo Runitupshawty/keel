@@ -556,7 +556,10 @@ mod tests {
         // trailing `*` is CONTAINS' own prefix.
         let sql = build_sql("rep*rt?", None, 1).unwrap();
         assert!(!sql.contains("CONTAINS"), "{sql}");
-        assert!(sql.contains("AND System.FileName LIKE '%rep%rt_%'"), "{sql}");
+        assert!(
+            sql.contains("AND System.FileName LIKE '%rep%rt_%'"),
+            "{sql}"
+        );
         let sql = build_sql("budg*", None, 1).unwrap();
         assert!(sql.contains("CONTAINS(*, '\"budg*\"')"), "{sql}");
         assert!(sql.contains("LIKE '%budg%%'"), "{sql}");
