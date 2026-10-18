@@ -49,7 +49,6 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - The Disk Usage window's Owner column names each account once (cached per SID or user id) and, on Unix, through the system's user database instead of reading `/etc/passwd` per row.
 - Disk usage scans flag folders that refused access (`access denied` in exports and `ScanInfo::denied`), apart from other unreadable folders.
-
 - Keel's own searches follow Everything's rules where they differed: `*` and `?` in a path term (Match path) do not cross `\` (`**` does); a word that is a function name with a value (`ext:`, `size:`, `dm:`, `in:`...) is that function, not text; `|`, `!`, `<` and `>` outside quotes are operators; `AND`, `OR` and `NOT` stay words. `in:` still reads a typed folder prefix (`in:C:\Users\an`), now also anywhere in a query.
 - Library queries: `size:huge`, `dm:lastweek` and the other constants of the search language are accepted; `name:value` with a name the language does not know (`foo:bar`) is an error that says where, instead of a word (a word that ends in a colon, `meeting:`, is still a word).
 - Source stores are now at version 14 (freezes): a store this Keel opened is refused by an older Keel ("newer than this Keel").
