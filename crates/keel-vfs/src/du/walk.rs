@@ -5,7 +5,9 @@
 
 use super::filter::Compiled;
 use super::mtp::{self, Backend, Session};
+use super::priority::Priority;
 use super::sys::{self, Raw};
+use super::watch::Applied;
 use super::{
     attr, flag, DeviceRoot, LinkKind, Node, NodeId, NodeKind, Root, RootInfo, ScanHandle, ScanInfo,
     ScanOptions, Space, Tree, NONE, TOP,
@@ -14,6 +16,7 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -145,18 +148,24 @@ pub(super) fn ext_of(name: &str) -> Option<String> {
     Some(ext.to_lowercase())
 }
 
-fn pool(threads: usize) -> Result<rayon::ThreadPool> {
-    let n = match threads {
+fn pool(opts: &ScanOptions) -> Result<rayon::ThreadPool> {
+    let n = match opts.threads {
         0 => std::thread::available_parallelism()
             .map_or(4, |n| n.get())
             .clamp(2, 16),
         n => n.clamp(1, 64),
     };
+    let priority = opts.priority;
     rayon::ThreadPoolBuilder::new()
         .num_threads(n)
         // One task per folder level: deep trees nest deeply.
         .stack_size(32 << 20)
         .thread_name(|i| format!("keel-du-{i}"))
+        .start_handler(move |_| {
+            if priority != Priority::Normal && !super::priority::apply(priority) {
+                tracing::debug!("du: scan priority {priority:?} not applied");
+            }
+        })
         .build()
         .context("scan threads")
 }
@@ -211,7 +220,8 @@ impl<'a> Walker<'a> {
             Err(e) => {
                 tracing::debug!("du: {}: {e}", job.path.display());
                 self.unreadable.fetch_add(1, Ordering::Relaxed);
-                self.mark(job.node, flag::UNREADABLE);
+                let denied = e.kind() == std::io::ErrorKind::PermissionDenied;
+                self.mark(job.node, flag::UNREADABLE | if denied { flag::DENIED } else { 0 });
                 return;
             }
         };
@@ -647,7 +657,7 @@ pub(super) fn scan_with(
         true => Vec::new(),
         false => mtp::on_device_thread(|| resolve(devices, &devs))?,
     };
-    let pool = pool(opts.threads)?;
+    let pool = pool(&opts)?;
     handle.start();
     let started = now_ns().div_euclid(1_000_000_000);
     let mut nodes = vec![Node::new(NodeKind::Top, "")];
@@ -738,6 +748,7 @@ pub(super) fn scan_with(
         unreadable: walker.unreadable.load(Ordering::Relaxed),
         excluded: walker.excluded.load(Ordering::Relaxed),
         timed_out: walker.timed_out.load(Ordering::Relaxed),
+        denied: 0,
     };
     drop(walker);
     let (nodes, exts, ids) = arena.into_parts();
@@ -751,6 +762,7 @@ pub(super) fn scan_with(
     };
     link_up(&mut tree, ids);
     tree.recompute();
+    tree.info.denied = tree.count_denied();
     let complete = !tree.nodes().any(|(_, n)| n.has(flag::INCOMPLETE));
     tree.info.complete = complete;
     tree.info.elapsed = handle.finish();
@@ -818,7 +830,25 @@ fn finish(tree: &mut Tree, handle: &ScanHandle) {
     tree.info.unreadable = (tree.nodes())
         .filter(|(_, n)| n.is_container() && n.has(flag::UNREADABLE))
         .count() as u64;
+    tree.info.denied = tree.count_denied();
     handle.finish();
+}
+
+/// The identities of `from` and the folders above it, for loop detection when links are
+/// followed.
+fn ancestor_ids(tree: &Tree, from: NodeId) -> Vec<u128> {
+    let mut base = Vec::new();
+    let mut up = from;
+    while let Some(n) = tree.get(up) {
+        if n.kind == NodeKind::Top {
+            break;
+        }
+        if let Some(id) = tree.path(up).and_then(|p| sys::target(&p).ok()?.id) {
+            base.push(id);
+        }
+        up = n.parent;
+    }
+    base
 }
 
 pub(super) fn refresh(tree: &mut Tree, id: NodeId, handle: &ScanHandle) -> Result<()> {
@@ -861,7 +891,7 @@ pub(super) fn refresh_with(
     let path = tree.path(id).context("the item has no path")?;
     let opts = tree.options.clone();
     let filters = Compiled::new(&opts.filters)?;
-    let pool = pool(opts.threads)?;
+    let pool = pool(&opts)?;
     handle.start();
     if node.kind != NodeKind::Root {
         if let Err(e) = std::fs::symlink_metadata(&path) {
@@ -876,18 +906,7 @@ pub(super) fn refresh_with(
         return refresh_entry(tree, id, &path, &opts, &filters, handle);
     }
     let depth = tree.depth(id);
-    // The folders above, for loop detection when links are followed.
-    let mut base = Vec::new();
-    let mut up = node.parent;
-    while let Some(n) = tree.get(up) {
-        if n.kind == NodeKind::Top {
-            break;
-        }
-        if let Some(id) = tree.path(up).and_then(|p| sys::target(&p).ok()?.id) {
-            base.push(id);
-        }
-        up = n.parent;
-    }
+    let base = ancestor_ids(tree, node.parent);
     kill(tree, id, false);
     {
         let n = &mut tree.nodes[id as usize];
@@ -1081,4 +1100,282 @@ fn refresh_entry(
     link_up(tree, ids);
     finish(tree, handle);
     Ok(())
+}
+
+/// The File Watcher's changes ([`Tree::apply_changes`]): each path is read again from the
+/// disk and the tree follows (see [`super::watch`]).
+pub(super) fn apply(tree: &mut Tree, paths: &[PathBuf]) -> Result<Applied> {
+    let handle = ScanHandle::new();
+    let opts = tree.options.clone();
+    let filters = Compiled::new(&opts.filters)?;
+    handle.start();
+    let before = tree.nodes.len();
+    let mut out = Applied::default();
+    // A notification may name a path through another spelling of a root (macOS: /private
+    // before /var): such paths are put back under the root as scanned.
+    let canon: Vec<(PathBuf, PathBuf)> = (tree.roots.iter())
+        .filter(|r| r.device.is_none())
+        .filter_map(|r| Some((std::fs::canonicalize(&r.path).ok()?, r.path.clone())))
+        .filter(|(c, p)| c != p)
+        .collect();
+    // Per folder: the folder and the names in it to read again.
+    let mut groups: Vec<(PathBuf, Vec<OsString>)> = Vec::new();
+    let mut group_of: HashMap<String, usize> = HashMap::new();
+    let mut add = |dir: &Path, name: &OsStr| {
+        let i = *group_of.entry(super::filter::key(dir)).or_insert_with(|| {
+            groups.push((dir.to_owned(), Vec::new()));
+            groups.len() - 1
+        });
+        if !groups[i].1.iter().any(|n| n == name) {
+            groups[i].1.push(name.to_owned());
+        }
+    };
+    let mut seen = HashSet::new();
+    for p in paths {
+        let mut p = p.clone();
+        for (c, root) in &canon {
+            if let Ok(rest) = p.strip_prefix(c) {
+                p = root.join(rest);
+                break;
+            }
+        }
+        if !seen.insert(super::filter::key(&p)) {
+            continue;
+        }
+        match tree.find(&p) {
+            Some(id) => {
+                let n = tree.node(id);
+                if matches!(n.kind, NodeKind::Top | NodeKind::Root) || n.is_pseudo() {
+                    continue;
+                }
+                if n.is_container() {
+                    match std::fs::symlink_metadata(&p) {
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            kill(tree, id, true);
+                            out.removed += 1;
+                            continue;
+                        }
+                        // Still a folder: what changes in it is notified on its own.
+                        Ok(m) if m.is_dir() && !m.file_type().is_symlink() => continue,
+                        _ => {}
+                    }
+                }
+                if let (Some(dir), Some(name)) = (p.parent(), p.file_name()) {
+                    add(dir, name);
+                }
+            }
+            None => {
+                // New: the item right below the deepest folder of the scan above it.
+                let mut child = p.as_path();
+                while let Some(dir) = child.parent() {
+                    if let Some(a) = tree.find(dir) {
+                        let n = tree.node(a);
+                        let not_listed = flag::CLOUD | flag::TOO_DEEP | flag::LOOP;
+                        if let (true, Some(name)) =
+                            (n.is_container() && !n.has(not_listed), child.file_name())
+                        {
+                            add(dir, name);
+                        }
+                        break;
+                    }
+                    child = dir;
+                }
+            }
+        }
+    }
+    // (current id, id before) of the items moved to make room.
+    let mut moved: HashMap<NodeId, NodeId> = HashMap::new();
+    let mut cands: Candidates = Vec::new();
+    for (dir, names) in groups {
+        let Some(pid) = tree.find(&dir).filter(|&id| tree.node(id).is_container()) else {
+            continue;
+        };
+        let listing = match sys::list(&dir) {
+            Ok(l) => l,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if tree.node(pid).kind != NodeKind::Root {
+                    kill(tree, pid, true);
+                    out.removed += 1;
+                }
+                continue;
+            }
+            Err(e) => {
+                tracing::debug!("du: watch: {}: {e}", dir.display());
+                continue;
+            }
+        };
+        // Listed now: it is not unreadable any more.
+        tree.nodes[pid as usize].flags &= !(flag::UNREADABLE | flag::DENIED);
+        let depth = tree.depth(pid);
+        let cluster = sys::cluster_size(&dir);
+        let existing: HashMap<String, NodeId> = (tree.children(pid))
+            .filter(|&c| !tree.node(c).is_pseudo())
+            .map(|c| (super::filter::name_key(&tree.node(c).name), c))
+            .collect();
+        let mut fresh = Vec::new();
+        for name in names {
+            let raw = listing.entries.iter().find(|r| r.name == name).cloned();
+            let had = (existing.get(&super::filter::name_key(&name.to_string_lossy()))).copied();
+            match (had, raw) {
+                (None, None) => {}
+                (Some(id), None) => {
+                    kill(tree, id, true);
+                    out.removed += 1;
+                }
+                (None, Some(raw)) => fresh.push(raw),
+                (Some(id), Some(raw)) => {
+                    let dummy = Arena::new(Vec::new(), Vec::new());
+                    let w = Walker::new(&opts, &filters, &handle, &dummy, Vec::new());
+                    let mut b = Batch::default();
+                    w.entry(raw.clone(), &dir, cluster, depth, None, &mut b);
+                    tree.info.excluded += w.excluded.load(Ordering::Relaxed);
+                    drop(w);
+                    let old = tree.node(id).kind;
+                    match b.nodes.pop() {
+                        // Left out by the filters now.
+                        None => {
+                            kill(tree, id, true);
+                            out.removed += 1;
+                        }
+                        // The same kind of item: read again in place.
+                        Some(mut n) if n.kind == old && !n.is_container() => {
+                            n.parent = pid;
+                            if let Some((_, e)) = b.exts.first() {
+                                let mut x = Exts::new(std::mem::take(&mut tree.exts));
+                                n.ext = x.intern(e);
+                                tree.exts = x.list;
+                            }
+                            tree.nodes[id as usize] = n;
+                            cands.extend(b.ids.iter().map(|&(i, _)| (i, id)));
+                            out.updated += 1;
+                        }
+                        // A file that is a folder now, or the other way round.
+                        Some(_) => {
+                            kill(tree, id, true);
+                            out.removed += 1;
+                            fresh.push(raw);
+                        }
+                    }
+                }
+            }
+        }
+        if fresh.is_empty() {
+            continue;
+        }
+        let (added, moves, ids) = append(tree, pid, &dir, fresh, &opts, &filters, &handle)?;
+        out.added += added;
+        cands.extend(ids);
+        for (from, to) in moves {
+            let first = moved.remove(&from).unwrap_or(from);
+            moved.insert(to, first);
+        }
+    }
+    if out.added > 0 || out.removed > 0 {
+        // Siblings stay contiguous, but moved children now come after their own children:
+        // compacting puts parents first again (and drops what was removed).
+        let remap = tree.compact();
+        for c in &mut cands {
+            c.1 = remap.get(c.1 as usize).copied().unwrap_or(NONE);
+        }
+        cands.retain(|c| c.1 != NONE);
+        let mut map: Vec<NodeId> = remap.iter().take(before).copied().collect();
+        for (now, first) in moved {
+            if let Some(slot) = map.get_mut(first as usize) {
+                *slot = remap.get(now as usize).copied().unwrap_or(NONE);
+            }
+        }
+        out.remap = Some(map);
+    }
+    if out.is_empty() {
+        handle.finish();
+    } else {
+        link_up(tree, cands);
+        finish(tree, &handle);
+    }
+    Ok(out)
+}
+
+/// Adds `raws` (entries of the folder `pid` at `dir`) as new children of `pid`, walking new
+/// folders. The folder's live children move to the end of the arena with them, so its
+/// children stay contiguous. Returns how many were added, the (old, new) ids of the moved
+/// children and the new hard-link candidates.
+#[allow(clippy::type_complexity)]
+fn append(
+    tree: &mut Tree,
+    pid: NodeId,
+    dir: &Path,
+    raws: Vec<Raw>,
+    opts: &ScanOptions,
+    filters: &Compiled,
+    handle: &ScanHandle,
+) -> Result<(u64, Vec<(NodeId, NodeId)>, Candidates)> {
+    let depth = tree.depth(pid);
+    let follows = opts.follow_symlinks || opts.follow_junctions || opts.follow_mount_points;
+    let base = match follows {
+        true => ancestor_ids(tree, pid),
+        false => Vec::new(),
+    };
+    let old: Vec<NodeId> = tree.children(pid).collect();
+    let kept: Vec<Node> = old.iter().map(|&c| tree.nodes[c as usize].clone()).collect();
+    let cluster = sys::cluster_size(dir);
+    let pool = pool(opts)?;
+    let arena = Arena::new(
+        std::mem::take(&mut tree.nodes),
+        std::mem::take(&mut tree.exts),
+    );
+    let walker = Walker::new(opts, filters, handle, &arena, base);
+    let mut fresh = Batch::default();
+    for raw in raws {
+        walker.entry(raw, dir, cluster, depth, None, &mut fresh);
+    }
+    let added = fresh.nodes.len() as u64;
+    let mut moves = Vec::new();
+    if added > 0 {
+        let k = old.len();
+        let mut b = Batch {
+            nodes: kept,
+            ..Batch::default()
+        };
+        b.nodes.extend(fresh.nodes);
+        b.exts = fresh.exts.into_iter().map(|(i, e)| (i + k, e)).collect();
+        b.ids = fresh.ids.into_iter().map(|(id, i)| (id, i + k)).collect();
+        let subdirs: Vec<(usize, Job)> = (fresh.subdirs.into_iter())
+            .map(|(i, j)| (i + k, j))
+            .collect();
+        if let Some(first) = walker.push(pid, b) {
+            {
+                let mut nodes = arena.nodes.lock();
+                for (i, &o) in old.iter().enumerate() {
+                    let new = first + i as NodeId;
+                    nodes[o as usize].kind = NodeKind::Dead;
+                    let (f, c) = (
+                        nodes[new as usize].first_child,
+                        nodes[new as usize].child_count,
+                    );
+                    if f != NONE {
+                        for g in f..f + c {
+                            nodes[g as usize].parent = new;
+                        }
+                    }
+                    moves.push((o, new));
+                }
+            }
+            let jobs: Vec<Job> = (subdirs.into_iter())
+                .map(|(i, mut j)| {
+                    j.node = first + i as NodeId;
+                    j
+                })
+                .collect();
+            pool.install(|| {
+                jobs.into_par_iter()
+                    .for_each(|j| walker.walk(j, depth + 1, None))
+            });
+        }
+    }
+    tree.info.excluded += walker.excluded.load(Ordering::Relaxed);
+    drop(walker);
+    let (nodes, exts, ids) = arena.into_parts();
+    tree.nodes = nodes;
+    tree.exts = exts;
+    Ok((added, moves, ids))
 }
