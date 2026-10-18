@@ -923,8 +923,10 @@ mod tests {
         assert!(!t.contains_key("remotes") && !t.contains_key("clouds"));
         assert!(!t.contains_key("search_index"));
         // Importing it keeps this computer's accounts and paths.
-        let mut here = Settings::default();
-        here.terminal_shell = "/bin/zsh".into();
+        let mut here = Settings {
+            terminal_shell: "/bin/zsh".into(),
+            ..Settings::default()
+        };
         here.remotes.push(remote());
         let (back, _) = import_text(&here, &text).unwrap();
         assert_eq!(back.terminal_shell, "/bin/zsh");
@@ -1104,7 +1106,10 @@ mod tests {
         h.press_key(egui::Key::Enter);
         h.run_steps(2);
         let _ = h.get_by_label(tr("settings_io.not_toml"));
-        assert_eq!(h.state().s.search.delay_ms, Settings::default().search.delay_ms);
+        assert_eq!(
+            h.state().s.search.delay_ms,
+            Settings::default().search.delay_ms
+        );
         h.state_mut().page.editing = Some((keys, "250".into()));
         h.run_steps(2);
         h.press_key(egui::Key::Enter);
