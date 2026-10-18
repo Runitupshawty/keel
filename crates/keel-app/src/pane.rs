@@ -244,7 +244,7 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     }
     let search = pane.tab().is_search();
     if search {
-        crate::search_tab::bar(ui, pane, cx.searcher, cx.library, out);
+        crate::search_tab::bar(ui, pane, cx.searcher, cx.library, &cx.views.search, out);
     } else {
         nav_bar(ui, pane, out);
         filter_bar(ui, pane, out);
@@ -254,6 +254,9 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     let tab = &mut pane.tabs[tab_idx];
     tab.sizes_view = pane.view == ViewMode::Sizes && !search;
     crate::list_view::prepare(ui.ctx(), tab, pane.view, search, cx); // Task 66
+    if search {
+        crate::search_columns::prepare(ui.ctx(), tab, cx); // Task 76
+    }
     if let Some(banner) = &cx.banner {
         ui.horizontal(|ui| {
             if tab.loading {
@@ -273,6 +276,9 @@ pub fn ui(ui: &mut egui::Ui, idx: usize, pane: &mut Pane, cx: &mut ViewCx, out: 
     if tab.loading && tab.listed_dir.is_none() {
         ui.centered_and_justified(crate::anim::spinner);
         return;
+    }
+    if search {
+        crate::search_view::sidebars(ui, idx, tab, &cx.views.search, out); // Task 76
     }
     match pane.view {
         // Search rows need the Folder column.

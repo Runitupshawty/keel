@@ -131,6 +131,7 @@ pub fn suggestions(history: &[String], typed: &str, n: usize) -> Vec<String> {
 
 // --- Sort and layout as stored in a bookmark ---
 
+#[cfg(test)]
 fn sort_word(key: SortKey) -> &'static str {
     match key {
         SortKey::Name => "name",
@@ -140,7 +141,9 @@ fn sort_word(key: SortKey) -> &'static str {
     }
 }
 
-/// A tab's sort as a bookmark stores it ("" for the default, Name ascending).
+/// A tab's sort as a bookmark stores it ("" for the default, Name ascending); a search
+/// tab stores every key (`search_columns::sort_text`), the same words.
+#[cfg(test)]
 pub fn sort_text(sort: (SortKey, bool)) -> String {
     match sort {
         (SortKey::Name, true) => String::new(),
@@ -351,7 +354,11 @@ impl AppState {
             query: query.trim().to_owned(),
             layout: layout_of(pane.view).to_owned(),
             backend,
-            sort: sort_text(tab.sort),
+            // Task 76: every sort key of the tab, and a bookmark's own columns it shows.
+            sort: crate::search_columns::sort_text(&tab.results.sort(tab.sort)),
+            columns: (tab.results.columns.as_deref())
+                .map(crate::search_columns::column_words)
+                .unwrap_or_default(),
             filter: tab.search_filter.clone(),
             matching: tab.match_toggles(),
             ..View::default()
@@ -565,6 +572,13 @@ impl AppState {
         tab.search_filter = view.filter.clone();
         tab.set_match_toggles(view.matching);
         tab.sort = parse_sort(&view.sort).unwrap_or((SortKey::Name, true));
+        // Task 76: every sort key and the bookmark's own columns; a search of the current
+        // results ends.
+        let tab_sort = tab.sort;
+        let keys = crate::search_columns::parse_sort(&view.sort);
+        tab.results.set_sort(keys, tab_sort);
+        tab.results.columns = crate::search_columns::parse_columns(&view.columns);
+        crate::search_view::end_refine(tab);
         if let TabKind::Search { query, due, .. } = &mut tab.kind {
             query.clone_from(&view.query);
             *due = Some(Instant::now());
@@ -810,6 +824,7 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 ui.end_row();
                 ui.label(crate::i18n::tr("bookmarks.sort"));
                 let mut sort = parse_sort(&ed.view.sort).unwrap_or((SortKey::Name, true));
+                let before = sort;
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("bookmark-sort")
                         .selected_text(match sort.0 {
@@ -834,8 +849,32 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     let mut desc = !sort.1;
                     ui.checkbox(&mut desc, crate::i18n::tr("toolbar.descending"));
                     sort.1 = !desc;
+                    // Task 76: the bookmark's other sort keys (from a search tab's headers).
+                    let keys = crate::search_columns::parse_sort(&ed.view.sort);
+                    let others: Vec<String> = (keys.iter())
+                        .filter(|(c, _)| c.sort_key() != Some(before.0))
+                        .map(|(c, asc)| match asc {
+                            true => c.label(),
+                            false => format!("{} ⏷", c.label()),
+                        })
+                        .collect();
+                    if !others.is_empty() {
+                        ui.weak(format!(
+                            "{}: {}",
+                            crate::i18n::tr("search_results.secondary"),
+                            others.join(", ")
+                        ));
+                    }
                 });
-                ed.view.sort = sort_text(sort);
+                if sort != before {
+                    // The key picked first; the bookmark's other keys after it.
+                    let mut keys = crate::search_columns::parse_sort(&ed.view.sort);
+                    let first = crate::search_columns::ResultCol::of_sort_key(sort.0);
+                    keys.retain(|(c, _)| c.sort_key() != Some(before.0) && *c != first);
+                    keys.insert(0, (first, sort.1));
+                    keys.truncate(crate::search_columns::SORT_KEYS);
+                    ed.view.sort = crate::search_columns::sort_text(&keys);
+                }
                 ui.end_row();
                 ui.label(crate::i18n::tr("inspector.folder"));
                 ui.horizontal(|ui| {

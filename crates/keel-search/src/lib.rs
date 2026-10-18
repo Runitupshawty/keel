@@ -86,6 +86,14 @@ pub struct Query {
     pub match_case: bool,
     /// Match Whole Words: a plain term matches only whole words of the name.
     pub whole_word: bool,
+    /// Match Prefix: a plain term matches only at the start of a word.
+    pub match_prefix: bool,
+    /// Match Suffix: a plain term matches only at the end of a word.
+    pub match_suffix: bool,
+    /// Ignore Punctuation: `a-b` finds `ab`.
+    pub ignore_punctuation: bool,
+    /// Ignore White-space: `a b` finds `ab`.
+    pub ignore_whitespace: bool,
     /// Match Path: terms match the full path (folders and name), not only the name.
     pub match_path: bool,
     /// Match Diacritics: `cafe` does not find `café`. Off (the default), letters match
@@ -107,6 +115,10 @@ pub struct Query {
 impl Default for Query {
     fn default() -> Self {
         Self {
+            match_prefix: false,
+            match_suffix: false,
+            ignore_punctuation: false,
+            ignore_whitespace: false,
             text: String::new(),
             folders_only: false,
             max: 500,
