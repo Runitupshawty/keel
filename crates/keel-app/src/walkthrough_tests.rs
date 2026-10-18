@@ -4277,6 +4277,10 @@ fn search_results_columns_sidebars_and_refine() {
     let mut h = app_with(boot, SIZE);
     let ready = |s: &AppState| s.searcher.as_ref().is_some_and(|x| x.available());
     assert!(wait(&mut h, 60, &ready), "index built");
+    // One pane: the search tab's columns fit, and its headers are the only ones.
+    if s(&h).dual {
+        sm(&mut h).run(0, Action::ToggleDual);
+    }
     key(&mut h, CMD, Key::F);
     assert!(s(&h).tab(0).is_search());
     type_text(&mut h, "budget");
