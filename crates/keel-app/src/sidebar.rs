@@ -633,7 +633,7 @@ fn section_body(
         UiBuilder::new().max_rect(Rect::from_min_size(ui.cursor().min, vec2(w, f32::INFINITY))),
     );
     meas.set_clip_rect(Rect::NOTHING);
-    meas.set_enabled(false);
+    meas.disable();
     content(&mut meas);
     let full = (meas.cursor().min.y - meas.max_rect().min.y).max(0.0);
     let (_, rect) = ui.allocate_space(vec2(w, full * t));
