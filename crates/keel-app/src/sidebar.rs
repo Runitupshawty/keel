@@ -614,7 +614,11 @@ fn section_body(
             crate::anim::dur(ui.ctx(), crate::anim::SIDEBAR),
         )
     } else {
-        if open { 1.0 } else { 0.0 }
+        if open {
+            1.0
+        } else {
+            0.0
+        }
     };
     if t <= 0.0 {
         return;
@@ -626,10 +630,7 @@ fn section_body(
     let w = ui.available_width();
     // The full height, measured without painting and without taking clicks.
     let mut meas = ui.new_child(
-        UiBuilder::new().max_rect(Rect::from_min_size(
-            ui.cursor().min,
-            vec2(w, f32::INFINITY),
-        )),
+        UiBuilder::new().max_rect(Rect::from_min_size(ui.cursor().min, vec2(w, f32::INFINITY))),
     );
     meas.set_clip_rect(Rect::NOTHING);
     meas.set_enabled(false);

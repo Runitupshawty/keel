@@ -523,7 +523,11 @@ pub fn ui(
                                                     ),
                                                 )
                                             } else {
-                                                if open { 1.0 } else { 0.0 }
+                                                if open {
+                                                    1.0
+                                                } else {
+                                                    0.0
+                                                }
                                             };
                                             let r = triangle(ui, t, muted).named(&format!(
                                                 "{} {shown}",
