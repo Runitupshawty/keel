@@ -2141,6 +2141,35 @@ mod tests {
         PeerId(NodeId([n; 32]))
     }
 
+    /// Network indexes: a device's hit names its host, and outside its shares shows the
+    /// host's own folder.
+    #[test]
+    fn device_hits_name_their_host_and_folder() {
+        let p = peer(7);
+        note_peers(&[Peer {
+            id: p,
+            label: "Desk".into(),
+            last_seen: None,
+            link: Link::Lan,
+            storage: None,
+        }]);
+        let hit = |path: &str| VPath::parse(&format!("node://{}{path}", p.0)).unwrap();
+        assert_eq!(node_host(&hit("/~/C:/data/a.txt")).as_deref(), Some("Desk"));
+        assert_eq!(node_host(&VPath::local(std::env::temp_dir())), None);
+        assert_eq!(
+            node_folder(&hit("/~/C:/data/a.txt")).as_deref(),
+            Some("C:/data")
+        );
+        assert_eq!(
+            node_folder(&hit("/~/srv/data/a.txt")).as_deref(),
+            Some("/srv/data")
+        );
+        assert!(node_folder(&hit("/docs/a.txt")).is_some_and(|f| f.starts_with("Desk")));
+        let unknown = VPath::parse(&format!("node://{}/~/x", peer(8).0)).unwrap();
+        assert_eq!(node_host(&unknown).map(|h| h.len()), Some(8), "the id's start");
+        note_peers(&[]);
+    }
+
     #[test]
     fn node_tabs_are_titled_by_device_name_and_source_label() {
         let at = |s: &str| VPath::parse(&format!("node://{}{s}", peer(7).0)).unwrap();

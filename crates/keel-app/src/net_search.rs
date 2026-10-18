@@ -19,6 +19,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The function name, as Everything spells it.
 const HOST_TERM: &str = "network-index-host:";
+/// How long a search waits for the devices' answers in all (a device answers within its
+/// own search timeout, 10 s by default); one that has not answered by then is left out.
+const DEVICES_WAIT: Duration = Duration::from_secs(12);
 
 /// The `network-index-host:` values of `text` and the text without them (as typed when
 /// there are none). A value may be quoted (`network-index-host:"Living room"`).
@@ -138,13 +141,19 @@ impl Searcher for NetSearcher {
             false => None,
         };
         let mut found = Vec::new();
-        for (peer, task) in asked {
+        let deadline = std::time::Instant::now() + DEVICES_WAIT;
+        for (peer, mut task) in asked {
             let rt = &self.net.as_ref().expect("asked devices have a node").rt;
-            match rt.block_on(task) {
-                Ok(Ok(result)) => found.extend(result.hits.iter().map(|h| hit_of(&peer, h))),
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rt.block_on(tokio::time::timeout(left, &mut task)) {
+                Ok(Ok(Ok(result))) => found.extend(result.hits.iter().map(|h| hit_of(&peer, h))),
                 // Not granted, offline, too slow: that device is left out.
-                Ok(Err(e)) => tracing::debug!(peer = %peer.0, "network index: {e:#}"),
-                Err(e) => tracing::debug!(peer = %peer.0, "network index: {e}"),
+                Ok(Ok(Err(e))) => tracing::debug!(peer = %peer.0, "network index: {e:#}"),
+                Ok(Err(e)) => tracing::debug!(peer = %peer.0, "network index: {e}"),
+                Err(_) => {
+                    task.abort();
+                    tracing::debug!(peer = %peer.0, "network index: no answer in time");
+                }
             }
         }
         match local {
@@ -274,7 +283,7 @@ mod tests {
     #[test]
     fn a_host_term_without_devices_finds_nothing_here() {
         let local = hit(VPath::local(std::env::temp_dir().join("a.txt")));
-        let s = NetSearcher::new(Arc::new(Fixed(vec![local.clone()])), None);
+        let s = NetSearcher::new(Arc::new(Fixed(vec![local])), None);
         let q = |text: &str| Query {
             text: text.into(),
             ..Query::default()

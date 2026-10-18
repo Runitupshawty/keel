@@ -580,11 +580,11 @@ pub fn ui(
                             });
                         }
                         Col::Host => {
-                                row.col(|ui| {
-                                    tint(ui);
-                                    let host = crate::devices::node_host(&e.path).unwrap_or_default();
-                                    ui.add(egui::Label::new(cell(&host, Some(muted))).truncate());
-                                });
+                            row.col(|ui| {
+                                tint(ui);
+                                let host = crate::devices::node_host(&e.path).unwrap_or_default();
+                                ui.add(egui::Label::new(cell(&host, Some(muted))).truncate());
+                            });
                         }
                         Col::Kind => {
                             row.col(|ui| {
