@@ -67,7 +67,7 @@ fn now(ctx: &Context) -> f64 {
 
 /// `target`, reached by an eased transition from the value shown when it changed.
 pub fn value(ctx: &Context, id: Id, target: f32) -> f32 {
-    value_d(ctx, id, target, DURATION)
+    value_d(ctx, id, target, duration(ctx))
 }
 
 /// As `value`, over `dur` seconds (0: instant).
