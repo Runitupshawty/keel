@@ -90,10 +90,11 @@ impl Hub {
     }
 }
 
-/// One connection's subscription.
+/// One connection's subscription, and whether it asked the daemon to stop.
 #[derive(Default)]
 pub(crate) struct Session {
     pub(crate) sub: Option<(u64, Receiver<Value>)>,
+    stopping: bool,
 }
 
 pub(crate) struct Shared {
@@ -130,6 +131,13 @@ impl Shared {
             .flatten()
     }
 
+    /// After `session`'s answer went out: a `daemon.shutdown` in it now stops the daemon.
+    pub(crate) fn answered(&self, session: &Session) {
+        if session.stopping {
+            let _ = self.shutdown.try_send(());
+        }
+    }
+
     pub(crate) fn dispatch(&self, req: &Request, session: &mut Session) -> keel_api::Result<Value> {
         match req.method.as_str() {
             "subscribe" => {
@@ -155,7 +163,9 @@ impl Shared {
                 self.uploads.claim(id).map_err(ApiError::not_found)
             }
             "daemon.shutdown" => {
-                let _ = self.shutdown.try_send(());
+                // Asked for once the answer is sent ([`Shared::answered`]): stopping first
+                // can end the process before the caller reads it.
+                session.stopping = true;
                 Ok(json!({"stopping": true}))
             }
             method => {
@@ -662,10 +672,10 @@ fn serve(shared: &Arc<Shared>, conn: Stream) {
             None => notifier = None,
             _ => {}
         }
-        if let Some(answer) = answer {
-            if out.send(&answer).is_err() {
-                break;
-            }
+        let sent = answer.is_none_or(|a| out.send(&a).is_ok());
+        shared.answered(&session);
+        if !sent {
+            break;
         }
     }
     if let Some((id, _)) = session.sub.take() {

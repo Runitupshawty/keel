@@ -125,6 +125,11 @@ fn inner(path: &Path, ext: &str, cap: &TextCaps) -> Result<Extracted, TextError>
     if meta.len() > limit {
         return Err(TextError::TooLarge(meta.len()));
     }
+    if ext == "pdf" {
+        if let Some(read) = pdf::text_in_child(path, cap) {
+            return read;
+        }
+    }
     let mut out = Sink::new(cap);
     match ext.as_str() {
         "pdf" => pdf::text(path, &mut out)?,

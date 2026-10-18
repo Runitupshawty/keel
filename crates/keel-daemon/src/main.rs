@@ -77,6 +77,8 @@ fn filter(rust_log: Option<&str>) -> tracing_subscriber::EnvFilter {
 }
 
 fn main() -> ExitCode {
+    // `--pdf-text-child`: this program as `isolate_pdf_text`'s PDF reader; nothing else runs.
+    keel_preview::pdf_text_child();
     // `keel.portable` beside the executable: settings, libraries and index beside it (as
     // for the window). First, before any thread starts.
     keel_core::portable::apply(keel_api::private::prepare_portable);
@@ -109,12 +111,14 @@ fn main() -> ExitCode {
     }
     // PDF previews (`preview.render`, the web client): pdfium next to this executable,
     // where the release archives and the build's deps step put it, as for the window.
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .as_deref()
-        .and_then(std::path::Path::parent)
-    {
-        keel_preview::init_pdfium(dir);
+    // Resolved, as ~/.local/bin/keel-daemon is a symlink.
+    if let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) {
+        if let Some(dir) = exe.parent() {
+            keel_preview::init_pdfium(dir);
+        }
+        // PDF text is read by a child of this program (`--pdf-text-child`): pdfium crashing
+        // on a document then ends only that child.
+        keel_preview::isolate_pdf_text(exe);
     }
     if args.ws_allow_remote && args.ws.is_none() && args.web.is_none() {
         eprintln!("keel-daemon: --ws-allow-remote needs --ws or --web");

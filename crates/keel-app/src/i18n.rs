@@ -144,7 +144,8 @@ mod tests {
             for key in lang.strings.keys() {
                 if let Some(id) = key.strip_prefix("command.") {
                     assert!(
-                        commands.iter().any(|c| c.id == id),
+                        commands.iter().any(|c| c.id == id)
+                            || crate::keymap::PLATFORM_ONLY_COMMANDS.contains(&id),
                         "{}.toml: {key} is not a command",
                         lang.code
                     );

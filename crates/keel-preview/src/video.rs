@@ -117,7 +117,12 @@ fn find_tool(name: &str) -> Option<PathBuf> {
 type Output = (ExitStatus, Vec<u8>, Vec<u8>);
 
 /// Runs with piped output and a hard TOOL_TIMEOUT; a hung tool is killed, never waited on.
-pub(crate) fn run(mut command: Command) -> Result<Output, String> {
+pub(crate) fn run(command: Command) -> Result<Output, String> {
+    run_until(command, TOOL_TIMEOUT)?.ok_or_else(|| "ffmpeg timed out".to_owned())
+}
+
+/// `run` with its own timeout; None when the program was killed for running past it.
+pub(crate) fn run_until(mut command: Command, timeout: Duration) -> Result<Option<Output>, String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -151,18 +156,18 @@ pub(crate) fn run(mut command: Command) -> Result<Output, String> {
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
-    match child.wait_timeout(TOOL_TIMEOUT) {
-        Ok(Some(status)) => Ok((
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => Ok(Some((
             status,
             stdout.join().unwrap_or_default(),
             stderr.join().unwrap_or_default(),
-        )),
+        ))),
         Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
             // The drain threads are left to finish on their own: a grandchild (e.g. a
             // shim's real process) may still hold the pipes open.
-            Err("ffmpeg timed out".to_owned())
+            Ok(None)
         }
         Err(error) => {
             let _ = child.kill();
