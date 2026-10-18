@@ -4303,7 +4303,9 @@ fn search_results_columns_sidebars_and_refine() {
     let sort = |s: &AppState| s.tab(0).results.sort(s.tab(0).sort);
     assert_eq!(
         sort(s(&h)),
-        [(ResultCol::Size, true), (ResultCol::Name, true)]
+        [(ResultCol::Size, true), (ResultCol::Name, true)],
+        "clicked {size:?} of {}",
+        dump(&h, "Size")
     );
     let name = in_panes(&h, "Name, sorted ascending", 0.0)[0];
     click_at(&mut h, name, NONE, PointerButton::Primary);

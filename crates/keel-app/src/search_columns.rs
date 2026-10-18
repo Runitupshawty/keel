@@ -857,13 +857,17 @@ pub fn settings_rows(ui: &mut egui::Ui, opts: &mut ResultsOptions) {
     ui.label(crate::i18n::tr("search_results.results"));
     ui.horizontal_wrapped(|ui| {
         ui.label(crate::i18n::tr("search_results.folders_first"));
-        egui::ComboBox::from_id_salt("keel-folders-first")
+        let combo = egui::ComboBox::from_id_salt("keel-folders-first")
             .selected_text(opts.folders_first.label())
             .show_ui(ui, |ui| {
                 for f in FoldersFirst::ALL {
                     ui.selectable_value(&mut opts.folders_first, f, f.label());
                 }
             });
+        let _ = crate::a11y::Named::named(
+            combo.response,
+            crate::i18n::tr("search_results.folders_first"),
+        );
         ui.checkbox(
             &mut opts.descending_first,
             crate::i18n::tr("search_results.descending_first"),
