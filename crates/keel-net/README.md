@@ -225,7 +225,7 @@ full path, size, date, folder flag and, when a read share of the host covers it,
 The host checks the grant on every request (a device without it gets
 `Response::Denied("grant required")` and the index is never asked), refuses text
 longer than `SEARCH_TEXT_MAX` (1 KiB), empty or with control characters, caps `max`,
-runs one search per device at a time and at most `NodeOptions::search_rate` (60) per
+runs one search per device at a time and at most `NodeOptions::search_rate` (120) per
 device and minute, answers `Response::Error("search timed out")` after
 `NodeOptions::search_timeout` (10 s; the slot is freed only when the search really
 ends), and keeps a reply under 512 KiB of paths (`more` is then set). No file contents

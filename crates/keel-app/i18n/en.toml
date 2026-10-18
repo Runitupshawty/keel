@@ -709,6 +709,9 @@ most_results_tip = "Load more stops here (a search shows the first 1,000 at once
 new_searches = "New searches"
 in_double_quotes = "In double quotes"
 in_double_quotes_tip = "Copy path puts each path in \"double quotes\""
+include_devices = "Include paired devices"
+include_devices_tip = "Searches also ask your paired devices that let this one search their files (Search my files in their Shares dialog); their hits show the Host. network-index-host:<name> keeps a search to one device."
+host = "Host"
 
 [media_viewer]
 close_tip = "Close (Esc)"
@@ -855,3 +858,9 @@ err_cmd_value = "{value} holds {c}, which cmd.exe would read as part of the comm
 err_scope = "\"{title}\" works for {scope}: nothing selected is one"
 err_too_many = "That is more than {n} runs: pick fewer folders"
 err_no_command = "\"{title}\" has no command line (Settings → Cleanups)"
+
+[net_index]
+search_my_files = "Search my files"
+search_my_files_tip = "This device may search your files by name: it sees paths, sizes and dates, never what is inside. It opens only what you share with it. Off by default; turning it off takes effect at once."
+daemon = "Search my files is not available yet while this window uses keel-daemon's devices"
+grant_failed = "Could not change Search my files: {error}"

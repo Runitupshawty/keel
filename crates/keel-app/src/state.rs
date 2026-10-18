@@ -1011,6 +1011,8 @@ impl AppState {
             Msg::Inspected { req, result } => self.preview.inspector.answered(req, *result),
             Msg::Search { id, result } => self.searched(id, result),
             Msg::Searcher { searcher, reason } => {
+                // Network indexes: what paired devices' searches run on.
+                *self.devices.searcher.write() = Some(searcher.clone());
                 crate::search_settings::push(Some(searcher.clone()), &self.settings.search_index);
                 self.searcher = Some(searcher);
                 self.search_reason = reason;
@@ -1200,7 +1202,14 @@ impl AppState {
             }
             _ if library.is_some() => library,
             _ if remote => None,
-            Some(s) => Some(s),
+            // Network indexes: the paired devices too, with Include paired devices on
+            // (`network-index-host:` is read either way).
+            Some(s) => {
+                let net = (settings.include_devices && within.is_none())
+                    .then(|| self.devices.net())
+                    .flatten();
+                Some(Arc::new(crate::net_search::NetSearcher::new(s, net)) as Arc<dyn Searcher>)
+            }
             None => {
                 // Still loading: try again shortly.
                 *due = Some(Instant::now() + DEBOUNCE);

@@ -157,6 +157,9 @@ pub struct SearchSettings {
     pub whole_filename_wildcards: bool,
     /// Load more stops at this many results.
     pub max_results: u32,
+    /// Network indexes: system searches also ask the paired devices that let this one
+    /// search their files (`net_search`). Off by default.
+    pub include_devices: bool,
 }
 
 impl Default for SearchSettings {
@@ -167,6 +170,7 @@ impl Default for SearchSettings {
             delay_ms: DEBOUNCE.as_millis() as u64,
             whole_filename_wildcards: true,
             max_results: 10_000,
+            include_devices: false,
         }
     }
 }
@@ -725,6 +729,13 @@ pub fn settings_rows(ui: &mut egui::Ui, s: &mut SearchSettings, quote_paths: &mu
             ui.checkbox(t.of(&mut s.toggles), t.label());
         }
     });
+    ui.end_row();
+    ui.label("");
+    ui.checkbox(
+        &mut s.include_devices,
+        crate::i18n::tr("search_tab.include_devices"),
+    )
+    .on_hover_text(crate::i18n::tr("search_tab.include_devices_tip"));
     ui.end_row();
     ui.label(crate::i18n::tr("menu.copy_path"));
     ui.checkbox(quote_paths, crate::i18n::tr("search_tab.in_double_quotes"))

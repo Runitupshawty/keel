@@ -669,8 +669,12 @@ pub static UNSUPPORTED: &[(&[&str], &str)] = &[
         "a document property (Phase 15, Task 73)",
     ),
     (
-        &["filelist", "filelist-filename", "filelist-full-path", "network-index-host"],
+        &["filelist", "filelist-filename", "filelist-full-path"],
         "a file list function (Phase 16)",
+    ),
+    (
+        &["network-index-host"],
+        "a network index function: Keel's search tab reads it (Settings → General → Search → Include paired devices)",
     ),
     (
         &["camera", "taken", "has", "contents", "source", "is", "w", "h"],

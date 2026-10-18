@@ -161,7 +161,11 @@ async fn search_needs_the_grant_and_revoking_it_takes_effect_at_once() {
     let t = two(Index::new(3, Duration::ZERO), NodeOptions::offline()).await;
     // Off by default: refused, and the host's index is never asked.
     assert_eq!(denied(&t.ask("report", 10).await), "grant required");
-    assert!(t.asker.search(&t.host_id, SearchQuery::default()).await.is_err());
+    assert!(t
+        .asker
+        .search(&t.host_id, SearchQuery::default())
+        .await
+        .is_err());
     assert_eq!(t.index.searches.load(Ordering::SeqCst), 0);
     assert!(t.host.search_grants().is_empty());
 
@@ -183,7 +187,11 @@ async fn search_needs_the_grant_and_revoking_it_takes_effect_at_once() {
     let paths: Vec<&str> = found.hits.iter().map(|h| h.path.as_str()).collect();
     assert_eq!(
         paths,
-        ["/data/report-0.txt", "/data/report-1.txt", "/data/report-2.txt"]
+        [
+            "/data/report-0.txt",
+            "/data/report-1.txt",
+            "/data/report-2.txt"
+        ]
     );
     // No share yet: no hit opens.
     assert!(found.hits.iter().all(|h| h.open.is_none()));

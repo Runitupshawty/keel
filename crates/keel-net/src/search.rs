@@ -24,7 +24,7 @@ use std::{
 };
 
 /// Searches one device may run per minute, by default.
-pub const SEARCH_RATE: usize = 60;
+pub const SEARCH_RATE: usize = 120;
 /// How long a search may take on the host, by default.
 pub const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Path bytes in one reply: well under the 1 MiB header limit.

@@ -807,6 +807,9 @@ most_results_tip = "Cargar más se detiene aquí (una búsqueda muestra los prim
 new_searches = "Nuevas búsquedas"
 in_double_quotes = "Entre comillas dobles"
 in_double_quotes_tip = "Copiar ruta pone cada ruta entre \"comillas dobles\""
+include_devices = "Incluir dispositivos emparejados"
+include_devices_tip = "Las búsquedas también preguntan a tus dispositivos emparejados que dejan a este buscar sus archivos (Buscar mis archivos en su diálogo Compartidos); sus resultados muestran el equipo. network-index-host:<nombre> limita una búsqueda a un dispositivo."
+host = "Equipo"
 
 [media_viewer]
 close_tip = "Cerrar (Esc)"
@@ -953,3 +956,9 @@ err_cmd_value = "{value} contiene {c}, que cmd.exe leería como parte del comand
 err_scope = "\"{title}\" funciona para {scope}: nada de lo seleccionado es uno de ellos"
 err_too_many = "Son más de {n} ejecuciones: elige menos carpetas"
 err_no_command = "\"{title}\" no tiene línea de comandos (Ajustes → Limpiezas)"
+
+[net_index]
+search_my_files = "Buscar mis archivos"
+search_my_files_tip = "Este dispositivo puede buscar tus archivos por nombre: ve rutas, tamaños y fechas, nunca su contenido. Solo abre lo que compartes con él. Desactivado por defecto; al desactivarlo se aplica al instante."
+daemon = "Buscar mis archivos aún no está disponible mientras esta ventana usa los dispositivos de keel-daemon"
+grant_failed = "No se pudo cambiar Buscar mis archivos: {error}"

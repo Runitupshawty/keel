@@ -50,6 +50,8 @@ enum Col {
     Name,
     /// Ext; Folder in search results, Original location in the Recycle Bin, Share in Sizes.
     Second,
+    /// Network indexes: the paired device a search hit came from.
+    Host,
     Kind,
     Size,
     Modified,
@@ -66,8 +68,7 @@ enum Col {
 fn columns(
     (search, trash, sizes): (bool, bool, bool),
     list: &list_view::ListOptions,
-    copies: bool,
-    tags: bool,
+    (copies, tags, hosts): (bool, bool, bool),
 ) -> Vec<Col> {
     let mut cols = vec![Col::Name];
     if sizes {
@@ -81,6 +82,9 @@ fn columns(
     } else {
         if search || trash || list.shows(ListColumn::Ext) {
             cols.push(Col::Second);
+        }
+        if search && hosts {
+            cols.push(Col::Host);
         }
         for (c, col) in [
             (ListColumn::Kind, Col::Kind),
@@ -188,7 +192,13 @@ pub fn ui(
     // --- Task 33 ---: copies badge (library on).
     let copies_col = lib.is_open();
     // --- Task 66 ---
-    let cols = columns((search, trash, sizes), cx.list, copies_col, tags_col);
+    // Network indexes: hits from paired devices name their host.
+    let hosts_col = search && tab.entries().iter().any(|e| e.path.scheme == "node");
+    let cols = columns(
+        (search, trash, sizes),
+        cx.list,
+        (copies_col, tags_col, hosts_col),
+    );
     let relative = cx.list.relative_dates;
     let now = chrono::Local::now();
     let disclosure = tab.disclosure;
@@ -246,6 +256,7 @@ pub fn ui(
             .at_least(30.0)
             .clip(true),
             Col::Kind => Column::initial(130.0).at_least(50.0).clip(true),
+            Col::Host => Column::initial(110.0).at_least(40.0).clip(true),
             Col::Size => Column::initial(80.0).at_least(50.0),
             // Room for "Yesterday at 14:05".
             Col::Modified | Col::Created | Col::Opened => {
@@ -291,6 +302,7 @@ pub fn ui(
                     Col::Second if trash => ("Original location", None),
                     Col::Second => ("Ext", Some(SortKey::Ext)),
                     Col::Kind => ("Kind", None),
+                    Col::Host => (crate::i18n::tr("search_tab.host"), None),
                     // Always biggest first.
                     Col::Size if sizes => ("Size ⏷", None),
                     Col::Size => ("Size", Some(SortKey::Size)),
@@ -532,8 +544,9 @@ pub fn ui(
                             row.col(|ui| {
                                 tint(ui);
                                 if search {
-                                    let mut folder =
-                                        e.path.parent().map(|d| d.display()).unwrap_or_default();
+                                    let mut folder = crate::devices::node_folder(&e.path)
+                                        .or_else(|| e.path.parent().map(|d| d.display()))
+                                        .unwrap_or_default();
                                     if let Some(s) = source.filter(|_| tab.library_search) {
                                         folder = format!("{} · {folder}", s.label);
                                     }
@@ -565,6 +578,13 @@ pub fn ui(
                                     ui.label(cell(&e.ext, Some(muted)));
                                 }
                             });
+                        }
+                        Col::Host => {
+                                row.col(|ui| {
+                                    tint(ui);
+                                    let host = crate::devices::node_host(&e.path).unwrap_or_default();
+                                    ui.add(egui::Label::new(cell(&host, Some(muted))).truncate());
+                                });
                         }
                         Col::Kind => {
                             row.col(|ui| {
