@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 /// The option that makes a new Keel scan a folder in its Disk Usage window.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const SCAN_ARG: &str = "--du-scan";
 
 /// Whether this system has a way to relaunch elevated, and this Keel is not elevated
@@ -23,6 +24,7 @@ pub fn available() -> bool {
 }
 
 /// The arguments of the elevated Keel for `roots`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn args(roots: &[PathBuf]) -> Vec<String> {
     let mut out = vec!["--new-window".to_owned()];
     for r in roots {
@@ -34,6 +36,7 @@ pub fn args(roots: &[PathBuf]) -> Vec<String> {
 
 /// `args` as one Windows command line: each argument quoted as the C runtime reads it
 /// back (backslashes doubled only before a quote, quotes escaped).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn command_line(args: &[String]) -> String {
     let mut line = String::new();
     for a in args {
