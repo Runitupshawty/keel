@@ -388,6 +388,8 @@ pub fn ui(
                     Col::OfUsed => ("Of used", None),
                     Col::Copies => ("Copies", None),
                     Col::Tags => ("Tags", None),
+                    // Search tabs only, drawn above.
+                    Col::Result(_) => ("", None),
                 };
                 header.col(|ui| {
                     let Some(key) = key.filter(|_| !sizes) else {

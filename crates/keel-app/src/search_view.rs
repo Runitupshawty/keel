@@ -214,7 +214,7 @@ impl FolderTree {
             }
         }
         let key = |nodes: &[Node], i: usize| nodes[i].path.name().to_lowercase();
-        let mut sorted = |list: &mut Vec<usize>| {
+        let sorted = |list: &mut Vec<usize>| {
             list.sort_by(|&a, &b| natord::compare(&key(&nodes, a), &key(&nodes, b)))
         };
         sorted(&mut roots);

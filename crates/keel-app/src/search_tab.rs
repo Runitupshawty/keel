@@ -1085,6 +1085,7 @@ mod tests {
                 match_path: true,
                 match_diacritics: true,
                 regex: true,
+                ..Toggles::default()
             },
             7,
         );
