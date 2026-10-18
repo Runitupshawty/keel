@@ -124,18 +124,23 @@ impl Searcher for NetSearcher {
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
         let (hosts, text) = split_hosts(&q.text);
         let q = Query { text, ..q.clone() };
-        let asked: Vec<(PeerId, tokio::task::JoinHandle<anyhow::Result<keel_net::SearchResult>>)> =
-            match &self.net {
-                // A pane's search keeps to its folder here.
-                Some(net) if q.within.is_none() && !q.text.trim().is_empty() => (net.peers.iter())
-                    .filter(|(id, label)| hosts.is_empty() || hosts.iter().any(|h| names(h, id, label)))
-                    .map(|(id, _)| {
-                        let (node, peer, query) = (net.node.clone(), *id, remote_query(&q));
-                        (*id, net.rt.spawn(async move { node.search(&peer, query).await }))
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
+        let asked: Vec<(
+            PeerId,
+            tokio::task::JoinHandle<anyhow::Result<keel_net::SearchResult>>,
+        )> = match &self.net {
+            // A pane's search keeps to its folder here.
+            Some(net) if q.within.is_none() && !q.text.trim().is_empty() => (net.peers.iter())
+                .filter(|(id, label)| hosts.is_empty() || hosts.iter().any(|h| names(h, id, label)))
+                .map(|(id, _)| {
+                    let (node, peer, query) = (net.node.clone(), *id, remote_query(&q));
+                    (
+                        *id,
+                        net.rt.spawn(async move { node.search(&peer, query).await }),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let local = match hosts.is_empty() && !q.text.trim().is_empty() {
             true => Some(self.local.query(&q)),
             false => None,
@@ -236,7 +241,10 @@ mod tests {
         assert!(hosts.is_empty());
         assert_eq!(rest, "report  *.pdf", "untouched without the term");
         let (hosts, rest) = split_hosts("network-index-host:Desk report \"a b\"");
-        assert_eq!((hosts, rest.as_str()), (vec!["Desk".into()], "report \"a b\""));
+        assert_eq!(
+            (hosts, rest.as_str()),
+            (vec!["Desk".into()], "report \"a b\"")
+        );
         let (hosts, rest) =
             split_hosts("Network-Index-Host:\"Living room\" x network-index-host:laptop");
         assert_eq!(hosts, ["Living room", "laptop"]);
@@ -430,7 +438,10 @@ mod tests {
         let paths: Vec<&str> = hits.iter().map(|h| h.path.path.as_str()).collect();
         assert_eq!(paths[0], format!("/{}/report.txt", source.0));
         assert!(paths[1].starts_with(&not_shared), "outside the share");
-        assert!(s.query(&q("network-index-host:laptop report")).unwrap().is_empty());
+        assert!(s
+            .query(&q("network-index-host:laptop report"))
+            .unwrap()
+            .is_empty());
 
         host.set_search_grant(&asker_id, false).unwrap();
         assert!(s.query(&q("report")).unwrap().is_empty(), "revoked");

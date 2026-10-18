@@ -321,7 +321,9 @@ pub fn node_folder(path: &VPath) -> Option<String> {
         return None;
     }
     let rest = path.path.trim_start_matches('/');
-    let Some(host) = rest.strip_prefix(keel_net::NOT_SHARED).and_then(|r| r.strip_prefix('/'))
+    let Some(host) = rest
+        .strip_prefix(keel_net::NOT_SHARED)
+        .and_then(|r| r.strip_prefix('/'))
     else {
         return path.parent().and_then(|p| node_location(&p));
     };
@@ -1316,7 +1318,8 @@ impl AppState {
             DevCmd::SearchGrant { peer, on } => {
                 if let Err(e) = node.set_search_grant(&peer, on) {
                     let text = crate::i18n::tr("net_index.grant_failed");
-                    self.toasts.error(text.replace("{error}", &format!("{e:#}")));
+                    self.toasts
+                        .error(text.replace("{error}", &format!("{e:#}")));
                 }
                 self.devices.refresh();
             }
@@ -2166,7 +2169,11 @@ mod tests {
         );
         assert!(node_folder(&hit("/docs/a.txt")).is_some_and(|f| f.starts_with("Desk")));
         let unknown = VPath::parse(&format!("node://{}/~/x", peer(8).0)).unwrap();
-        assert_eq!(node_host(&unknown).map(|h| h.len()), Some(8), "the id's start");
+        assert_eq!(
+            node_host(&unknown).map(|h| h.len()),
+            Some(8),
+            "the id's start"
+        );
         note_peers(&[]);
     }
 
