@@ -246,6 +246,8 @@ pub fn ui(
     let relative = cx.list.relative_dates;
     let now = chrono::Local::now();
     let disclosure = tab.disclosure;
+    // Task 68: the triangle's rotation only animates in the Finder style.
+    let appearance = cx.style;
     let lines = lines(tab);
     let spacing_y = ui.spacing().item_spacing.y;
     let width_x = ui.max_rect().x_range();
@@ -508,7 +510,22 @@ pub fn ui(
                                         ui.add_space(tab.depth(e) as f32 * INDENT);
                                         if e.kind == Kind::Dir {
                                             let open = tab.is_expanded(&e.name);
-                                            let r = triangle(ui, open, muted).named(&format!(
+                                            // Task 68: the triangle rotates (Finder; Reduce
+                                            // motion: instant).
+                                            let t = if appearance == crate::design::Style::Finder {
+                                                crate::anim::value_d(
+                                                    ui.ctx(),
+                                                    egui::Id::new(("keel-disclosure", &e.path)),
+                                                    if open { 1.0 } else { 0.0 },
+                                                    crate::anim::dur(
+                                                        ui.ctx(),
+                                                        crate::anim::TRIANGLE,
+                                                    ),
+                                                )
+                                            } else {
+                                                if open { 1.0 } else { 0.0 }
+                                            };
+                                            let r = triangle(ui, t, muted).named(&format!(
                                                 "{} {shown}",
                                                 if open { "Collapse" } else { "Expand" }
                                             ));
@@ -902,8 +919,9 @@ fn name_label(ui: &mut egui::Ui, shown: &str, color: Option<egui::Color32>, font
     }
 }
 
-/// The disclosure triangle of a folder row: pointing right (collapsed) or down (expanded).
-fn triangle(ui: &mut egui::Ui, open: bool, color: egui::Color32) -> egui::Response {
+/// The disclosure triangle of a folder row: pointing right (collapsed), turned down
+/// (expanded); `t` eases 0 to 1 through the turn (Task 68).
+fn triangle(ui: &mut egui::Ui, t: f32, color: egui::Color32) -> egui::Response {
     // Pointer-only: the keyboard expands with Right and Left on the cursor row, so the
     // triangle is no Tab stop and never takes the list's keyboard focus.
     let (rect, r) = ui.allocate_exact_size(egui::vec2(TRIANGLE_W, ROW_H), Sense::CLICK);
@@ -914,19 +932,18 @@ fn triangle(ui: &mut egui::Ui, open: bool, color: egui::Color32) -> egui::Respon
     };
     let c = rect.center();
     let s = 3.5;
-    let points = if open {
-        vec![
-            c + egui::vec2(-s, -s * 0.6),
-            c + egui::vec2(s, -s * 0.6),
-            c + egui::vec2(0.0, s * 0.7),
-        ]
-    } else {
-        vec![
-            c + egui::vec2(-s * 0.6, -s),
-            c + egui::vec2(-s * 0.6, s),
-            c + egui::vec2(s * 0.7, 0.0),
-        ]
+    // The collapsed triangle, rotated toward the expanded one (a 90-degree turn).
+    let (sin, cos) = (t * std::f32::consts::FRAC_PI_2).sin_cos();
+    let turn = |p: egui::Vec2| {
+        let d = p - c;
+        c + egui::vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
     };
+    let points = [
+        c + egui::vec2(-s * 0.6, -s),
+        c + egui::vec2(-s * 0.6, s),
+        c + egui::vec2(s * 0.7, 0.0),
+    ]
+    .map(turn);
     ui.painter().add(egui::Shape::convex_polygon(
         points,
         color,

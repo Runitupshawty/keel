@@ -402,6 +402,7 @@ impl App {
                         &archives,
                         &s.library,
                         &mut acts,
+                        s.settings.style == crate::design::Style::Finder,
                     );
                     out.extend(acts.into_iter().map(|a| (s.active, a)));
                 });
@@ -614,6 +615,7 @@ impl App {
                         sizes: &s.sizes,
                         keys: s.active == p,
                         views: &mut s.settings.views,
+                        style: s.settings.style,
                     };
                     pane::ui(&mut child, p, &mut s.panes[p], &mut cx, &mut acts);
                     if !live {

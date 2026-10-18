@@ -1065,6 +1065,7 @@ mod tests {
                         sizes: &Default::default(),
                         keys: true,
                         views: &mut *views,
+                        style: crate::design::Style::Classic,
                     };
                     super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
                 });

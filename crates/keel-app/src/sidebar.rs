@@ -162,7 +162,8 @@ impl Sidebar {
 
     /// Draws the sidebar; clicks become `Navigate`, middle-clicks `NewTabAt`, layout changes
     /// `Action::Sidebar`. `archives`: the archive each (pane, tab) is browsing; a click
-    /// shows that tab.
+    /// shows that tab. `finder`: the Finder style (Task 68: the section bodies then ease
+    /// their height when they hide or show).
     #[allow(clippy::too_many_arguments)]
     pub fn ui(
         &self,
@@ -173,6 +174,7 @@ impl Sidebar {
         archives: &[(usize, usize, VPath)],
         library: &crate::library::LibraryUi,
         out: &mut Vec<Action>,
+        finder: bool,
     ) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.style_mut().interaction.selectable_labels = false;
@@ -185,17 +187,20 @@ impl Sidebar {
                     SidebarCmd::ResetFavorites
                 });
             };
-            if header(ui, Section::Favorites, prefs, theme, out, fav_menu) {
-                self.favorites(ui, prefs, current, out);
-            }
+            let open = header(ui, Section::Favorites, prefs, theme, out, fav_menu);
+            section_body(ui, Section::Favorites, open, finder, |ui| {
+                self.favorites(ui, prefs, current, &mut *out);
+            });
             ui.add_space(SECTION_GAP);
-            if header(ui, Section::Locations, prefs, theme, out, add_menu) {
-                self.locations(ui, current, archives, out);
-            }
+            let open = header(ui, Section::Locations, prefs, theme, out, add_menu);
+            section_body(ui, Section::Locations, open, finder, |ui| {
+                self.locations(ui, current, archives, &mut *out);
+            });
             ui.add_space(SECTION_GAP);
-            if header(ui, Section::Library, prefs, theme, out, |_, _| ()) {
-                crate::library_ui::sidebar(ui, library, current, out);
-            }
+            let open = header(ui, Section::Library, prefs, theme, out, |_, _| ());
+            section_body(ui, Section::Library, open, finder, |ui| {
+                crate::library_ui::sidebar(ui, library, current, &mut *out);
+            });
             // Hand-ordered collections (nothing while there are none).
             if library.is_open() && !library.collections.is_empty() {
                 ui.add_space(SECTION_GAP);
@@ -205,22 +210,25 @@ impl Sidebar {
                         ui.close_menu();
                     }
                 };
-                if header(ui, Section::Collections, prefs, theme, out, new) {
-                    crate::library_ui::sidebar_collections(ui, library, out);
-                }
+                let open = header(ui, Section::Collections, prefs, theme, out, new);
+                section_body(ui, Section::Collections, open, finder, |ui| {
+                    crate::library_ui::sidebar_collections(ui, library, &mut *out);
+                });
             }
             // Task 76: bookmarks of searches (nothing while there are none).
             if !crate::bookmarks::published(ui.ctx()).bookmarks.is_empty() {
                 ui.add_space(SECTION_GAP);
-                if header(ui, Section::Bookmarks, prefs, theme, out, |_, _| ()) {
-                    crate::bookmarks::sidebar(ui, out);
-                }
+                let open = header(ui, Section::Bookmarks, prefs, theme, out, |_, _| ());
+                section_body(ui, Section::Bookmarks, open, finder, |ui| {
+                    crate::bookmarks::sidebar(ui, &mut *out);
+                });
             }
             if library.is_open() && !library.tags.is_empty() {
                 ui.add_space(SECTION_GAP);
-                if header(ui, Section::Tags, prefs, theme, out, |_, _| ()) {
-                    crate::library_ui::sidebar_tags(ui, library, out);
-                }
+                let open = header(ui, Section::Tags, prefs, theme, out, |_, _| ());
+                section_body(ui, Section::Tags, open, finder, |ui| {
+                    crate::library_ui::sidebar_tags(ui, library, &mut *out);
+                });
             }
             ui.add_space(SECTION_GAP);
         });
@@ -586,6 +594,52 @@ fn header(
         menu(ui, out);
     });
     open
+}
+
+/// A section's rows. Task 68: in the Finder style the body's height eases over
+/// `anim::SIDEBAR` when the section hides or shows (Reduce motion: instant; Classic:
+/// no animation).
+fn section_body(
+    ui: &mut egui::Ui,
+    section: Section,
+    open: bool,
+    finder: bool,
+    content: impl Fn(&mut egui::Ui),
+) {
+    let t = if finder {
+        crate::anim::value_d(
+            ui.ctx(),
+            Id::new(("sidebar-section", section.title())),
+            if open { 1.0 } else { 0.0 },
+            crate::anim::dur(ui.ctx(), crate::anim::SIDEBAR),
+        )
+    } else {
+        if open { 1.0 } else { 0.0 }
+    };
+    if t <= 0.0 {
+        return;
+    }
+    if t >= 1.0 {
+        content(ui);
+        return;
+    }
+    let w = ui.available_width();
+    // The full height, measured without painting and without taking clicks.
+    let mut meas = ui.new_child(
+        UiBuilder::new().max_rect(Rect::from_min_size(
+            ui.cursor().min,
+            vec2(w, f32::INFINITY),
+        )),
+    );
+    meas.set_clip_rect(Rect::NOTHING);
+    meas.set_enabled(false);
+    content(&mut meas);
+    let full = (meas.cursor().min.y - meas.max_rect().min.y).max(0.0);
+    let (rect, _) = ui.allocate_space(vec2(w, full * t));
+    ui.scope(|ui2| {
+        ui2.set_clip_rect(rect);
+        content(ui2);
+    });
 }
 
 /// A context-menu entry that sends `cmd`.

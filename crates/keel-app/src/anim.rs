@@ -6,6 +6,10 @@
 use egui::{style::ScrollAnimation, Context, Id};
 
 pub const DURATION: f32 = 0.12;
+/// Task 68: the Finder motion's lengths (seconds; all 0 under Reduce motion, via `dur`).
+pub const TRIANGLE: f32 = 0.15;
+pub const SIDEBAR: f32 = 0.2;
+pub const QUICK_LOOK: f32 = 0.15;
 
 pub fn ease_out_cubic(t: f32) -> f32 {
     let u = 1.0 - t.clamp(0.0, 1.0);
@@ -39,6 +43,15 @@ pub fn duration(ctx: &Context) -> f32 {
     ctx.style().animation_time
 }
 
+/// A Task 68 transition's length now: `base`, or 0 with reduce motion.
+pub fn dur(ctx: &Context, base: f32) -> f32 {
+    if duration(ctx) > 0.0 {
+        base
+    } else {
+        0.0
+    }
+}
+
 /// `from` -> `to` after `elapsed` seconds of a `duration` transition.
 pub fn at(from: f32, to: f32, elapsed: f32, duration: f32) -> f32 {
     if duration <= 0.0 || elapsed >= duration {
@@ -54,8 +67,12 @@ fn now(ctx: &Context) -> f64 {
 
 /// `target`, reached by an eased transition from the value shown when it changed.
 pub fn value(ctx: &Context, id: Id, target: f32) -> f32 {
+    value_d(ctx, id, target, DURATION)
+}
+
+/// As `value`, over `dur` seconds (0: instant).
+pub fn value_d(ctx: &Context, id: Id, target: f32, dur: f32) -> f32 {
     let now = now(ctx);
-    let dur = duration(ctx);
     let saved = ctx.data(|d| d.get_temp::<(f32, f32, f64)>(id));
     let (mut from, mut to, mut start) = saved.unwrap_or((target, target, now));
     if saved.is_none() || to != target {
@@ -140,5 +157,22 @@ mod tests {
         assert_eq!(fade_in(&ctx, id.with(1), Some("c")), 1.0);
         assert_eq!(at(0.0, 7.0, 0.0, duration(&ctx)), 7.0);
         assert_eq!(ctx.style().scroll_animation, ScrollAnimation::none());
+    }
+
+    #[test]
+    fn finder_motion_durations_follow_reduce_motion() {
+        // Task 68: the Finder's transitions have real lengths, and 0 under Reduce motion.
+        assert!((0.15..=0.25).contains(&TRIANGLE), "150 to 250 ms");
+        assert!((0.15..=0.25).contains(&SIDEBAR), "150 to 250 ms");
+        assert!((0.15..=0.25).contains(&QUICK_LOOK), "150 to 250 ms");
+        let ctx = Context::default();
+        apply(&ctx, false);
+        assert_eq!(dur(&ctx, TRIANGLE), TRIANGLE);
+        assert_eq!(dur(&ctx, SIDEBAR), SIDEBAR);
+        assert_eq!(dur(&ctx, QUICK_LOOK), QUICK_LOOK);
+        apply(&ctx, true);
+        assert_eq!(dur(&ctx, TRIANGLE), 0.0);
+        assert_eq!(dur(&ctx, SIDEBAR), 0.0);
+        assert_eq!(dur(&ctx, QUICK_LOOK), 0.0);
     }
 }

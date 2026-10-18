@@ -147,6 +147,7 @@ impl QuickSearch {
                         media: &mut s.media,
                         sizes: &s.sizes,
                         keys: true,
+                        style: s.settings.style,
                     };
                     // Task 76: the results' sort and columns as in a search tab.
                     crate::search_columns::prepare(ui.ctx(), pane.tab_mut(), &cx);

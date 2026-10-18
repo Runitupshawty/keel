@@ -241,6 +241,7 @@ fn media_view_draws_tiles_and_requests_visible_sidecars() {
                     sizes: &Default::default(),
                     keys: true,
                     views: &mut Default::default(),
+                    style: crate::design::Style::Classic,
                 };
                 super::ui(p, (0, 0), &mut tab, &mut cx, &mut Vec::new());
             });
@@ -407,6 +408,7 @@ fn media_grid_perf() {
                         sizes: &Default::default(),
                         keys: true,
                         views: &mut Default::default(),
+                        style: crate::design::Style::Classic,
                     };
                     super::ui(ui, (0, 0), &mut s.tab, &mut cx, &mut Vec::new());
                 },

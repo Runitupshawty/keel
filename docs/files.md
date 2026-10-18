@@ -733,6 +733,8 @@ Settings → **Appearance** sets how the window is drawn; the color theme (below
 
 The design tokens (spacing, radii, row heights, type scale, the eight Finder tag colors red, orange, yellow, green, blue, purple, gray and none, and the semantic colors for light and dark) are in [design.rs](../crates/keel-app/src/design.rs). Tests hold Classic to egui's defaults and check the contrast of all four token sets (Finder and Classic, light and dark): text 4.5:1, secondary text 4.5:1, tertiary text and the focus ring 3:1, text on the selection 4.5:1.
 
+In Finder-style, state changes get short ease-out animations: the list view's disclosure triangle turns over 150 ms when a folder expands or collapses, a sidebar section's height eases over 200 ms when it hides or shows, and the Quick Look window fades in over 150 ms; **Reduce motion** (Settings → General) makes all of them instant, and Classic has none of them.
+
 ## Window and toolbar
 
 In **Finder-style** the window has one toolbar, and it is the title bar. Its items, left to right as in Finder:

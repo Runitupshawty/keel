@@ -76,6 +76,8 @@ pub struct ViewCx<'a> {
     pub keys: bool,
     /// Task 66: Icon view options and per-folder view memory (settings `[views]`).
     pub views: &'a mut crate::view_prefs::ViewPrefs,
+    /// Task 68: the appearance style (the Finder motion is off in Classic).
+    pub style: crate::design::Style,
 }
 
 impl Pane {

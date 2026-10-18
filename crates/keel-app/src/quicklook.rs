@@ -37,6 +37,8 @@ struct Sharp {
 #[derive(Default)]
 pub struct QuickLook {
     pub open: bool,
+    /// When the window opened (Task 68: the fade-in's start).
+    opened_at: Option<f64>,
     /// Fills the window (and makes the window full screen).
     pub full: bool,
     /// Several items selected: the one shown alone (None: the index sheet).
@@ -57,6 +59,7 @@ impl QuickLook {
     pub fn close(&mut self, ctx: &egui::Context) {
         self.set_full(ctx, false);
         self.open = false;
+        self.opened_at = None;
         self.item = None;
         self.sharp = None;
         self.player = None;
@@ -189,6 +192,9 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
     if !s.finder.quicklook.open {
         return;
     }
+    if s.finder.quicklook.opened_at.is_none() {
+        s.finder.quicklook.opened_at = Some(ctx.input(|i| i.time));
+    }
     let p = s.active;
     let sel = selection(s);
     {
@@ -211,7 +217,10 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
     let mut window = egui::Window::new("Quick Look")
         .id(Id::new(if full { "keel-ql-full" } else { "keel-ql" }))
         .title_bar(false)
-        .collapsible(false);
+        .collapsible(false)
+        // Task 68: the window fades in over `anim::QUICK_LOOK` (Finder; Reduce motion:
+        // instant), not egui's shorter default.
+        .fade_in(false);
     window = if full {
         window.fixed_rect(screen).resizable(false)
     } else {
@@ -233,7 +242,7 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
         ql.player = None;
     }
     let (mut close, mut full_toggle, mut play) = (false, false, false);
-    window.show(ctx, |ui| {
+    let resp = window.show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if button(ui, "Close", "Close (Space or Esc)") {
@@ -337,6 +346,26 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
             preview.ui(ui, muted);
         });
     });
+    // Task 68: the window fades in (Finder; Reduce motion: instant).
+    let dur = (s.settings.style == crate::design::Style::Finder)
+        .then(|| crate::anim::dur(ctx, crate::anim::QUICK_LOOK))
+        .unwrap_or(0.0);
+    let since = ql.opened_at.unwrap_or_else(|| ctx.input(|i| i.time));
+    let t = crate::anim::at(
+        0.0,
+        1.0,
+        (ctx.input(|i| i.time) - since).max(0.0) as f32,
+        dur,
+    );
+    if t < 1.0 {
+        ctx.request_repaint();
+        let a = ((1.0 - t) * 255.0).round() as u8;
+        ctx.layer_painter(egui::Layer::Background).rect_filled(
+            resp.response.rect,
+            0.0,
+            ctx.style().visuals.window_fill.add_alpha(a),
+        );
+    }
     if play {
         if let Some(e) = shown.as_ref().filter(|_| video) {
             match &mut ql.player {

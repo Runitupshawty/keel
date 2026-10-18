@@ -6,6 +6,8 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
+- Finder-style motion: the list view's disclosure triangle turns over 150 ms when a folder expands or collapses, sidebar sections ease their height over 200 ms when they hide or show, and the Quick Look window fades in over 150 ms; all instant with **Reduce motion** (Settings → General), none in Classic. See [Appearance](docs/files.md#appearance).
+
 - The Disk Usage window's **File Watcher**: after a scan its folders are watched and new, changed and removed files and folders reach the tree, totals, file types and chart as they happen (what is open and selected stays). A **Changes** tab lists the changes, newest first, with a regular-expression path filter; **Pause watching** holds them until resumed and **Clear changes** empties the list; **Watch for changes** turns it off. `keel_vfs::du::Tree::apply_changes` and `du::watch`. See [The Disk Usage window](docs/files.md#the-disk-usage-window).
 - Disk usage **Scan priority** (Options: Normal, Low, Background): the scan's threads run at a lower CPU and I/O priority (Windows thread priority and I/O priority hints, Linux nice and I/O class, macOS quality of service and I/O policy); `ScanOptions::priority`, `[disk_usage] priority`.
 - **Relaunch elevated** in the Disk Usage window (Windows) when folders refused access: starts Keel as administrator, after the prompt, scanning the same folders (`--du-scan`); never automatic.
