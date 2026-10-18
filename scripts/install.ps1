@@ -98,7 +98,9 @@ function Set-EfuAssociation([string]$Exe, [bool]$On) {
     $key = Get-Item $ext -ErrorAction SilentlyContinue
     if ($key -and $key.GetValue('') -eq $EfuProgId) {
       # Back to no default (another program's ProgID in OpenWithProgids still offers itself).
-      Remove-ItemProperty $ext -Name '(default)' -ErrorAction SilentlyContinue
+      # Remove-ItemProperty cannot delete a key's default value; the registry API can.
+      $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(($ext -replace '^HKCU:\\', ''), $true)
+      if ($k) { $k.DeleteValue('', $false); $k.Close() }
     }
     $key = Get-Item $ext -ErrorAction SilentlyContinue
     $empty = $key -and $key.ValueCount -eq 0 -and $key.SubKeyCount -le 1 -and
