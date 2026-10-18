@@ -957,6 +957,11 @@ err_scope = "\"{title}\" funciona para {scope}: nada de lo seleccionado es uno d
 err_too_many = "Son más de {n} ejecuciones: elige menos carpetas"
 err_no_command = "\"{title}\" no tiene línea de comandos (Ajustes → Limpiezas)"
 
+[disk_usage]
+phones_and_cameras = "Teléfonos y cámaras"
+looking_for_devices = "Buscando dispositivos…"
+double_click_to_scan = "Haz doble clic para analizar {name}"
+
 [net_index]
 search_my_files = "Buscar mis archivos"
 search_my_files_tip = "Este dispositivo puede buscar tus archivos por nombre: ve rutas, tamaños y fechas, nunca su contenido. Solo abre lo que compartes con él. Desactivado por defecto; al desactivarlo se aplica al instante."

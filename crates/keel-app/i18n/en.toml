@@ -859,6 +859,12 @@ err_scope = "\"{title}\" works for {scope}: nothing selected is one"
 err_too_many = "That is more than {n} runs: pick fewer folders"
 err_no_command = "\"{title}\" has no command line (Settings → Cleanups)"
 
+# The Disk Usage window's Select drives dialog.
+[disk_usage]
+phones_and_cameras = "Phones and cameras"
+looking_for_devices = "Looking for devices…"
+double_click_to_scan = "Double-click to scan {name}"
+
 [net_index]
 search_my_files = "Search my files"
 search_my_files_tip = "This device may search your files by name: it sees paths, sizes and dates, never what is inside. It opens only what you share with it. Off by default; turning it off takes effect at once."
