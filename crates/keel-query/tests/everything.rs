@@ -1941,7 +1941,10 @@ fn fn_filelist_filename_and_full_path() {
     check!("filelist-filename:media", ["song one.mp3"]);
     check!("filelist-filename:*.txt", ["photo.jpg"]);
     check!("filelist-filename:\"Photos 2026.txt\"", ["photo.jpg"]);
-    check!("filelist-full-path:d:\\lists", ["photo.jpg", "song one.mp3"]);
+    check!(
+        "filelist-full-path:d:\\lists",
+        ["photo.jpg", "song one.mp3"]
+    );
     // Forward slashes in the list's path read as backslashes.
     check!("filelist-full-path:\"D:\\lists\\Photos\"", ["photo.jpg"]);
     check!("filelist-filename: ext:mp3", ["song one.mp3"]);

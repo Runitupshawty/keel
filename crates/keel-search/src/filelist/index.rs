@@ -72,10 +72,9 @@ impl Inner {
         let mut read = Vec::with_capacity(todo.len());
         for (root, now) in todo {
             let path = PathBuf::from(&root.path);
-            let label = path.file_name().map_or_else(
-                || root.path.clone(),
-                |n| n.to_string_lossy().into_owned(),
-            );
+            let label = path
+                .file_name()
+                .map_or_else(|| root.path.clone(), |n| n.to_string_lossy().into_owned());
             let (searcher, error) = match read_file(&path, &self.limits) {
                 Ok(list) => (
                     Some(Arc::new(

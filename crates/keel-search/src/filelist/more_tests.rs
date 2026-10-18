@@ -64,10 +64,21 @@ const LIST: &str = concat!(
 
 #[test]
 fn queries_that_need_the_language() {
-    for plain in ["", "report", "*.pdf", "folder:", "in:/data", "regex:^a", "C:\\x y"] {
+    for plain in [
+        "", "report", "*.pdf", "folder:", "in:/data", "regex:^a", "C:\\x y",
+    ] {
         assert!(!wants_language(plain), "{plain}");
     }
-    for lang in ["size:>1", "a|b", "!a", "<a b>", "ext:pdf", "case:A", "dm:2024", "filelist:a"] {
+    for lang in [
+        "size:>1",
+        "a|b",
+        "!a",
+        "<a b>",
+        "ext:pdf",
+        "case:A",
+        "dm:2024",
+        "filelist:a",
+    ] {
         assert!(wants_language(lang), "{lang}");
     }
     // An unknown function stays text for the index syntax; a bad value is the language's.
@@ -78,14 +89,26 @@ fn queries_that_need_the_language() {
 #[test]
 fn a_list_is_searched_with_the_whole_language() {
     let s = FileListSearcher::new("test.efu", efu(LIST)).with_source("/lists/test.efu");
-    assert_eq!(names(&s, "size:>15"), ["report", "annual report.PDF", "notes.txt"]);
-    assert_eq!(names(&s, "ext:pdf;txt size:<35"), ["annual report.PDF", "report.pdf"]);
+    assert_eq!(
+        names(&s, "size:>15"),
+        ["report", "annual report.PDF", "notes.txt"]
+    );
+    assert_eq!(
+        names(&s, "ext:pdf;txt size:<35"),
+        ["annual report.PDF", "report.pdf"]
+    );
     assert_eq!(names(&s, "report !pdf"), ["report", "Reports"]);
-    assert_eq!(names(&s, "notes | annual"), ["annual report.PDF", "notes.txt"]);
+    assert_eq!(
+        names(&s, "notes | annual"),
+        ["annual report.PDF", "notes.txt"]
+    );
     assert_eq!(names(&s, "dm:2026"), ["annual report.PDF"]);
     assert_eq!(names(&s, "attrib:R"), ["annual report.PDF"]);
     assert_eq!(names(&s, "attrib:D"), ["Reports"]);
-    assert_eq!(names(&s, "filelist:\"notes.txt|REPORT\""), ["report", "notes.txt"]);
+    assert_eq!(
+        names(&s, "filelist:\"notes.txt|REPORT\""),
+        ["report", "notes.txt"]
+    );
     assert_eq!(names(&s, "filelist-filename:test.efu").len(), 5);
     assert_eq!(names(&s, "filelist-full-path:lists ext:txt"), ["notes.txt"]);
     assert!(names(&s, "filelist-filename:other.efu").is_empty());
@@ -132,10 +155,18 @@ fn sidecars_give_a_folders_files_properties() {
     );
     let s = Sidecar::parse(text.as_bytes(), Some("c:/photos/"), &Limits::default()).unwrap();
     assert_eq!(s.columns, ["Rating", "Tags", "Comment"]);
-    assert_eq!(s.len(), 2, "c.jpg is in another folder, d.jpg below, `..` is no file");
+    assert_eq!(
+        s.len(),
+        2,
+        "c.jpg is in another folder, d.jpg below, `..` is no file"
+    );
     assert_eq!(
         s.properties("A.jpg"),
-        [("Rating", "5"), ("Tags", "holiday;beach"), ("Comment", "first comment")]
+        [
+            ("Rating", "5"),
+            ("Tags", "holiday;beach"),
+            ("Comment", "first comment")
+        ]
     );
     assert_eq!(s.property("b.jpg", "comment"), Some("the \"best\" one"));
     assert_eq!(s.property("b.jpg", "Tags"), None);
@@ -187,7 +218,12 @@ fn merge_joins_columns_and_remove_duplicates_keeps_the_first() {
     merge(&mut a, b, &Limits::default()).unwrap();
     assert_eq!(a.columns, ["Rating", "Album"]);
     let rows: Vec<(&str, Vec<&str>)> = (a.entries.iter())
-        .map(|e| (e.path.as_str(), e.extra.iter().map(String::as_str).collect()))
+        .map(|e| {
+            (
+                e.path.as_str(),
+                e.extra.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
     assert_eq!(
         rows,
@@ -260,7 +296,13 @@ fn add_paths_lists_folders_with_everything_below() {
     assert_eq!(n, 5);
     assert_eq!(
         rel(&d, &list),
-        ["music/", "music/a.mp3", "music/live/", "music/live/b.mp3", "notes.txt"]
+        [
+            "music/",
+            "music/a.mp3",
+            "music/live/",
+            "music/live/b.mp3",
+            "notes.txt"
+        ]
     );
     assert_eq!(list.entries[4].size, Some(3));
     let small = Limits {
@@ -281,9 +323,16 @@ fn update_walks_the_listed_folders_again() {
         columns: vec!["Rating".into()],
         ..FileList::default()
     };
-    add_paths(&mut list, &[d.0.join("music"), notes.clone()], &Limits::default()).unwrap();
+    add_paths(
+        &mut list,
+        &[d.0.join("music"), notes.clone()],
+        &Limits::default(),
+    )
+    .unwrap();
     // A rating on a.mp3, and a listed file and folder that are not there.
-    let a = (list.entries.iter_mut()).find(|e| e.path.ends_with("a.mp3")).unwrap();
+    let a = (list.entries.iter_mut())
+        .find(|e| e.path.ends_with("a.mp3"))
+        .unwrap();
     a.extra = vec!["5".into()];
     list.entries.push(Entry {
         path: d.path("offline/x.mp3"),
@@ -355,10 +404,17 @@ fn file_lists_in_the_index_are_read_and_reloaded() {
     let d = TempDir::new("index");
     let one = d.file("one.efu", b"Filename,Size\n/m/alpha.mp3,1\n/m/beta.mp3,2\n");
     let two = d.file("two.txt", b"/t/alpha.txt\n");
-    let (one_s, two_s) = (one.to_string_lossy().into_owned(), two.to_string_lossy().into_owned());
+    let (one_s, two_s) = (
+        one.to_string_lossy().into_owned(),
+        two.to_string_lossy().into_owned(),
+    );
     let bad = d.path("missing.efu");
     let lists = FileListIndexes::new(
-        &settings(&[(one_s.as_str(), true), (two_s.as_str(), false), (bad.as_str(), true)]),
+        &settings(&[
+            (one_s.as_str(), true),
+            (two_s.as_str(), false),
+            (bad.as_str(), true),
+        ]),
         Limits::default(),
     );
     assert!(!lists.available(), "nothing read before a refresh");
@@ -400,11 +456,12 @@ fn file_lists_are_added_to_any_backend() {
     // The backend is down: the lists answer, and the state says so.
     assert_eq!(names(&with, "alpha"), ["alpha.mp3"]);
     assert_eq!(with.state(), crate::SearchState::Ready);
-    assert!(with.query(&Query {
-        text: "missing".into(),
-        ..Query::default()
-    })
-    .is_err());
+    assert!(with
+        .query(&Query {
+            text: "missing".into(),
+            ..Query::default()
+        })
+        .is_err());
     // The backend's name, and what it covers.
     assert_eq!(with.name(), "Search");
     assert!(with.covers(Path::new("/m")));

@@ -136,7 +136,12 @@ impl FileListSearcher {
                 continue;
             }
             if let Some(within) = &within {
-                if !entry.path.replace('\\', "/").to_lowercase().starts_with(within) {
+                if !entry
+                    .path
+                    .replace('\\', "/")
+                    .to_lowercase()
+                    .starts_with(within)
+                {
                     continue;
                 }
             }

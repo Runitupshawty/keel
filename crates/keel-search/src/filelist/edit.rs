@@ -12,7 +12,9 @@ use super::{CreateOptions, Entry, FileList, Limits};
 
 /// Paths compare with `/` as `\`, without trailing separators and without regard to case.
 fn key(path: &str) -> String {
-    path.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    path.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
 }
 
 /// Whether `path` (a [`key`]) is below the folder `dir` (a [`key`]).
@@ -80,10 +82,14 @@ pub fn add_paths(list: &mut FileList, paths: &[PathBuf], limits: &Limits) -> any
         added.entries.push(entry);
         if is_dir {
             let room = Limits {
-                max_rows: limits.max_rows.saturating_sub(list.entries.len() + added.entries.len()),
+                max_rows: limits
+                    .max_rows
+                    .saturating_sub(list.entries.len() + added.entries.len()),
                 ..*limits
             };
-            added.entries.extend(create(path, &CreateOptions::default(), &room)?.entries);
+            added
+                .entries
+                .extend(create(path, &CreateOptions::default(), &room)?.entries);
         }
         if list.entries.len() + added.entries.len() > limits.max_rows {
             bail!("more than {} entries", limits.max_rows);
@@ -129,9 +135,7 @@ pub struct Updated {
 /// follows the list's: each folder's walk takes the place of its first entry.
 pub fn update(list: &FileList, limits: &Limits) -> anyhow::Result<(FileList, Updated)> {
     let mut stats = Updated::default();
-    let roots: Vec<(String, String)> = (roots(list).into_iter())
-        .map(|p| (key(&p), p))
-        .collect();
+    let roots: Vec<(String, String)> = (roots(list).into_iter()).map(|p| (key(&p), p)).collect();
     let extras: HashMap<String, &Vec<String>> = (list.entries.iter())
         .filter(|e| e.extra.iter().any(|v| !v.is_empty()))
         .map(|e| (key(&e.path), &e.extra))
@@ -172,7 +176,8 @@ pub fn update(list: &FileList, limits: &Limits) -> anyhow::Result<(FileList, Upd
                                 ..*limits
                             };
                             let below_root = create(dir, &CreateOptions::default(), &room)?;
-                            out.entries.extend(below_root.entries.into_iter().map(fresh));
+                            out.entries
+                                .extend(below_root.entries.into_iter().map(fresh));
                         }
                         None => {
                             stats.missing += 1;

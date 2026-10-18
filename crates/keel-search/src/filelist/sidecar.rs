@@ -14,7 +14,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context};
 
-use super::{read, ListKind, Limits};
+use super::{read, Limits, ListKind};
 
 /// The sidecar's file name.
 pub const SIDECAR_NAME: &str = ".metadata.efu";
@@ -44,7 +44,9 @@ fn key(name: &str) -> String {
 
 /// `path` with `/` as `\` and no trailing separator, lower case: for comparing folders.
 fn folder_key(path: &str) -> String {
-    path.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    path.replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
 }
 
 impl Sidecar {

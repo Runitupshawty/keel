@@ -341,6 +341,6 @@ fn read_lines(mut r: impl BufRead, comments: bool, limits: &Limits) -> anyhow::R
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod more_tests;
+#[cfg(test)]
+mod tests;
