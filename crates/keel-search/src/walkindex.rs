@@ -832,9 +832,9 @@ impl Tree for Table {
 
     fn find(&self, path: &str) -> Option<NodeId> {
         #[cfg(windows)]
-        let path = Cow::Borrowed(path);
+        let path: Cow<str> = Cow::Borrowed(path);
         #[cfg(not(windows))]
-        let path = Cow::Owned(path.replace('\\', "/"));
+        let path: Cow<str> = Cow::Owned(path.replace('\\', "/"));
         self.lookup(Path::new(&*path)).map(NodeId::from)
     }
 }
