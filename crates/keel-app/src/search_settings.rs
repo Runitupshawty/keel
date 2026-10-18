@@ -1,13 +1,17 @@
 //! Settings → Search index: the folders and volumes Keel's own index walks (FAT, exFAT,
-//! ReFS, removable and network drives, any folder), how each is kept current, and the
-//! Exclude rules (`keel_search::IndexSettings`, `[search_index]` in config.toml).
+//! ReFS, removable and network drives, any folder), how each is kept current, the
+//! Exclude rules, the journal, the indexed properties and the run history
+//! (`keel_search::IndexSettings`, `[search_index]` in config.toml).
 //! Edits are applied with **Apply**, so typing a wildcard does not rebuild an index per
 //! keystroke.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use keel_search::{split_list, FolderRoot, IndexSettings, ScanOptions, Schedule, VolumeRoot};
+use keel_search::{
+    split_list, FileListRoot, FolderRoot, IndexSettings, IndexedProperty, ScanOptions, Schedule,
+    VolumeRoot,
+};
 
 use crate::a11y::Named;
 use crate::i18n::tr;
@@ -19,6 +23,10 @@ pub enum Tab {
     Volumes,
     Exclude,
     Journal,
+    Properties,
+    RunHistory,
+    /// Task 77: file lists searched with the index.
+    FileLists,
 }
 
 /// The page's state between frames.
@@ -29,10 +37,16 @@ pub struct SearchPage {
     draft: Option<(IndexSettings, IndexSettings)>,
     new_folder: String,
     new_volume: String,
+    new_list: String,
+    /// A file list picked with Browse… (on a worker), for `new_list`.
+    picked: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
     /// Text of the `;`-separated list fields and times as typed, by field id.
     texts: HashMap<String, String>,
     /// Folders and volumes the backend reports offline (set before each frame).
     pub offline: Vec<PathBuf>,
+    new_property: String,
+    /// What the last **Clear** of the run history said.
+    cleared: Option<String>,
 }
 
 impl SearchPage {
@@ -202,6 +216,21 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
             Tab::Journal,
             tr("search_settings.tab_journal"),
         );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::Properties,
+            tr("search_settings.tab_properties"),
+        );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::RunHistory,
+            tr("search_settings.tab_run_history"),
+        );
+        ui.selectable_value(
+            &mut page.tab,
+            Tab::FileLists,
+            tr("search_settings.tab_file_lists"),
+        );
     });
     ui.separator();
     egui::ScrollArea::vertical()
@@ -211,6 +240,9 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, page:
             Tab::Volumes => volumes(ui, &mut draft, page),
             Tab::Exclude => exclude(ui, &mut draft, page),
             Tab::Journal => journal(ui, &mut draft),
+            Tab::Properties => properties(ui, &mut draft, page),
+            Tab::RunHistory => run_history(ui, &mut draft, page),
+            Tab::FileLists => file_lists(ui, &mut draft, page),
         });
     ui.separator();
     ui.horizontal(|ui| {
@@ -406,6 +438,72 @@ fn exclude(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
     ui.weak(tr("search_settings.lists_note"));
 }
 
+/// The File lists tab: file lists (EFU, TXT, CSV, ...) whose entries are searched with the
+/// index, each read again when its file changes unless **Monitor changes** is off.
+fn file_lists(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
+    ui.label(tr("search_settings.file_lists_intro"));
+    ui.add_space(4.0);
+    let mut remove = None;
+    for (i, l) in d.file_lists.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(&l.path).truncate());
+            ui.checkbox(&mut l.monitor, tr("search_settings.monitor_changes"))
+                .on_hover_text(tr("search_settings.monitor_list_tip"));
+            if ui.button(tr("search_settings.remove_file_list")).clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        d.file_lists.remove(i);
+    }
+    if d.file_lists.is_empty() {
+        ui.weak(tr("search_settings.no_file_lists_yet"));
+    }
+    ui.horizontal(|ui| {
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut page.new_list)
+                .hint_text(r"D:\Lists\music.efu")
+                .desired_width(280.0),
+        );
+        let _ = r.named(tr("search_settings.new_file_list"));
+        if let Some(p) = page.picked.lock().take() {
+            page.new_list = p;
+        }
+        if ui.button(tr("search_settings.browse")).clicked() {
+            let title = tr("search_settings.pick_file_list").to_owned();
+            let filter = tr("filelist_editor.filter_lists").to_owned();
+            let (slot, ctx) = (page.picked.clone(), ui.ctx().clone());
+            crate::worker::spawn("keel-pick-file-list", move || {
+                let picked = crate::platform::file_dialog(&title, |dlg| {
+                    dlg.add_filter(&filter, crate::filelist_ui::OPEN_EXTENSIONS)
+                        .pick_file()
+                });
+                if let Some(p) = picked {
+                    *slot.lock() = Some(p.display().to_string());
+                    ctx.request_repaint();
+                }
+            });
+        }
+        let path = page.new_list.trim().to_owned();
+        let known = d.file_lists.iter().any(|l| l.path == path);
+        if ui
+            .add_enabled(
+                !path.is_empty() && !known,
+                egui::Button::new(tr("search_settings.add_file_list")),
+            )
+            .clicked()
+        {
+            d.file_lists.push(FileListRoot {
+                path,
+                ..FileListRoot::default()
+            });
+            page.new_list.clear();
+        }
+    });
+    ui.weak(tr("search_settings.file_lists_note"));
+}
+
 /// The Journal tab: the index journal on or off, and its size.
 fn journal(ui: &mut egui::Ui, d: &mut IndexSettings) {
     let j = &mut d.journal;
@@ -425,10 +523,200 @@ fn journal(ui: &mut egui::Ui, d: &mut IndexSettings) {
     ui.weak(tr("search_settings.journal_note"));
 }
 
+/// The Properties tab (Everything 1.5's): which properties the idle job reads into the
+/// property store, for which files.
+fn properties(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
+    ui.label(tr("search_settings.properties_intro"));
+    ui.add_space(4.0);
+    let p = &mut d.properties;
+    let mut remove = None;
+    egui::Grid::new("search-properties")
+        .num_columns(3)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            for (i, prop) in p.properties.iter_mut().enumerate() {
+                ui.label(egui::RichText::new(&prop.name).monospace());
+                ui.checkbox(&mut prop.fast_sort, tr("search_settings.fast_sort"))
+                    .on_hover_text(tr("search_settings.fast_sort_tip"));
+                if ui.button(tr("search_settings.remove_property")).clicked() {
+                    remove = Some(i);
+                }
+                ui.end_row();
+            }
+        });
+    if let Some(i) = remove {
+        p.properties.remove(i);
+    }
+    if p.properties.is_empty() {
+        ui.weak(tr("search_settings.no_properties_yet"));
+    }
+    ui.horizontal(|ui| {
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut page.new_property)
+                .hint_text("artist, width, sha256, System.Photo.FNumber")
+                .desired_width(280.0),
+        );
+        let _ = r.named(tr("search_settings.new_property"));
+        let name = page.new_property.trim().to_owned();
+        let known = keel_search::propindex::is_property_name(&name);
+        let dupe = (p.properties.iter()).any(|x| x.name.eq_ignore_ascii_case(&name));
+        if ui
+            .add_enabled(
+                known && !dupe,
+                egui::Button::new(tr("search_settings.add_property")),
+            )
+            .clicked()
+        {
+            p.properties.push(IndexedProperty {
+                name,
+                fast_sort: false,
+            });
+            page.new_property.clear();
+        } else if !name.is_empty() && !known {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                tr("search_settings.unknown_property"),
+            );
+        }
+    });
+    ui.add_space(4.0);
+    egui::Grid::new("search-properties-rules")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            let t = &mut page.texts;
+            list_field(
+                ui,
+                t,
+                "props-include-only-folders",
+                tr("search_settings.include_only_folders"),
+                r"C:\Music; D:\Photos",
+                &mut p.include_only_folders,
+            );
+            list_field(
+                ui,
+                t,
+                "props-exclude-folders",
+                tr("search_settings.exclude_folders"),
+                r"node_modules; *\cache",
+                &mut p.exclude_folders,
+            );
+            list_field(
+                ui,
+                t,
+                "props-include-only-files",
+                tr("search_settings.include_only_files"),
+                "*.mp3; *.flac; *.jpg",
+                &mut p.include_only_files,
+            );
+            list_field(
+                ui,
+                t,
+                "props-exclude-files",
+                tr("search_settings.exclude_files"),
+                "*.tmp; ~$*",
+                &mut p.exclude_files,
+            );
+            let label = ui.label(tr("search_settings.max_file_size"));
+            let r = ui.add(
+                egui::DragValue::new(&mut p.max_file_mb)
+                    .range(0..=1_048_576)
+                    .suffix(" MB"),
+            );
+            let _ = r
+                .labelled_by(label.id)
+                .on_hover_text(tr("search_settings.max_file_size_tip"));
+            ui.end_row();
+        });
+    ui.checkbox(
+        &mut p.exclude_recall_on_data_access,
+        tr("search_settings.exclude_recall"),
+    )
+    .on_hover_text(tr("search_settings.exclude_recall_tip"));
+    ui.checkbox(
+        &mut p.exclude_not_content_indexed,
+        tr("search_settings.exclude_not_content_indexed"),
+    );
+    ui.add_space(4.0);
+    let st = keel_search::propindex::status();
+    let state = if !st.running {
+        tr("search_settings.properties_off")
+    } else if st.paused {
+        tr("search_settings.properties_paused")
+    } else if st.walking || st.pending > 0 {
+        tr("search_settings.properties_reading")
+    } else {
+        tr("search_settings.properties_current")
+    };
+    ui.weak(
+        tr("search_settings.properties_status")
+            .replace("{state}", state)
+            .replace("{stored}", &st.stored.to_string())
+            .replace("{read}", &st.read.to_string()),
+    );
+    if st.running {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
+    }
+}
+
+/// The Run history tab: counting opens on or off, and clearing them.
+fn run_history(ui: &mut egui::Ui, d: &mut IndexSettings, page: &mut SearchPage) {
+    ui.checkbox(
+        &mut d.run_history.enabled,
+        tr("search_settings.keep_run_history"),
+    )
+    .on_hover_text(tr("search_settings.keep_run_history_tip"));
+    if let Some(store) = keel_search::runs::global() {
+        ui.weak(tr("search_settings.run_history_count").replace("{n}", &store.len().to_string()));
+    }
+    ui.horizontal(|ui| {
+        if ui
+            .button(tr("search_settings.clear_run_history"))
+            .on_hover_text(tr("search_settings.clear_run_history_tip"))
+            .clicked()
+        {
+            page.cleared = Some(match keel_search::runs::clear() {
+                Ok(()) => tr("search_settings.run_history_cleared").to_owned(),
+                Err(e) => format!("{e:#}"),
+            });
+        }
+        if let Some(text) = &page.cleared {
+            ui.weak(text.as_str());
+        }
+    });
+    ui.weak(tr("search_settings.run_history_note"));
+}
+
+/// What the property job walks when the Properties tab names no include-only folder: the
+/// home folder and the Folders and Volumes of this page.
+pub fn property_roots(settings: &IndexSettings) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = keel_search::home_root().into_iter().collect();
+    roots.extend(settings.folders.iter().map(|f| PathBuf::from(&f.path)));
+    roots.extend(
+        (settings.volumes.iter())
+            .filter(|v| v.include)
+            .map(|v| PathBuf::from(&v.root)),
+    );
+    roots
+}
+
 /// Hands Settings → Search index to the search backend on a worker (it may list volumes and
-/// open or close indexes), and the journal settings to the index journal.
+/// open or close indexes), the journal settings to the index journal, the run history's
+/// to the run history and the Properties tab to the property job.
 pub fn push(searcher: Option<std::sync::Arc<dyn keel_search::Searcher>>, settings: &IndexSettings) {
     keel_search::journal::configure(&settings.journal);
+    keel_search::runs::configure(&settings.run_history);
+    // The property job pauses on battery like the library's background jobs.
+    keel_search::propindex::set_battery_probe(Some(keel_core::on_battery));
+    {
+        let props = settings.properties.clone();
+        let roots = property_roots(settings);
+        // Starting or stopping the job waits for the old one: off the UI thread.
+        let _ = std::thread::Builder::new()
+            .name("keel-props-settings".into())
+            .spawn(move || keel_search::propindex::configure(&props, &roots, true));
+    }
     let Some(searcher) = searcher else {
         return;
     };

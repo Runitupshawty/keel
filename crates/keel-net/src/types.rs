@@ -204,6 +204,15 @@ pub trait Handler: Send + Sync {
         let _ = (peer, page);
         anyhow::bail!("this device does not sync a library")
     }
+    /// Network indexes: runs a paired device's search of this device's own files (the
+    /// system index) and returns at most `query.max` hits: paths, sizes and dates, never
+    /// contents. Blocking. The node checks the device's **Search my files** grant, bounds
+    /// the query and the reply, limits the rate and times the search out; `open` is kept
+    /// only where a share of this device covers the hit. The default searches nothing.
+    fn search(&self, ctx: &RequestCtx, query: &SearchQuery) -> Result<Vec<SearchHit>> {
+        let _ = (ctx, query);
+        anyhow::bail!("this device does not search its files")
+    }
     /// The op log hook: what the node handled itself for `ctx`'s device (`drop-offer`,
     /// `drop-received`, `drop-cancel`), with whether it went through.
     fn log(&self, ctx: &RequestCtx, op: &str, payload: serde_json::Value, ok: bool) {
@@ -229,6 +238,49 @@ pub struct EntryInfo {
 }
 /// Most entries one `Response::Entries` page carries (keeps it under the header limit).
 pub const PAGE_LIMIT: u32 = 500;
+
+/// Network indexes: most hits one `Request::Search` returns.
+pub const SEARCH_MAX: u32 = 1_000;
+/// Network indexes: the longest query text, in bytes.
+pub const SEARCH_TEXT_MAX: usize = 1_024;
+/// Network indexes: the longest hit path, in bytes (longer hits are left out).
+pub const SEARCH_PATH_MAX: usize = 4_096;
+
+/// Network indexes: what a paired device asks this device's system index (Everything's
+/// search options). `max` is capped at `SEARCH_MAX`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchQuery {
+    pub text: String,
+    pub max: u32,
+    pub match_case: bool,
+    pub whole_word: bool,
+    pub match_path: bool,
+    pub match_diacritics: bool,
+    pub regex: bool,
+    pub folders_only: bool,
+}
+
+/// Network indexes: one hit of a remote search. `path` is the host's own full path (for
+/// display); `modified` is in unix seconds; `open` is `(source id, path inside it)` when a
+/// share of the host covers the hit, so it opens as `node://<host>/<source>/<path>`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: Option<i64>,
+    #[serde(default)]
+    pub open: Option<(String, String)>,
+}
+
+/// Network indexes: a remote search's answer (`Node::search`): `more` when the host had
+/// more hits than it returned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchResult {
+    pub hits: Vec<SearchHit>,
+    pub more: bool,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
@@ -311,6 +363,13 @@ pub enum Request {
         #[serde(default)]
         styles: bool,
     },
+    /// Network indexes: search the host's system index (`Handler::search`). Answered
+    /// `Response::Hits` only when the host gave the asking device **Search my files**
+    /// (`Node::set_search_grant`); `Response::Denied` otherwise, or when the query is too
+    /// long, the device searches too often or has a search under way.
+    Search {
+        query: SearchQuery,
+    },
 }
 impl Request {
     pub(crate) fn name(&self) -> &'static str {
@@ -330,6 +389,7 @@ impl Request {
             Self::DropStatus { .. } => "drop-status",
             Self::DropCancel { .. } => "drop-cancel",
             Self::SyncPull { .. } => "sync-pull",
+            Self::Search { .. } => "search",
         }
     }
 }
@@ -365,6 +425,11 @@ pub enum Response {
         /// The host's log (`keel_core::SyncPage::epoch`).
         #[serde(default)]
         epoch: String,
+    },
+    /// Network indexes: at most `SEARCH_MAX` hits; `more` when the host had more.
+    Hits {
+        hits: Vec<SearchHit>,
+        more: bool,
     },
     Denied(String),
     Error(String),

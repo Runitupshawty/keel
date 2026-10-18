@@ -10,6 +10,7 @@ mod everything;
 mod exclude;
 pub mod filelist;
 mod folders;
+mod fswalk;
 /// Fuzz entry points (`fuzz/` and the in-tree runs; docs/fuzzing.md).
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -17,6 +18,7 @@ pub mod fuzz;
 mod fuzzy;
 mod index_settings;
 pub mod journal;
+mod language;
 #[cfg(target_os = "linux")]
 mod locate;
 /// The raw MFT record parser: used by the Windows index, built everywhere for fuzzing.
@@ -25,6 +27,7 @@ mod locate;
 mod mft;
 #[cfg(windows)]
 mod ntfs;
+pub mod propindex;
 /// The index service's wire protocol: used on Windows, built everywhere for fuzzing.
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/proto.rs"]
@@ -35,9 +38,11 @@ mod proto;
 mod raw;
 #[cfg(windows)]
 mod rdcw;
+pub mod runs;
 mod schedule;
 #[cfg(target_os = "macos")]
 mod spotlight;
+pub mod sysindex;
 mod terms;
 mod volumes;
 mod walkindex;
@@ -54,8 +59,11 @@ pub use filelist::FileListSearcher;
 pub use folders::FolderIndexes;
 pub use fuzzy::Fuzzy;
 pub use index_settings::{
-    split_list, ExcludeSettings, FolderRoot, IndexSettings, JournalSettings, ScanOptions, Schedule,
-    VolumeRoot, DEFAULT_JOURNAL_MB,
+    split_list, ExcludeSettings, FileListRoot, FolderRoot, IndexSettings, IndexedProperty,
+    JournalSettings, PropertySettings, ScanOptions, Schedule, VolumeRoot, DEFAULT_JOURNAL_MB,
+};
+pub use language::{
+    backend_query, compile_query, evaluate_hits, Evaluated, HitFilter, EVALUATED_SCAN,
 };
 #[cfg(windows)]
 pub use ntfs::{
@@ -63,6 +71,7 @@ pub use ntfs::{
     run_index_service, run_service, service_state, set_hide_unlistable, uninstall_service,
     NtfsSearcher, ServiceState, FALLBACK_STATUS, FROZEN_STATUS,
 };
+pub use runs::RunHistorySettings;
 pub use schedule::{parse_time_of_day, Clock, SystemClock};
 pub use terms::Highlighter;
 pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};
@@ -79,9 +88,13 @@ use std::time::SystemTime;
 /// Parameters accepted by a search backend.
 #[derive(Clone, Debug)]
 pub struct Query {
+    /// The search language ([`compile_query`]): Everything's syntax, parsed by
+    /// `keel-query`. Keel's own indexes evaluate all of it; Everything gets the text as
+    /// typed.
     pub text: String,
     pub folders_only: bool,
     pub max: u32,
+    /// The whole text is one regular expression.
     pub regex: bool,
     pub match_case: bool,
     /// Match Whole Words: a plain term matches only whole words of the name.
@@ -166,6 +179,13 @@ pub enum SearchState {
 
 /// A pluggable file search backend.
 pub trait Searcher: Send + Sync {
+    /// Whether the backend evaluates the whole search language and every [`Query`] option
+    /// itself (Keel's own indexes do; Everything does with its own, and is asked for the
+    /// text as typed). A backend that does not gets a superset ([`backend_query`]) and its
+    /// hits go through [`evaluate_hits`], or is wrapped in [`Evaluated`].
+    fn unified_query(&self) -> bool {
+        false
+    }
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>>;
     /// The last known state; never blocks.
     fn available(&self) -> bool;
@@ -262,8 +282,23 @@ pub fn default_searcher() -> Box<dyn Searcher> {
 }
 
 /// [`default_searcher`] with the folders and volumes of Settings → Search
-/// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list).
+/// ([`FolderIndexes`], merged with Keel's own index; Everything has its own list), and
+/// the file lists of its File lists tab added to whatever answers
+/// ([`filelist::FileListIndexes`], read on a background thread).
+///
+/// Every backend answers `si:` terms through the Windows Search index
+/// ([`sysindex::SystemIndexed`]).
 pub fn default_searcher_with(settings: &IndexSettings) -> Box<dyn Searcher> {
+    Box::new(sysindex::SystemIndexed::new(Box::new(
+        filelist::WithFileLists::new(
+            base_searcher(settings),
+            filelist::FileListIndexes::open(settings),
+        ),
+    )))
+}
+
+/// [`default_searcher_with`] without the file lists and `si:`.
+fn base_searcher(settings: &IndexSettings) -> Box<dyn Searcher> {
     #[cfg(windows)]
     return match (EverythingSearcher::load(), ntfs::index_dir()) {
         (Ok(everything), dir) => {
@@ -310,11 +345,11 @@ fn with_folders(
 fn unix_searcher() -> Box<dyn Searcher> {
     #[cfg(target_os = "macos")]
     if let Some(searcher) = spotlight::Spotlight::new() {
-        return Box::new(searcher);
+        return Box::new(Evaluated::new(Box::new(searcher)));
     }
     #[cfg(target_os = "linux")]
     if let Some(searcher) = locate::Locate::new() {
-        return Box::new(searcher);
+        return Box::new(Evaluated::new(Box::new(searcher)));
     }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     return walk_index_or(Unavailable::new(
@@ -392,8 +427,10 @@ pub(crate) fn scope(query: &Query) -> (Option<PathBuf>, String) {
 
 /// [`Query::within`] when no typed `in:` takes its place.
 pub(crate) fn pane_folder(query: &Query) -> Option<&Path> {
-    let typed = !query.regex && take_within(&query.text).0.is_some();
-    query.within.as_deref().filter(|_| !typed)
+    query
+        .within
+        .as_deref()
+        .filter(|_| !language::has_typed_in(query))
 }
 
 /// Whether `path` is `dir` or below it, by whole names; Windows ignores case.
@@ -412,13 +449,13 @@ pub fn is_under(path: &Path, dir: &Path) -> bool {
 struct HomeWalk(std::path::PathBuf);
 
 impl Searcher for HomeWalk {
+    fn unified_query(&self) -> bool {
+        true
+    }
+
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
-        let (dir, text) = scope(query);
-        let query = Query {
-            text,
-            ..query.clone()
-        };
-        Ok(walk(dir.as_deref().unwrap_or(&self.0), &query))
+        let dir = language::folder_scope(query)?;
+        try_walk(dir.as_deref().unwrap_or(&self.0), query)
     }
 
     fn available(&self) -> bool {
@@ -438,53 +475,17 @@ pub fn folder_index(searcher: &dyn Searcher) -> anyhow::Result<Vec<String>> {
     Ok(hits.into_iter().map(|hit| hit.path.display()).collect())
 }
 
-/// fd-style name search under `root` with the `ignore` crate (hidden and
-/// git-ignored entries are skipped). Matches a substring of the file name (of the full
-/// path with `match_path`), or the `regex` pattern when `query.regex` (an invalid pattern
-/// finds nothing), case-insensitive unless `match_case`, accents folded unless
-/// `match_diacritics`, whole words with `whole_word`; stops after `query.max` hits.
-/// Blocks on disk IO: worker threads only.
+/// fd-style search under `root` with the `ignore` crate (hidden and git-ignored entries
+/// are skipped), in the shared search language ([`compile_query`]); stops after
+/// `query.max` hits. A query that does not parse finds nothing ([`Searcher::query`] of the
+/// backends reports why). Blocks on disk IO: worker threads only.
 pub fn walk(root: &Path, query: &Query) -> Vec<Hit> {
-    let max = query.max as usize;
-    let mut hits = Vec::new();
-    if max == 0 {
-        return hits;
-    }
-    let pattern = if query.regex {
-        query.text.clone()
-    } else {
-        let src = terms::literal(&query.text, query);
-        match query.whole_word {
-            true => terms::bounded(&src, &query.text),
-            false => src,
-        }
-    };
-    let Ok(matcher) = regex::RegexBuilder::new(&pattern)
-        .case_insensitive(!query.match_case)
-        .build()
-    else {
-        return hits;
-    };
-    for entry in ignore::WalkBuilder::new(root).build().flatten() {
-        if entry.depth() == 0 {
-            continue;
-        }
-        let found = match query.match_path {
-            true => matcher.is_match(&entry.path().to_string_lossy()),
-            false => matcher.is_match(&entry.file_name().to_string_lossy()),
-        };
-        if !found {
-            continue;
-        }
-        match hit_for_path(entry.path()) {
-            Some(hit) if hit.is_dir || !query.folders_only => hits.push(hit),
-            _ => continue,
-        }
-        if hits.len() >= max {
-            break;
-        }
-    }
-    hits
+    try_walk(root, query).unwrap_or_default()
+}
+
+/// [`walk`] with the parse error of a bad query.
+pub(crate) fn try_walk(root: &Path, query: &Query) -> anyhow::Result<Vec<Hit>> {
+    fswalk::walk(root, query)
 }
 
 /// Fills in the size and date of `hits` (from a query run with `meta: false`) from
@@ -519,6 +520,7 @@ fn stat(path: &Path) -> Option<(u64, Option<SystemTime>)> {
     Some((size, meta.modified().ok()))
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn hit_for_path(path: &Path) -> Option<Hit> {
     let metadata = std::fs::metadata(path).ok()?;
     Some(Hit {

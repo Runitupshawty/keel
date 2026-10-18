@@ -49,6 +49,7 @@ struct E {
     links: Option<&'static [&'static str]>,
     streams: Option<&'static [&'static str]>,
     contents: Option<&'static [&'static str]>,
+    list: Option<&'static str>,
 }
 
 thread_local! {
@@ -116,6 +117,9 @@ impl Props for E {
     fn container_file_names(&self) -> Option<Vec<String>> {
         self.contents
             .map(|v| v.iter().map(|s| s.to_string()).collect())
+    }
+    fn file_list(&self) -> Option<Cow<'_, str>> {
+        self.list.map(Cow::Borrowed)
     }
 }
 
@@ -268,12 +272,15 @@ fn tree() -> Vec<E> {
             ..dir("empty", "C:\\fixture\\docs\\empty", (0, 0))
         },
         dir("music", "C:\\fixture\\music", (2, 0)),
-        file(
-            "song one.mp3",
-            "C:\\fixture\\music\\song one.mp3",
-            4_000_000,
-            Some(ts(2025, 6, 15, 14, 30)),
-        ),
+        E {
+            list: Some("D:\\lists\\Media.efu"),
+            ..file(
+                "song one.mp3",
+                "C:\\fixture\\music\\song one.mp3",
+                4_000_000,
+                Some(ts(2025, 6, 15, 14, 30)),
+            )
+        },
         E {
             attrs: Some(A | attr::HIDDEN),
             ..file(
@@ -288,6 +295,7 @@ fn tree() -> Vec<E> {
             da: Some(ts(2026, 10, 10, 9, 15)),
             taken: Some(ts(2026, 7, 4, 16, 20)),
             streams: Some(&["Zone.Identifier"]),
+            list: Some("D:/lists/Photos 2026.txt"),
             ..file(
                 "photo.jpg",
                 "C:\\fixture\\pics\\photo.jpg",
@@ -1916,6 +1924,34 @@ fn fn_pathlist() {
     check!("pathlist:\"C:\\fixture\\red;blue.txt\"", ["red;blue.txt"]);
 }
 
+#[test]
+fn fn_filelist() {
+    // Names, `|` or `;` separated, whole and without regard to case.
+    check!("filelist:\"README|tool.exe\"", ["README", "tool.exe"]);
+    check!("filelist:readme;SETUP.MSI", ["README", "setup.msi"]);
+    check!("filelist:\"tool\"", []);
+    check!("case:filelist:\"readme|tool.exe\"", ["tool.exe"]);
+    assert_eq!(err("filelist:\"|\"").kind, ErrorKind::Value);
+    assert_eq!(err("filelist:>a").kind, ErrorKind::Value);
+}
+
+#[test]
+fn fn_filelist_filename_and_full_path() {
+    // Only items read from a file list have these; the rest are unknown.
+    check!("filelist-filename:media", ["song one.mp3"]);
+    check!("filelist-filename:*.txt", ["photo.jpg"]);
+    check!("filelist-filename:\"Photos 2026.txt\"", ["photo.jpg"]);
+    check!(
+        "filelist-full-path:d:\\lists",
+        ["photo.jpg", "song one.mp3"]
+    );
+    // Forward slashes in the list's path read as backslashes.
+    check!("filelist-full-path:\"D:\\lists\\Photos\"", ["photo.jpg"]);
+    check!("filelist-filename: ext:mp3", ["song one.mp3"]);
+    check!("filelist-filename:unknown ext:mp3;jpg", []);
+    assert_eq!(count("filelist-filename:"), 2);
+}
+
 // ---- functions: duplicates and sets ----------------------------------------------------
 
 const DM_2026_FILES: [&str; 8] = [
@@ -2236,7 +2272,7 @@ fn unsupported_functions_are_refused_with_the_reason() {
         "artist:x",
         "md5:x",
         "tag:x",
-        "filelist:x",
+        "network-index-host:x",
     ] {
         let e = err(s);
         assert_eq!(e.kind, ErrorKind::Unsupported, "{s}");

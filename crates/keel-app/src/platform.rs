@@ -8,8 +8,19 @@ use std::io;
 use std::path::Path;
 use std::process::{Child, Command};
 
+/// Opens a file or folder with its default app, and counts the open in the run history.
 pub fn open(path: &Path) -> io::Result<()> {
-    open_target(path)
+    open_target(path)?;
+    note_run(path);
+    Ok(())
+}
+
+/// Counts an open of `path` in the run history (`run-count:`, `date-run:`), unless it is
+/// a copy in Keel's cache (an archive member, a remote file): those have no lasting path.
+pub fn note_run(path: &Path) {
+    if !path.starts_with(keel_vfs::cache_dir()) {
+        keel_search::runs::note_open(path);
+    }
 }
 
 /// Opens a file, folder or URL (`https:`, `mailto:`, `ms-settings:`) with its default app.
@@ -381,6 +392,7 @@ pub fn open_with(app: &str, paths: &[std::path::PathBuf]) -> io::Result<()> {
         cmd.args(args);
         run(cmd)?;
     }
+    paths.iter().for_each(|p| note_run(p));
     Ok(())
 }
 
@@ -399,6 +411,28 @@ mod tests {
             Command::new("true")
         };
         reap(headless::hidden(&mut cmd).spawn().unwrap()).unwrap();
+    }
+
+    /// Opens are counted in the run history (any file), but not Keel's own cache copies.
+    #[test]
+    fn opens_are_counted_in_the_run_history() {
+        let dir = tempfile::tempdir().unwrap();
+        keel_search::runs::use_path(Some(dir.path().join("runs.db")));
+        let p = dir.path().join("keel-headless-run.txt");
+        std::fs::write(&p, "x").unwrap();
+        open(&p).unwrap();
+        open_with("keel-headless-editor", std::slice::from_ref(&p)).unwrap();
+        let info = keel_search::runs::info(&p).expect("counted");
+        assert_eq!(info.count, 2);
+        assert_eq!(
+            crate::list_view::run_count_text(Some(info)),
+            "2",
+            "the Run count column"
+        );
+        let cached = keel_vfs::cache_dir().join("keel-headless-cached.txt");
+        open(&cached).unwrap();
+        assert_eq!(keel_search::runs::info(&cached), None);
+        keel_search::runs::use_path(None);
     }
 
     #[test]

@@ -744,6 +744,34 @@ pub fn commands() -> Vec<Command> {
         cmd("settings", "Settings", Settings, &["Ctrl+,"])
             .global()
             .typing(),
+        cmd(
+            "settings.advanced",
+            "Advanced settings",
+            SettingsIo(crate::settings_io::IoCmd::Advanced),
+            &[],
+        )
+        .global(),
+        cmd(
+            "settings.import",
+            "Import settings…",
+            SettingsIo(crate::settings_io::IoCmd::Import),
+            &[],
+        )
+        .global(),
+        cmd(
+            "settings.export",
+            "Export settings…",
+            SettingsIo(crate::settings_io::IoCmd::Export),
+            &[],
+        )
+        .global(),
+        cmd(
+            "settings.reset_all",
+            "Reset all settings…",
+            SettingsIo(crate::settings_io::IoCmd::ResetAll),
+            &[],
+        )
+        .global(),
         cmd("window.new", "New window", NewWindow, &[]).global(),
         cmd("view.options", "View options", ViewOptions, &["Ctrl+J"]).global(),
         cmd(
@@ -889,6 +917,13 @@ pub fn commands() -> Vec<Command> {
             "filelist.export",
             "Export results…",
             FileList(crate::filelist_ui::FileListCmd::Export),
+            &[],
+        )
+        .global(),
+        cmd(
+            "filelist.editor",
+            "File List Editor…",
+            FileList(crate::filelist_ui::FileListCmd::Editor),
             &[],
         )
         .global(),

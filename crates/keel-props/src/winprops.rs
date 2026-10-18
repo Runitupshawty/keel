@@ -7,7 +7,9 @@ use crate::{Error, Prop};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::core::PCWSTR;
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IBindCtx, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoIncrementMTAUsage, CoInitializeEx, CoUninitialize, IBindCtx, COINIT_MULTITHREADED,
+};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IPropertyStore, PSGetPropertyKeyFromName, SHGetPropertyStoreFromParsingName, GPS_BESTEFFORT,
     GPS_FASTPROPERTIESONLY, PROPERTYKEY,
@@ -18,6 +20,14 @@ struct Com(bool);
 
 impl Com {
     fn init() -> Com {
+        // The multithreaded apartment stays up for the whole process: threads that each
+        // join and leave it (parallel reads, the property index job) would otherwise tear
+        // it down under one another, and a read in between fails.
+        static MTA: std::sync::Once = std::sync::Once::new();
+        MTA.call_once(|| {
+            // SAFETY: no arguments; the cookie is kept (never released) on purpose.
+            let _ = unsafe { CoIncrementMTAUsage() };
+        });
         // SAFETY: plain COM initialization for the calling thread; balanced in `drop`.
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         // S_OK and S_FALSE both need a matching CoUninitialize; RPC_E_CHANGED_MODE (a failure)

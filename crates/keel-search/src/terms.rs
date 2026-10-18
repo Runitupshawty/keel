@@ -1,10 +1,11 @@
-//! What the search toggles do to a term, shared by the native matchers (the NTFS index's
-//! `ntfs/pattern.rs`, the walk index and the plain walk) and by result highlighting:
-//! diacritic folding (Match Diacritics off: `cafe` finds `café`), whole-word bounds
-//! (Match Whole Words), whole-filename wildcards and the [`Highlighter`].
+//! What the search toggles do to a word when it is only highlighted, and the wildcard
+//! rule of file list creation: diacritic folding (Match Diacritics off: `cafe` finds
+//! `café`), whole-word bounds (Match Whole Words), whole-filename wildcards and the
+//! [`Highlighter`]. What matches is decided by `keel-query` (`crate::language`).
 
 use regex::{Regex, RegexBuilder};
 
+use crate::language::Mark;
 use crate::Query;
 
 /// Each row is a base letter followed by the same letter with diacritics; lower and upper
@@ -95,22 +96,6 @@ pub(crate) fn bounded(src: &str, lit: &str) -> String {
     )
 }
 
-/// Match Whole Words: one extra regex per literal term that it must also match, as a
-/// whole word. Checked per candidate name: a Unicode `\b` in the scan over the whole
-/// name buffer would make the scan slow.
-pub(crate) fn word_terms(
-    literals: &[&str],
-    q: &Query,
-    regex: &dyn Fn(&str) -> anyhow::Result<Regex>,
-) -> anyhow::Result<Vec<Regex>> {
-    if !q.whole_word {
-        return Ok(Vec::new());
-    }
-    (literals.iter())
-        .map(|s| regex(&bounded(&literal(s, q), s)))
-        .collect()
-}
-
 /// A `*` / `?` term as a regex. With Match whole filename when using wildcards (the
 /// default) the glob is anchored to the whole name; a leading or trailing `*` drops that
 /// anchor instead (same matches, and the regex engine can skip ahead on the literal).
@@ -132,47 +117,6 @@ pub(crate) fn glob(term: &str, q: &Query) -> String {
         re.push('$');
     }
     re
-}
-
-/// Space-separated terms; `"` toggles quoting (a quoted run is one term).
-pub(crate) fn split_terms(text: &str) -> Vec<String> {
-    let mut terms = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    for c in text.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => {
-                if !cur.is_empty() {
-                    terms.push(std::mem::take(&mut cur));
-                }
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        terms.push(cur);
-    }
-    terms
-}
-
-/// `term` without `prefix` (ASCII case-insensitive), when it starts with it.
-pub(crate) fn strip_ci<'a>(term: &'a str, prefix: &str) -> Option<&'a str> {
-    term.get(..prefix.len())
-        .filter(|head| head.eq_ignore_ascii_case(prefix))
-        .map(|_| &term[prefix.len()..])
-}
-
-/// A `function:value` term the highlighter leaves alone (`ext:pdf`, `tag:x`, `in:...`);
-/// a drive letter (`C:\x`) is one letter, so it stays a term.
-fn is_function(term: &str) -> bool {
-    let term = term.strip_prefix('-').unwrap_or(term);
-    term.split_once(':').is_some_and(|(key, _)| {
-        key.len() >= 2
-            && key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    })
 }
 
 /// Finds the parts of a name or path that a query matched, for highlighting in the
@@ -198,30 +142,23 @@ impl Highlighter {
                 .ok()
         };
         let mut res = Vec::new();
-        if q.regex {
-            res.extend(build(&q.text));
-        } else {
-            for term in split_terms(&q.text) {
-                let term = strip_ci(&term, "folder:").unwrap_or(&term).to_owned();
-                if let Some(re) = strip_ci(&term, "regex:") {
-                    res.extend(build(re));
-                    continue;
-                }
-                if term.is_empty() || is_function(&term) {
-                    continue;
-                }
-                if term.contains(['*', '?']) {
-                    for part in term.split(['*', '?']).filter(|p| !p.is_empty()) {
-                        res.extend(build(&literal(part, q)));
-                    }
-                } else {
-                    let src = literal(&term, q);
-                    let src = if q.whole_word {
-                        bounded(&src, &term)
+        for mark in crate::language::marked_terms(q) {
+            match mark {
+                Mark::Regex(src) => res.extend(build(&src)),
+                Mark::Text(term) => {
+                    if term.contains(['*', '?']) {
+                        for part in term.split(['*', '?']).filter(|p| !p.is_empty()) {
+                            res.extend(build(&literal(part, q)));
+                        }
                     } else {
-                        src
-                    };
-                    res.extend(build(&src));
+                        let src = literal(&term, q);
+                        let src = if q.whole_word {
+                            bounded(&src, &term)
+                        } else {
+                            src
+                        };
+                        res.extend(build(&src));
+                    }
                 }
             }
         }

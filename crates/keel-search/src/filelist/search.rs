@@ -1,18 +1,70 @@
-//! A file list as a search backend: the same query syntax as Keel's indexes (substring,
-//! `*` / `?` wildcards, `regex:`, `folder:`, `in:`), matched against the listed names,
-//! with the list's own sizes and dates. Nothing on disk is read.
+//! A file list as a search backend: the same search language as Keel's indexes
+//! (`keel-query`: Everything's syntax), matched against the listed names, paths, sizes,
+//! dates and attributes, and the list's own file (`filelist-filename:`,
+//! `filelist-full-path:`). Nothing on disk is read.
 
-use crate::walkindex::{compile, eq_case};
+use std::borrow::Cow;
+
+use keel_query::{DateProp, Props, Timestamp};
+
+use crate::walkindex::compile;
 use crate::{Hit, Query, Searcher};
 
 use super::time::system_from_filetime;
-use super::FileList;
+use super::{Entry, FileList, ATTR_DIRECTORY};
 
 /// Searches the entries of one file list.
 pub struct FileListSearcher {
     label: String,
     list: FileList,
     cap: Option<u32>,
+    /// The list's own file, for `filelist-filename:` and `filelist-full-path:`.
+    source: Option<String>,
+}
+
+/// A listed entry as the evaluator sees it, with the list's own file.
+struct ListProps<'a>(&'a Entry, Option<&'a str>);
+
+impl Props for ListProps<'_> {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn path(&self) -> &str {
+        &self.0.path
+    }
+
+    fn is_dir(&self) -> bool {
+        self.0.is_dir
+    }
+
+    fn size(&self) -> Option<u64> {
+        self.0.size
+    }
+
+    fn allocated(&self) -> Option<u64> {
+        None
+    }
+
+    fn date(&self, which: DateProp) -> Option<Timestamp> {
+        let filetime = match which {
+            DateProp::Modified => self.0.modified,
+            DateProp::Created => self.0.created,
+            _ => return None,
+        }?;
+        crate::language::filetime(i64::try_from(filetime).ok()?)
+    }
+
+    fn attributes(&self) -> Option<u32> {
+        match (self.0.attributes, self.0.is_dir) {
+            (Some(a), true) => Some(a | ATTR_DIRECTORY),
+            (a, _) => a,
+        }
+    }
+
+    fn file_list(&self) -> Option<Cow<'_, str>> {
+        self.1.map(Cow::Borrowed)
+    }
 }
 
 impl FileListSearcher {
@@ -22,6 +74,7 @@ impl FileListSearcher {
             label: label.into(),
             list,
             cap: None,
+            source: None,
         }
     }
 
@@ -32,8 +85,19 @@ impl FileListSearcher {
         self
     }
 
+    /// The file the list was read from (its full path): `filelist-filename:` and
+    /// `filelist-full-path:` match it.
+    pub fn with_source(mut self, path: impl Into<String>) -> Self {
+        self.source = Some(path.into());
+        self
+    }
+
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     pub fn list(&self) -> &FileList {
@@ -50,6 +114,10 @@ impl FileListSearcher {
 }
 
 impl Searcher for FileListSearcher {
+    fn unified_query(&self) -> bool {
+        true
+    }
+
     /// Every entry whose name matches, ranked like the index (exact name, then name
     /// prefix, then the rest; by path within each); an empty query lists everything.
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
@@ -58,18 +126,14 @@ impl Searcher for FileListSearcher {
         if max == 0 {
             return Ok(Vec::new());
         }
+        let source = self.source.as_deref();
         let mut found: Vec<(u8, usize)> = Vec::new();
         for (i, e) in self.list.entries.iter().enumerate() {
             if m.folders_only && !e.is_dir {
                 continue;
             }
             let name = e.name();
-            if !m.scan.iter().chain(&m.rest).all(|re| re.is_match(name)) {
-                continue;
-            }
-            // Match path: every term against the full path instead (the terms are then
-            // not in `scan` / `rest`).
-            if !m.path.iter().all(|re| re.is_match(&e.path)) {
+            if m.scan.as_ref().is_some_and(|scan| !scan.is_match(name)) {
                 continue;
             }
             if let Some(within) = &m.within {
@@ -77,18 +141,10 @@ impl Searcher for FileListSearcher {
                     continue;
                 }
             }
-            let quality = match &m.literal {
-                Some(lit) if eq_case(name, lit, m.match_case) => 0,
-                Some(lit)
-                    if name
-                        .get(..lit.len())
-                        .is_some_and(|head| eq_case(head, lit, m.match_case)) =>
-                {
-                    1
-                }
-                _ => 2,
-            };
-            found.push((quality, i));
+            if !m.matches_in(&ListProps(e, source), None) {
+                continue;
+            }
+            found.push((m.quality(name), i));
         }
         // Quality, then path without regard to case, then list order; no per-entry copies
         // (an empty query over a big list ranks every entry).
@@ -98,6 +154,18 @@ impl Searcher for FileListSearcher {
                 .then_with(|| lower(a.1).cmp(lower(b.1)))
                 .then(a.1.cmp(&b.1))
         };
+        // Set functions (`dupe:`, `unique:`, `count:`) see every match, in rank order.
+        if let Some(mut pass) = m.query.set_pass() {
+            found.sort_unstable_by(order);
+            for &(_, i) in &found {
+                if !pass.push(i as u64, &ListProps(&self.list.entries[i], source), None)? {
+                    break;
+                }
+            }
+            found = (pass.finish().into_iter())
+                .map(|i| (m.quality(self.list.entries[i as usize].name()), i as usize))
+                .collect();
+        }
         if found.len() > max {
             found.select_nth_unstable_by(max - 1, order);
             found.truncate(max);

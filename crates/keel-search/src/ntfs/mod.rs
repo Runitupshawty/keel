@@ -517,10 +517,13 @@ impl NtfsSearcher {
 }
 
 impl Searcher for NtfsSearcher {
+    fn unified_query(&self) -> bool {
+        true
+    }
     fn query(&self, query: &Query) -> anyhow::Result<Vec<Hit>> {
         // A pane's folder no index holds (a share, a volume not indexed yet): walk it.
         if let Some(dir) = crate::pane_folder(query).filter(|d| !self.covers(d)) {
-            return Ok(crate::walk(dir, query));
+            return crate::try_walk(dir, query);
         }
         let matcher = pattern::compile(query)?;
         let max = query.max as usize;
@@ -535,7 +538,10 @@ impl Searcher for NtfsSearcher {
             }
             parts
                 .iter()
-                .flat_map(|part| part.index().search(&matcher, fetch))
+                .map(|part| part.index().try_search(&matcher, fetch))
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
                 .collect()
         };
         found.sort_by(rank);

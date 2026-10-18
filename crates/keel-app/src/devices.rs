@@ -300,6 +300,42 @@ pub fn node_location(dir: &VPath) -> Option<String> {
     })
 }
 
+/// Network indexes: the device a search hit came from, for the Host column (its name,
+/// else the start of its id); None for this device's own hits.
+pub fn node_host(path: &VPath) -> Option<String> {
+    if path.scheme != "node" {
+        return None;
+    }
+    let name = NODE_NAMES.with_borrow(|names| {
+        (names.iter())
+            .find(|(id, _)| *id == path.authority)
+            .map(|(_, name)| capped(name))
+    });
+    Some(name.unwrap_or_else(|| path.authority.chars().take(8).collect()))
+}
+
+/// Network indexes: the Folder column of a device's hit: the host's own folder for a hit
+/// outside its shares (`node://<device>/~/<path>`), else "<device> / <source> / folder".
+pub fn node_folder(path: &VPath) -> Option<String> {
+    if path.scheme != "node" {
+        return None;
+    }
+    let rest = path.path.trim_start_matches('/');
+    let Some(host) = rest
+        .strip_prefix(keel_net::NOT_SHARED)
+        .and_then(|r| r.strip_prefix('/'))
+    else {
+        return path.parent().and_then(|p| node_location(&p));
+    };
+    let folder = host.rsplit_once('/').map_or("", |(dir, _)| dir);
+    // A drive (`C:`) or a share name as sent; a Unix path lost its leading slash.
+    let drive = folder.split('/').next().is_some_and(|d| d.ends_with(':'));
+    Some(match drive {
+        true => folder.to_owned(),
+        false => format!("/{folder}"),
+    })
+}
+
 /// One sidebar row (rebuilt from the node's peers every frame).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeviceRow {
@@ -520,6 +556,11 @@ pub enum DevCmd {
         source: String,
         subtree: String,
     },
+    /// Network indexes: **Search my files** on or off for a device.
+    SearchGrant {
+        peer: PeerId,
+        on: bool,
+    },
     /// Asks first.
     Forget(PeerId),
     ForgetConfirmed(PeerId),
@@ -585,6 +626,11 @@ pub struct Devices {
     events: Option<Receiver<NetEvent>>,
     pub peers: Vec<Peer>,
     pub grants: Vec<Grant>,
+    /// Network indexes: the devices given **Search my files**.
+    pub search_grants: Vec<PeerId>,
+    /// Network indexes: the searcher paired devices' searches run on (the app's, once
+    /// loaded).
+    pub searcher: crate::net_search::Slot,
     pub pair: Option<Pair>,
     qr: Option<(String, egui::TextureHandle)>,
     pub shares: Option<SharesDialog>,
@@ -632,6 +678,8 @@ impl Devices {
             events: None,
             peers: Vec::new(),
             grants: Vec::new(),
+            search_grants: Vec::new(),
+            searcher: Arc::default(),
             pair: None,
             qr: None,
             shares: None,
@@ -729,6 +777,7 @@ impl Devices {
         self.events = None;
         self.peers.clear();
         self.grants.clear();
+        self.search_grants.clear();
         self.offers.clear();
         self.sync_set = None;
         self.last_sync.clear();
@@ -746,6 +795,7 @@ impl Devices {
         self.opening = true;
         self.error = None;
         let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), router.clone());
+        let searcher = self.searcher.clone();
         let relay = s.relay;
         let sync_every = Duration::from_secs(s.sync_secs.clamp(
             *keel_api::config::SYNC_SECS.start(),
@@ -764,6 +814,8 @@ impl Devices {
                         Arc::new(keel_vfs::cloud::KeyringStore)
                     };
                 let handler = Arc::new(LibraryHandler::new(lib.clone()));
+                // Network indexes: devices given Search my files search this one.
+                handler.set_search(crate::net_search::host_search(searcher));
                 let options = NodeOptions {
                     sync_every,
                     ..NodeOptions::default().with_relay(relay)
@@ -816,8 +868,20 @@ impl Devices {
         if let Some(node) = &self.node {
             self.peers = node.peers();
             self.grants = node.grants();
+            self.search_grants = node.search_grants();
             note_peers(&self.peers);
         }
+    }
+
+    /// Network indexes: the node, its runtime and the paired devices online, for a search
+    /// that includes them (None: devices are off, or this window uses keel-daemon's).
+    pub fn net(&self) -> Option<crate::net_search::Net> {
+        let (node, rt) = (self.node.clone()?, self.rt.as_ref()?.handle().clone());
+        let peers = (self.peers.iter())
+            .filter(|p| p.link != Link::Offline)
+            .map(|p| (p.id, label_of(&self.peers, &p.id)))
+            .collect();
+        Some(crate::net_search::Net { node, rt, peers })
     }
 
     /// The last library sync pull from each device, read on a worker.
@@ -909,6 +973,7 @@ impl AppState {
         if self.devices.remote.take().is_some() {
             self.devices.peers.clear();
             self.devices.grants.clear();
+            self.devices.search_grants.clear();
             self.devices.remote_self = None;
             self.devices.remote_offers.clear();
             self.devices.error = None;
@@ -1250,6 +1315,14 @@ impl AppState {
                 }
                 self.devices.refresh();
             }
+            DevCmd::SearchGrant { peer, on } => {
+                if let Err(e) = node.set_search_grant(&peer, on) {
+                    let text = crate::i18n::tr("net_index.grant_failed");
+                    self.toasts
+                        .error(text.replace("{error}", &format!("{e:#}")));
+                }
+                self.devices.refresh();
+            }
             DevCmd::ForgetConfirmed(peer) => {
                 let id = peer.0.to_string();
                 self.settings.devices.auto_accept.retain(|a| *a != id);
@@ -1467,6 +1540,10 @@ impl AppState {
                             .map(drop)
                     }),
                 );
+            }
+            // ponytail: no API op for it yet; the window's own node only.
+            DevCmd::SearchGrant { .. } => {
+                self.toasts.error(crate::i18n::tr("net_index.daemon"));
             }
             DevCmd::ForgetConfirmed(peer) => {
                 let id = peer.0.to_string();
@@ -1738,6 +1815,8 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let label = label_of(&s.devices.peers, &peer);
     let rows = share_rows(&s.devices.grants, &s.library.sources, &peer);
     let sources = shareable(&s.library.sources);
+    let searchable = s.devices.search_grants.contains(&peer);
+    let attached = s.devices.remote_self.is_some();
     let mut open = true;
     let title = format!("Shares with {label}");
     crate::a11y::esc_closes(ctx, &title, &mut open);
@@ -1747,6 +1826,19 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
+            // Network indexes: its own grant, above the shares.
+            let mut on = searchable;
+            let r = ui
+                .add_enabled(
+                    !attached,
+                    egui::Checkbox::new(&mut on, crate::i18n::tr("net_index.search_my_files")),
+                )
+                .on_hover_text(crate::i18n::tr("net_index.search_my_files_tip"))
+                .on_disabled_hover_text(crate::i18n::tr("net_index.daemon"));
+            if r.changed() {
+                out.push(dev(DevCmd::SearchGrant { peer, on }));
+            }
+            ui.separator();
             if rows.is_empty() {
                 ui.weak("Nothing shared: this device sees none of your sources.");
             }
@@ -2050,6 +2142,39 @@ mod tests {
     fn peer(n: u8) -> PeerId {
         // Any 32 bytes make a NodeId for display and comparison.
         PeerId(NodeId([n; 32]))
+    }
+
+    /// Network indexes: a device's hit names its host, and outside its shares shows the
+    /// host's own folder.
+    #[test]
+    fn device_hits_name_their_host_and_folder() {
+        let p = peer(7);
+        note_peers(&[Peer {
+            id: p,
+            label: "Desk".into(),
+            last_seen: None,
+            link: Link::Lan,
+            storage: None,
+        }]);
+        let hit = |path: &str| VPath::parse(&format!("node://{}{path}", p.0)).unwrap();
+        assert_eq!(node_host(&hit("/~/C:/data/a.txt")).as_deref(), Some("Desk"));
+        assert_eq!(node_host(&VPath::local(std::env::temp_dir())), None);
+        assert_eq!(
+            node_folder(&hit("/~/C:/data/a.txt")).as_deref(),
+            Some("C:/data")
+        );
+        assert_eq!(
+            node_folder(&hit("/~/srv/data/a.txt")).as_deref(),
+            Some("/srv/data")
+        );
+        assert!(node_folder(&hit("/docs/a.txt")).is_some_and(|f| f.starts_with("Desk")));
+        let unknown = VPath::parse(&format!("node://{}/~/x", peer(8).0)).unwrap();
+        assert_eq!(
+            node_host(&unknown).map(|h| h.len()),
+            Some(8),
+            "the id's start"
+        );
+        note_peers(&[]);
     }
 
     #[test]

@@ -25,6 +25,16 @@ pub enum Reader {
     Audio(AudioField),
     /// The Recycle Bin's `$I` record or the Trash's `.trashinfo` file.
     DateDeleted,
+    /// The Authenticode signature (`WinVerifyTrust`, Windows only).
+    Signature(SignatureField),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureField {
+    /// The signer's name.
+    Name,
+    /// When the signature was timestamped.
+    Timestamp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +153,9 @@ impl Function {
             Reader::Hash(_) => "hash (streamed)",
             Reader::Audio(_) => "ID3v2/ID3v1, MPEG, FLAC, WAV",
             Reader::DateDeleted => "Recycle Bin `$I` record, Trash `.trashinfo`",
+            Reader::Signature(_) => {
+                "`WinVerifyTrust` (Windows only): embedded or catalog signature"
+            }
         }
     }
 }
@@ -225,8 +238,8 @@ pub static FUNCTIONS: &[Function] = &[
     f("sha256", &[], FileInfo, Reader::Hash(HashAlgo::Sha256), None, Same),
     f("crc32", &[], FileInfo, Reader::Hash(HashAlgo::Crc32), None, Same),
     f("crc64", &["crc"], FileInfo, Reader::Hash(HashAlgo::Crc64), None, Same),
-    none("digital-signature-name", FileInfo),
-    none("digital-signature-timestamp", FileInfo),
+    f("digital-signature-name", &[], FileInfo, Reader::Signature(SignatureField::Name), None, Same),
+    f("digital-signature-timestamp", &[], FileInfo, Reader::Signature(SignatureField::Timestamp), None, Same),
     pe("version", PeField::FileVersion, "System.FileVersion"),
     pe("product-name", PeField::ProductName, "System.Software.ProductName"),
     pe("product-version", PeField::ProductVersion, "System.Software.ProductVersion"),

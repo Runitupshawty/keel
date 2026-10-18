@@ -6,11 +6,27 @@ and filter macros. This page lists what Keel's own engine (the `keel-query` crat
 today. Everything still receives the text unchanged when it is Keel's search backend, so
 everything Everything supports keeps working there.
 
-> **Status.** The `keel-query` crate parses and evaluates this language and is covered by a
-> conformance test per operator, modifier, constant and function
-> (`crates/keel-query/tests/everything.rs`). The search box, the library search, `keel search`,
-> the API and MCP do not use it yet; they move over in a following change. Until then the pane
-> and the library keep the syntax described in [Files](files.md) and [Library](library.md).
+> **Where it works.** This language is the one query language of Keel's own searches: the
+> search tab and **Search here** box of every pane, `keel search`, the API's `system.search`
+> and `search`, and MCP use it. The table says how each backend runs it.
+
+| Backend | How the language runs |
+|---|---|
+| Keel's own index (the NTFS index, the home-folder and folder/volume name indexes, a file list, the plain walk of a folder no index holds) | Whole: the index scans its names for the query's longest plain word and the compiled query decides each candidate, with the entry's path, size, dates, attributes and folder counts. Parse errors come back with the place in the text. |
+| Everything | Everything receives the text as typed and runs its own language (which has more functions than Keel's engine); the search tab shows Keel's check of the text beside the box. |
+| Spotlight, `locate` | Whole, but evaluated by Keel: the backend is asked for the names that contain the query's longest plain word (all names when it has none), up to 10,000, and Keel checks those. A query with no plain word (`ext:pdf`) therefore reads at most the first 10,000 names the backend gives. |
+| The library | OR, `!`, groups, wildcards, `regex:`, path terms and the other functions work; the library's own terms (`tag:`, `content:`, `camera:`, `kind:`, words that also match document text) keep their meaning. See [Library](library.md#searching). |
+
+What an index knows about an entry is what the language can ask: the NTFS index has size
+(a folder's is the total below it), size on disk, created, modified, accessed and recently
+changed dates, attributes, file ids, hard link and stream counts, and child and descendant
+counts from its folder totals; the home-folder and folder/volume name indexes have size
+(files), modified and created dates, attributes and child counts; a file list has what its
+columns hold; Spotlight and `locate` hits have size and modified date. A property a source does
+not have is `unknown`: it fails every comparison and matches `unknown`. Tree functions work on
+the name indexes and the NTFS index (with a table of parents built when a query first uses
+one); set functions (`dupe:`, `unique:`, `count:`) see the whole result of one index, so on a
+machine with several NTFS volumes each volume is deduplicated on its own.
 
 ## Terms and operators
 
@@ -24,7 +40,7 @@ everything Everything supports keeps working there.
 | `*`, `?` | wildcards: any run of characters, one character; neither crosses `\`. `**` crosses `\` |
 | `C:\work`, `\work` | a term with `\` matches the full path instead of the name |
 | `work\` | a trailing `\` names a folder: the items inside folders whose name ends in `work` |
-| `regex:^a.*z$` | a regular expression |
+| `regex:^a.*z$` | a regular expression; one with an escaped `\\` matches the full path. On macOS and Linux a `/` in a regex is a path separator too (`regex:/docs/[^/]+\.pdf$`) |
 | `function:value` | a search function (below) |
 | `function*:text` | the rest of the query, as typed, is the function's text (`name*:a b\|c`) |
 
@@ -171,6 +187,10 @@ compare as typed (case still folds).
 | `ancestor:` | a folder above the item has this full path (`ancestor:C:\work` is anything inside it; wildcards: `ancestor:**\photos`, where `**` crosses folders) |
 | `ancestor-name:` | a folder above the item has a name containing the text |
 | `pathlist:` | the full path is one of a `;` list (`pathlist:C:\a.txt;C:\b.txt`); any case |
+| `system-index:`, `si:` | the Windows Search index finds the item for these words (`si:budget`): in its text, properties or name; the hits are merged into the results and checked against the rest of the query (Windows only, [Windows Search](files.md#windows-search-si)) |
+| `filelist:` | the name is one of a `\|` or `;` list (`filelist:"a.txt\|b.txt"`, quoted so `\|` is not OR); whole names, any case unless `case:` |
+| `filelist-filename:` | the name of the file list the item comes from (a file list tab's, or a list in Settings → Search index → File lists) contains the text (`filelist-filename:music.efu`); unknown for items not from a list |
+| `filelist-full-path:` | the full path of the file list the item comes from contains the text (`filelist-full-path:D:\lists`) |
 
 Paths are compared with `/` read as `\`, so the same terms work on Windows, macOS and Linux
 (`\home\me` matches `/home/me`).
@@ -186,7 +206,7 @@ Paths are compared with `/` read as `\`, so the same terms work on Windows, macO
 | `child-folder-count:`, `childfoldercount:` | folders directly inside a folder |
 | `empty:` | folders with no files and no subfolders |
 | `attributes:`, `attr:`, `attrib:`, `attribute:` | has all these attributes: letters (`attrib:RHS`) or a hex mask (`attrib:0x20`) |
-| `run-count:`, `runcount:` | how many times Keel opened the item |
+| `run-count:`, `runcount:` | how many times Keel opened the item ([run history](files.md#run-history)) |
 | `descendant-count:` | files and folders anywhere below a folder |
 | `descendant-file-count:` | files anywhere below a folder |
 | `descendant-folder-count:` | folders anywhere below a folder |
@@ -378,17 +398,28 @@ so a query never silently matches the wrong thing:
 | Functions | Why |
 |---|---|
 | `content:`, `utf8content:`, `ansicontent:`, `utf16content:`, `utf16becontent:`, `textplain:` | content functions (Task 73) |
-| `perceived-type:`, `content-type:`, `document-content-type:`, `file-signature:`, `shortcut-target:`, `volume-label:`, `location:`, `loc:`, `computer:`, `url:`, `owner:`, `protected:`, `offline:`, `online:`, `offline-availability:`, `offline-status:`, `is-running:`, `shared-with:`, `status:`, `content-status:`, `character-encoding:`, `line-count:`, `word-count:`, `page-count:`, `slide-count:`, `total-editing-time:`, `md5:`, `sha1:`, `sha256:`, `crc32:`, `crc64:`, `crc:`, `digital-signature-name:`, `digital-signature-timestamp:`, `version:`, `product-name:`, `product-version:`, `company:`, `copyright:`, `trademarks:`, `description:`, `details:`, `system-index:`, `si:` | file properties read from disk (Task 73) |
+| `perceived-type:`, `content-type:`, `document-content-type:`, `file-signature:`, `shortcut-target:`, `volume-label:`, `location:`, `loc:`, `computer:`, `url:`, `owner:`, `protected:`, `offline:`, `online:`, `offline-availability:`, `offline-status:`, `is-running:`, `shared-with:`, `status:`, `content-status:`, `character-encoding:`, `line-count:`, `word-count:`, `page-count:`, `slide-count:`, `total-editing-time:`, `md5:`, `sha1:`, `sha256:`, `crc32:`, `crc64:`, `crc:`, `digital-signature-name:`, `digital-signature-timestamp:`, `version:`, `product-name:`, `product-version:`, `company:`, `copyright:`, `trademarks:`, `description:`, `details:` | file properties read from disk (Task 73) |
 | `width:`, `wide:`, `height:`, `high:`, `dimensions:`, `orientation:`, `bit-depth:`, `bpp:`, `horizontal-resolution:`, `vertical-resolution:`, `aspect-ratio:`, `camera-maker:`, `camera-model:`, `lens-model:`, `aperture:`, `f-stop:`, `max-aperture:`, `exposure-time:`, `exposure-bias:`, `exposure-program:`, `exif-version:`, `flash-mode:`, `focal-length:`, `35mm-focal-length:`, `iso-speed:`, `light-source:`, `metering-mode:`, `brightness:`, `contrast:`, `saturation:`, `white-balance:`, `subject-distance:`, `latitude:`, `longitude:`, `altitude:` | image properties (Task 73) |
 | `album:`, `album-artist:`, `artist:`, `authors:`, `composer:`, `conductor:`, `director:`, `producer:`, `writer:`, `genre:`, `mood:`, `title:`, `subtitle:`, `track:`, `year:`, `beats-per-minute:`, `bpm:`, `initial-key:`, `length:`, `duration:`, `audio-bitrate:`, `audio-bits-per-sample:`, `audio-channels:`, `audio-format:`, `audio-sample-rate:`, `audio-track-count:`, `video-bitrate:`, `video-format:`, `video-track-count:`, `subtitle-track-count:`, `total-bitrate:`, `frame-count:`, `frame-rate:`, `fps:`, `language:`, `part-of-a-compilation:`, `part-of-set:`, `period:`, `encoded-by:`, `publisher:`, `parental-rating:`, `parental-rating-reason:` | audio and video properties (Task 73) |
 | `subject:`, `comment:`, `category:`, `tags:`, `tag:`, `rating:`, `people:`, `last-author:`, `software:`, `from:`, `to:` | document properties (Task 73) |
-| `filelist:`, `filelist-filename:`, `filelist-full-path:`, `network-index-host:` | file lists (Phase 16) |
-| `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms; the library keeps its own parser ([Library](library.md#searching)) until it moves to this language |
+| `network-index-host:` | read by Keel's search tab before the query reaches a backend ([network indexes](devices.md#devices-and-spacedrop)); elsewhere refused |
+| `camera:`, `taken:`, `has:`, `contents:`, `source:`, `is:`, `w:`, `h:` | library search terms: they work in the library search only ([Library](library.md#searching)); every other search refuses them |
 | `pinyin:`, `pinyin-jian:`, `pinyin-quan:` | Pinyin matching needs a Pinyin table Keel does not ship yet |
 
 ## Where Keel differs from Everything
 
-- `in:` (a folder, at any depth) and `kind:` are Keel's own.
+- In Keel's own searches `AND`, `OR` and `NOT` are words (Everything's **Allow literal
+  operators** is off, its default): use `|`, `!` and `< >`.
+- Keel's own searches turn **Replace forward slashes with backslashes** on, so `docs/x` is a path
+  term on every system, and the pane's **Match path**, **Match whole words**, **Match
+  diacritics** and **Regular expression** toggles, **Match whole filename when using wildcards**
+  (Settings → General → Search) and the API's `prefix`, `suffix`, `ignore_punctuation` and
+  `ignore_whitespace` options are the search options above. A wildcard never crosses `\`
+  (`*\ann\rep*` with Match path does not reach back through `Users\`; `**` does).
+- `in:` (a folder, at any depth) and `kind:` are Keel's own. In Keel's own indexes `in:`
+  reads a folder path as typed, also part of the last name: `in:C:\Users\an` keeps `C:\Users\ann`
+  and everything below it (and `C:\Users\anna`); a pane's **Search here** folder keeps to whole
+  folder names.
 - `exists:` looks in Keel's index, not on disk; `dupe-from:` keeps whole duplicate groups that
   have an item in the folder; set functions skip items whose compared value is `unknown`; tree
   functions and duplicate searches are bounded (above) where Everything is not.

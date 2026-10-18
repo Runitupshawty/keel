@@ -12,6 +12,7 @@ description = "Keel's typed operation registry: one list for JSON-RPC, the CLI a
 fuzzing = []
 
 [dependencies]
+keel-query = { path = "../keel-query" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -35,6 +35,10 @@ pub enum TextProp {
     StreamNames,
     /// Any path inside an archive.
     ContainerNames,
+    /// The name of the file list the item comes from (`filelist-filename:`).
+    FileListName,
+    /// The full path of the file list the item comes from (`filelist-full-path:`).
+    FileListPath,
 }
 
 impl TextProp {
@@ -119,6 +123,11 @@ pub enum FnKind {
     OfParent(&'static FnKind),
     /// The full path is one of these (`pathlist:`).
     PathList,
+    /// The Windows Search index finds the item for this text (`si:`, `system-index:`); the
+    /// search backend runs the query and answers through [`crate::Props::system_index`].
+    SystemIndex,
+    /// The name is one of these (`filelist:a.txt|b.txt`).
+    FileList,
     /// A function over the whole result set (`dupe:`, `unique:`, `count:`).
     Set(SetFn),
     /// A UI-state function (`sort:`, `columns:`, ...): recorded, never filters.
@@ -422,6 +431,27 @@ pub static FUNCTIONS: &[FunctionInfo] = &[
         K::PathList,
         "the full path is one of these (`;` list)"
     ),
+    f!(
+        &["system-index", "si"],
+        K::SystemIndex,
+        "the Windows Search index finds the item for this text (`si:budget`)"
+    ),
+    // File lists: the item's own list (a file list tab, or a file list in the index).
+    f!(
+        &["filelist"],
+        K::FileList,
+        "the name is one of these (`|` or `;` list: `filelist:\"a.txt|b.txt\"`)"
+    ),
+    f!(
+        &["filelist-filename"],
+        K::Text(T::FileListName),
+        "the name of the file list the item comes from contains the text"
+    ),
+    f!(
+        &["filelist-full-path"],
+        K::Text(T::FileListPath),
+        "the full path of the file list the item comes from contains the text"
+    ),
     // Set functions.
     f!(
         &["dupe"],
@@ -632,7 +662,7 @@ pub static UNSUPPORTED: &[(&[&str], &str)] = &[
             "line-count", "word-count", "page-count", "slide-count", "total-editing-time", "md5",
             "sha1", "sha256", "crc32", "crc64", "crc", "digital-signature-name",
             "digital-signature-timestamp", "version", "product-name", "product-version", "company",
-            "copyright", "trademarks", "description", "details", "system-index", "si",
+            "copyright", "trademarks", "description", "details",
         ],
         "a file property read from disk (Phase 15, Task 73)",
     ),
@@ -669,8 +699,8 @@ pub static UNSUPPORTED: &[(&[&str], &str)] = &[
         "a document property (Phase 15, Task 73)",
     ),
     (
-        &["filelist", "filelist-filename", "filelist-full-path", "network-index-host"],
-        "a file list function (Phase 16)",
+        &["network-index-host"],
+        "a network index function: Keel's search tab reads it (Settings → General → Search → Include paired devices)",
     ),
     (
         &["camera", "taken", "has", "contents", "source", "is", "w", "h"],
