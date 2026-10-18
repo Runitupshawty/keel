@@ -35,6 +35,10 @@ pub enum TextProp {
     StreamNames,
     /// Any path inside an archive.
     ContainerNames,
+    /// The name of the file list the item comes from (`filelist-filename:`).
+    FileListName,
+    /// The full path of the file list the item comes from (`filelist-full-path:`).
+    FileListPath,
 }
 
 impl TextProp {
@@ -119,6 +123,8 @@ pub enum FnKind {
     OfParent(&'static FnKind),
     /// The full path is one of these (`pathlist:`).
     PathList,
+    /// The name is one of these (`filelist:a.txt|b.txt`).
+    FileList,
     /// A function over the whole result set (`dupe:`, `unique:`, `count:`).
     Set(SetFn),
     /// A UI-state function (`sort:`, `columns:`, ...): recorded, never filters.
@@ -422,6 +428,22 @@ pub static FUNCTIONS: &[FunctionInfo] = &[
         K::PathList,
         "the full path is one of these (`;` list)"
     ),
+    // File lists: the item's own list (a file list tab, or a file list in the index).
+    f!(
+        &["filelist"],
+        K::FileList,
+        "the name is one of these (`|` or `;` list: `filelist:\"a.txt|b.txt\"`)"
+    ),
+    f!(
+        &["filelist-filename"],
+        K::Text(T::FileListName),
+        "the name of the file list the item comes from contains the text"
+    ),
+    f!(
+        &["filelist-full-path"],
+        K::Text(T::FileListPath),
+        "the full path of the file list the item comes from contains the text"
+    ),
     // Set functions.
     f!(
         &["dupe"],
@@ -669,8 +691,8 @@ pub static UNSUPPORTED: &[(&[&str], &str)] = &[
         "a document property (Phase 15, Task 73)",
     ),
     (
-        &["filelist", "filelist-filename", "filelist-full-path", "network-index-host"],
-        "a file list function (Phase 16)",
+        &["network-index-host"],
+        "a network index function (Phase 16, Task 78)",
     ),
     (
         &["camera", "taken", "has", "contents", "source", "is", "w", "h"],
