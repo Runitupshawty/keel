@@ -271,6 +271,8 @@ pub struct DiskUsage {
     pub fallback: Option<steps::Fallback>,
     /// The last steps' outcome, shown until dismissed.
     pub note: Option<String>,
+    /// The device storages' names the last Select drives dialog listed ("Scanning …").
+    pub device_labels: Vec<(Root, String)>,
 }
 
 impl DiskUsage {

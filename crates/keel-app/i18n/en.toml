@@ -903,3 +903,9 @@ filters = "Filters"
 folders = "Folders"
 all_results = "All results ({n})"
 tree_first_n = "Folders of the first {n} results"
+
+# The Disk Usage window's Select drives dialog.
+[disk_usage]
+phones_and_cameras = "Phones and cameras"
+looking_for_devices = "Looking for devices…"
+double_click_to_scan = "Double-click to scan {name}"
