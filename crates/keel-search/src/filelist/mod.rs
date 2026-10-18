@@ -22,7 +22,7 @@ pub use create::{create, split_wildcards, CreateOptions};
 pub use export::{export, write_efu, ExportOptions, Format};
 pub(crate) use index::WithFileLists;
 pub use index::{FileListIndexes, POLL};
-pub use search::{FileListSearcher, ListItem};
+pub use search::FileListSearcher;
 pub use sidecar::{Sidecar, SIDECAR_NAME};
 pub use time::{filetime_from_system, format_iso, parse_date, system_from_filetime};
 

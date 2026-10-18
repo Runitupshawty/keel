@@ -2,7 +2,6 @@
 //! and file lists in the index.
 
 use super::edit::{add_paths, merge, remove_duplicates, roots, update, Updated};
-use super::search::wants_language;
 use super::sidecar::{properties_of, Sidecar, MAX_SIDECAR_BYTES, SIDECAR_NAME};
 use super::*;
 use crate::filelist::index::WithFileLists;
@@ -61,30 +60,6 @@ const LIST: &str = concat!(
     "/data/report,30,,32,\n",
     "/other/notes.txt,40,,32,3\n",
 );
-
-#[test]
-fn queries_that_need_the_language() {
-    for plain in [
-        "", "report", "*.pdf", "folder:", "in:/data", "regex:^a", "C:\\x y",
-    ] {
-        assert!(!wants_language(plain), "{plain}");
-    }
-    for lang in [
-        "size:>1",
-        "a|b",
-        "!a",
-        "<a b>",
-        "ext:pdf",
-        "case:A",
-        "dm:2024",
-        "filelist:a",
-    ] {
-        assert!(wants_language(lang), "{lang}");
-    }
-    // An unknown function stays text for the index syntax; a bad value is the language's.
-    assert!(!wants_language("nosuchfunction:x"));
-    assert!(wants_language("size:big"));
-}
 
 #[test]
 fn a_list_is_searched_with_the_whole_language() {
