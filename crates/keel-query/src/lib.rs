@@ -272,7 +272,10 @@ impl Query {
                 Expr::And(v) | Expr::Or(v) => v.iter().for_each(|e| walk(e, out)),
                 Expr::Not(e) => walk(e, out),
                 Expr::Term(t) => {
-                    if t.function.as_ref().is_some_and(|f| f.kind == FnKind::SystemIndex) {
+                    if t.function
+                        .as_ref()
+                        .is_some_and(|f| f.kind == FnKind::SystemIndex)
+                    {
                         for item in &t.items {
                             let text = item.text.trim().to_owned();
                             if !text.is_empty() && !out.contains(&text) {

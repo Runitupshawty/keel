@@ -134,7 +134,10 @@ fn values_round_trip_through_the_store() {
     let values = vec![
         ("artist".to_owned(), Prop::Str("Ann".into())),
         ("year".to_owned(), Prop::Int(1999)),
-        ("length".to_owned(), Prop::Duration(Duration::from_millis(1500))),
+        (
+            "length".to_owned(),
+            Prop::Duration(Duration::from_millis(1500)),
+        ),
         ("date-taken".to_owned(), Prop::Date(t)),
         ("compilation".to_owned(), Prop::Bool(true)),
         ("fps".to_owned(), Prop::Float(29.97)),
@@ -160,7 +163,10 @@ fn values_round_trip_through_the_store() {
     f.store.put(&p, &state, &with_title).unwrap();
     assert_eq!(f.store.get(&p, "title"), Lookup::Unknown);
     assert_eq!(f.store.get(&p, "year"), Lookup::NotIndexed, "replaced");
-    assert_eq!(f.store.get(&f.root.join("none"), "artist"), Lookup::NotIndexed);
+    assert_eq!(
+        f.store.get(&f.root.join("none"), "artist"),
+        Lookup::NotIndexed
+    );
     assert_eq!(f.store.values(&p).len(), 1);
 }
 
@@ -181,7 +187,10 @@ fn renames_and_removes_move_whole_folders() {
     assert!(f.store.file(&s("moved/x.txt")).is_some());
     assert!(f.store.file(&s("moved/deep/y.txt")).is_some());
     assert!(f.store.file(&s("sub/x.txt")).is_none());
-    assert!(f.store.file(&s("subway.txt")).is_some(), "a sibling with the same start");
+    assert!(
+        f.store.file(&s("subway.txt")).is_some(),
+        "a sibling with the same start"
+    );
     // Onto an existing file: replaced.
     f.store.rename(&s("subway.txt"), &s("other.txt")).unwrap();
     assert_eq!(f.store.len(), 3);
@@ -205,10 +214,19 @@ fn fast_sort_keeps_an_order_per_property() {
     assert_eq!(f.store.fast_sort_indexes().len(), 1);
     let names = |v: Vec<String>| -> Vec<String> {
         v.iter()
-            .map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect()
     };
-    assert_eq!(names(f.store.sorted("line-count", false, 10)), ["b", "c", "a"]);
+    assert_eq!(
+        names(f.store.sorted("line-count", false, 10)),
+        ["b", "c", "a"]
+    );
     assert_eq!(names(f.store.sorted("line-count", true, 2)), ["a", "c"]);
     // The planner reads the partial index.
     let plan: Vec<String> = {
@@ -225,12 +243,16 @@ fn fast_sort_keeps_an_order_per_property() {
             .collect()
     };
     assert!(
-        plan.iter().any(|l| l.contains(&sort_index_name("line-count"))),
+        plan.iter()
+            .any(|l| l.contains(&sort_index_name("line-count"))),
         "{plan:?}"
     );
     f.store.set_fast_sort(&[]).unwrap();
     assert!(f.store.fast_sort_indexes().is_empty());
-    assert_eq!(names(f.store.sorted("line-count", false, 10)), ["b", "c", "a"]);
+    assert_eq!(
+        names(f.store.sorted("line-count", false, 10)),
+        ["b", "c", "a"]
+    );
 }
 
 #[test]
@@ -239,12 +261,19 @@ fn the_job_reads_admitted_files_and_skips_unchanged_ones() {
     let mut job = f.job(&f.settings());
     let mut read = f.until(&mut job, |s| *s == Step::PassDone);
     read.sort();
-    assert_eq!(read, [f.root.join("a.txt"), f.root.join("sub").join("b.txt")]);
+    assert_eq!(
+        read,
+        [f.root.join("a.txt"), f.root.join("sub").join("b.txt")]
+    );
     let a = f.root.join("a.txt");
     assert_eq!(f.store.get(&a, "line-count"), Lookup::Value(Prop::Int(2)));
-    assert!(matches!(f.store.get(&a, "crc32"), Lookup::Value(Prop::Str(_))));
+    assert!(matches!(
+        f.store.get(&a, "crc32"),
+        Lookup::Value(Prop::Str(_))
+    ));
     assert_eq!(
-        f.store.get(&f.root.join("skip").join("c.txt"), "line-count"),
+        f.store
+            .get(&f.root.join("skip").join("c.txt"), "line-count"),
         Lookup::NotIndexed,
         "an excluded folder"
     );
@@ -354,7 +383,10 @@ fn changes_keep_the_store_current() {
     while !f.pending.is_empty() {
         job.step();
     }
-    assert!(matches!(job.step(), Step::Skipped | Step::Read(_)), "a pass started");
+    assert!(
+        matches!(job.step(), Step::Skipped | Step::Read(_)),
+        "a pass started"
+    );
 }
 
 #[test]
@@ -373,14 +405,20 @@ fn rules_leave_out_placeholders_big_and_unindexed_files() {
     assert!(!r.admit_file(&p, 10, attr::RECALL_ON_OPEN, false));
     assert!(!r.admit_file(&p, 10, attr::OFFLINE, false));
     assert!(!r.admit_file(&p, 10, 0, true), "a dataless file");
-    assert!(!r.admit_file(&f.root.join("a.pdf"), 10, 0, false), "include only");
+    assert!(
+        !r.admit_file(&f.root.join("a.pdf"), 10, 0, false),
+        "include only"
+    );
     s.exclude_recall_on_data_access = false;
     let r = Rules::new(&s, std::slice::from_ref(&f.root));
     assert!(r.admit_file(&p, 10, attr::RECALL_ON_DATA_ACCESS, false));
 
     assert!(r.admit_path(&f.root.join("sub").join("b.txt")));
     assert!(!r.admit_path(&f.root.join("skip").join("c.txt")));
-    assert!(!r.admit_path(&f.dir.join("elsewhere.txt")), "outside the roots");
+    assert!(
+        !r.admit_path(&f.dir.join("elsewhere.txt")),
+        "outside the roots"
+    );
     // Include-only folders replace the index's roots.
     s.include_only_folders = vec![f.root.join("sub").to_string_lossy().into_owned()];
     let r = Rules::new(&s, std::slice::from_ref(&f.root));

@@ -25,6 +25,7 @@ mod locate;
 mod mft;
 #[cfg(windows)]
 mod ntfs;
+pub mod propindex;
 /// The index service's wire protocol: used on Windows, built everywhere for fuzzing.
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/proto.rs"]
@@ -33,7 +34,6 @@ mod proto;
 #[cfg(any(windows, test, feature = "fuzzing"))]
 #[path = "ntfs/raw.rs"]
 mod raw;
-pub mod propindex;
 #[cfg(windows)]
 mod rdcw;
 pub mod runs;
@@ -60,13 +60,13 @@ pub use index_settings::{
     split_list, ExcludeSettings, FolderRoot, IndexSettings, IndexedProperty, JournalSettings,
     PropertySettings, ScanOptions, Schedule, VolumeRoot, DEFAULT_JOURNAL_MB,
 };
-pub use runs::RunHistorySettings;
 #[cfg(windows)]
 pub use ntfs::{
     index_dir, install_service, is_elevated, request_full_index, request_service_change,
     run_index_service, run_service, service_state, set_hide_unlistable, uninstall_service,
     NtfsSearcher, ServiceState, FALLBACK_STATUS, FROZEN_STATUS,
 };
+pub use runs::RunHistorySettings;
 pub use schedule::{parse_time_of_day, Clock, SystemClock};
 pub use terms::Highlighter;
 pub use volumes::{SystemVolumes, VolumeInfo, VolumeKind, VolumeSource};

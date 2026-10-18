@@ -184,9 +184,10 @@ impl Found {
         let attrs = None;
         Some(Self {
             path: crate::journal::path_text(path),
-            name: path
-                .file_name()
-                .map_or_else(|| crate::journal::path_text(path), |n| n.to_string_lossy().into_owned()),
+            name: path.file_name().map_or_else(
+                || crate::journal::path_text(path),
+                |n| n.to_string_lossy().into_owned(),
+            ),
             is_dir: m.is_dir(),
             size: if m.is_dir() { 0 } else { m.len() },
             modified: ms(m.modified()),
@@ -233,7 +234,11 @@ impl Props for Found {
 
 /// The hits of a query with `si:` terms: what the Windows Search index found for each
 /// text, kept when the whole query matches it, in the index's rank order.
-pub fn hits(q: &Query, compiled: &keel_query::Query, texts: Vec<String>) -> anyhow::Result<Vec<Hit>> {
+pub fn hits(
+    q: &Query,
+    compiled: &keel_query::Query,
+    texts: Vec<String>,
+) -> anyhow::Result<Vec<Hit>> {
     let texts = Arc::new(texts);
     let mut order: Vec<PathBuf> = Vec::new();
     let mut found: HashMap<PathBuf, Vec<usize>> = HashMap::new();
@@ -348,7 +353,7 @@ impl Searcher for SystemIndexed {
 mod oledb {
     use std::path::PathBuf;
 
-    use windows::core::{Interface, GUID, HSTRING, IUnknown, PCWSTR};
+    use windows::core::{IUnknown, Interface, GUID, HSTRING, PCWSTR};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
@@ -365,7 +370,8 @@ mod oledb {
     const CLSID_MSDAINITIALIZE: GUID = GUID::from_u128(0x2206cdb0_19c1_11d1_89e0_00c04fd7a829);
     /// `DBGUID_DEFAULT`, the provider's own SQL dialect.
     const DBGUID_DEFAULT: GUID = GUID::from_u128(0xc8b521fb_5cf3_11ce_ade5_00aa0044773d);
-    const CONNECTION: &str = "Provider=Search.CollatorDSO;Extended Properties='Application=Windows';";
+    const CONNECTION: &str =
+        "Provider=Search.CollatorDSO;Extended Properties='Application=Windows';";
     /// Bytes for one path (UTF-16), with the status and length before it.
     const VALUE_BYTES: usize = 32 * 1024 * 2;
     const STATUS_AT: usize = 0;
@@ -512,8 +518,10 @@ mod oledb {
         let len = usize::from_ne_bytes(buf[LENGTH_AT..LENGTH_AT + 8].try_into().ok()?);
         let len = len.min(VALUE_BYTES) / 2;
         let wide: Vec<u16> = buf[VALUE_AT..VALUE_AT + len * 2]
-            .chunks_exact(2)
-            .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_ne_bytes(*c))
             .collect();
         let text = String::from_utf16_lossy(&wide);
         (!text.is_empty()).then(|| PathBuf::from(text))
@@ -526,7 +534,10 @@ mod tests {
 
     #[test]
     fn words_drop_quotes_and_bare_wildcards() {
-        assert_eq!(words("  budget  \"q3 report\" * ?? x*"), ["budget", "q3", "report", "x*"]);
+        assert_eq!(
+            words("  budget  \"q3 report\" * ?? x*"),
+            ["budget", "q3", "report", "x*"]
+        );
         assert!(words("\"\" *").is_empty());
     }
 
@@ -562,7 +573,10 @@ mod tests {
             }
         }
         assert!(!in_literal, "{sql}");
-        assert!(!outside.contains("1=1") && !outside.contains("--"), "{outside}");
+        assert!(
+            !outside.contains("1=1") && !outside.contains("--"),
+            "{outside}"
+        );
         assert!(sql.contains("CONTAINS(*, '\"a'')*\"')"), "{sql}");
     }
 
@@ -572,7 +586,10 @@ mod tests {
         assert!(sql.starts_with("SELECT TOP 1 "), "{sql}");
         assert!(sql.contains("SCOPE='file:C:/Users/Me''s/Docs'"), "{sql}");
         let sql = build_sql("x", None, u32::MAX).unwrap();
-        assert!(sql.starts_with(&format!("SELECT TOP {MAX_RESULTS} ")), "{sql}");
+        assert!(
+            sql.starts_with(&format!("SELECT TOP {MAX_RESULTS} ")),
+            "{sql}"
+        );
         assert_eq!(build_sql("  \"\"  ", None, 10), None);
     }
 

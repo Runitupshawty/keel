@@ -105,7 +105,9 @@ fn run_count_and_date_run_come_from_the_run_history() {
     assert!(!q.matches(&never));
     // Legacy names and `unknown`.
     assert!(parse("runcount:3", &opts()).unwrap().matches(&today));
-    assert!(parse("daterun:yesterday", &opts()).unwrap().matches(&yesterday));
+    assert!(parse("daterun:yesterday", &opts())
+        .unwrap()
+        .matches(&yesterday));
     assert!(parse("run-count:unknown", &opts()).unwrap().matches(&never));
     assert!(!parse("run-count:unknown", &opts()).unwrap().matches(&today));
     // Everything else is the item's.
@@ -117,7 +119,10 @@ fn run_count_and_date_run_come_from_the_run_history() {
 #[test]
 fn si_matches_what_the_system_index_found() {
     assert_eq!(matching("si:budget"), ["report.pdf", "notes.txt"]);
-    assert_eq!(matching("system-index:\"quarterly figures\""), ["report.pdf"]);
+    assert_eq!(
+        matching("system-index:\"quarterly figures\""),
+        ["report.pdf"]
+    );
     assert_eq!(matching("si:budget ext:txt"), ["notes.txt"]);
     assert_eq!(matching("!si:budget"), ["tool.exe"]);
     assert_eq!(matching("si:nothing | tool"), ["tool.exe"]);
@@ -143,7 +148,10 @@ fn the_query_lists_its_system_index_texts() {
         q.system_index_texts(),
         ["budget", "quarterly figures", "a", "b"]
     );
-    assert!(parse("report", &opts()).unwrap().system_index_texts().is_empty());
+    assert!(parse("report", &opts())
+        .unwrap()
+        .system_index_texts()
+        .is_empty());
 }
 
 #[test]

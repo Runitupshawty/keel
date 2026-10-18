@@ -130,7 +130,9 @@ fn decode(kind: i64, num: Option<f64>, text: Option<String>) -> Prop {
         K_DATE => num.map_or(Prop::Unknown, |n| Prop::Date(time_of(n as i64))),
         K_DURATION => num
             .filter(|n| n.is_finite() && *n >= 0.0)
-            .map_or(Prop::Unknown, |n| Prop::Duration(Duration::from_secs_f64(n))),
+            .map_or(Prop::Unknown, |n| {
+                Prop::Duration(Duration::from_secs_f64(n))
+            }),
         K_LIST => text.map_or(Prop::Unknown, |t| {
             Prop::List(t.split(LIST_SEP).map(|s| Prop::Str(s.to_owned())).collect())
         }),
@@ -237,7 +239,12 @@ impl PropStore {
 
     /// Stores what was read of `path` (its earlier values are replaced); unknown values
     /// are not stored.
-    pub fn put(&self, path: &Path, state: &FileState, values: &[(String, Prop)]) -> anyhow::Result<()> {
+    pub fn put(
+        &self,
+        path: &Path,
+        state: &FileState,
+        values: &[(String, Prop)],
+    ) -> anyhow::Result<()> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let text = stored(path);
@@ -315,7 +322,10 @@ impl PropStore {
             return Vec::new();
         };
         stmt.query_map([stored(path)], |r| {
-            Ok((r.get::<_, String>(0)?, decode(r.get(1)?, r.get(2)?, r.get(3)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                decode(r.get(1)?, r.get(2)?, r.get(3)?),
+            ))
         })
         .map(|rows| rows.flatten().collect())
         .unwrap_or_default()
@@ -573,7 +583,11 @@ impl Rules {
         let Some(root) = self.roots.iter().find(|r| path.starts_with(r)) else {
             return false;
         };
-        let mut dirs: Vec<&Path> = path.ancestors().skip(1).take_while(|a| a.starts_with(root)).collect();
+        let mut dirs: Vec<&Path> = path
+            .ancestors()
+            .skip(1)
+            .take_while(|a| a.starts_with(root))
+            .collect();
         dirs.pop(); // the root itself is walked whatever its name
         dirs.iter().all(|d| self.admit_dir(d))
     }
@@ -586,7 +600,12 @@ fn file_meta(meta: &std::fs::Metadata) -> (u64, i64, u32, bool) {
     let attrs = std::os::windows::fs::MetadataExt::file_attributes(meta);
     #[cfg(not(windows))]
     let attrs = 0;
-    (meta.len(), modified, attrs, keel_props::is_placeholder(meta))
+    (
+        meta.len(),
+        modified,
+        attrs,
+        keel_props::is_placeholder(meta),
+    )
 }
 
 // ---------------------------------------------------------------------------------
@@ -987,7 +1006,9 @@ impl Indexer {
             match fp.get(name) {
                 Ok(v) => out.push((name.clone(), v)),
                 // A name this platform cannot read is stored as unknown.
-                Err(keel_props::Error::UnknownFunction(_) | keel_props::Error::UnknownProperty(_))
+                Err(
+                    keel_props::Error::UnknownFunction(_) | keel_props::Error::UnknownProperty(_),
+                )
                 | Err(keel_props::Error::Pattern(_)) => out.push((name.clone(), Prop::Unknown)),
                 Err(e) => return Err(e),
             }

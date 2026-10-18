@@ -23,9 +23,9 @@ use windows::Win32::Security::Cryptography::{
 use windows::Win32::Security::WinTrust::{
     WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData,
     WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_CATALOG_INFO, WINTRUST_DATA,
-    WINTRUST_DATA_0, WINTRUST_DATA_PROVIDER_FLAGS, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
-    WTD_CHOICE_CATALOG, WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_NONE, WTD_REVOKE_NONE,
-    WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
+    WINTRUST_DATA_0, WINTRUST_DATA_PROVIDER_FLAGS, WINTRUST_FILE_INFO,
+    WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_CATALOG, WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_NONE,
+    WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
 };
 
 use crate::value::filetime_to_system_time;
@@ -45,7 +45,9 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
 
 fn time_of(ft: FILETIME) -> Option<SystemTime> {
     let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
-    (ticks != 0).then(|| filetime_to_system_time(ticks)).flatten()
+    (ticks != 0)
+        .then(|| filetime_to_system_time(ticks))
+        .flatten()
 }
 
 /// The signer of `path`: its embedded signature, else its catalog's; `None` when it is
@@ -59,9 +61,7 @@ pub fn read(path: &Path) -> std::io::Result<Option<Signer>> {
         hFile: HANDLE(file.as_raw_handle() as _),
         pgKnownSubject: std::ptr::null_mut(),
     };
-    let union = WINTRUST_DATA_0 {
-        pFile: &mut info,
-    };
+    let union = WINTRUST_DATA_0 { pFile: &mut info };
     // SAFETY: `info` and `path_w` outlive the call; `verify` closes its state.
     if let Some(s) = unsafe { verify(WTD_CHOICE_FILE, union) } {
         return Ok(Some(s));

@@ -153,7 +153,9 @@ impl Function {
             Reader::Hash(_) => "hash (streamed)",
             Reader::Audio(_) => "ID3v2/ID3v1, MPEG, FLAC, WAV",
             Reader::DateDeleted => "Recycle Bin `$I` record, Trash `.trashinfo`",
-            Reader::Signature(_) => "`WinVerifyTrust` (Windows only): embedded or catalog signature",
+            Reader::Signature(_) => {
+                "`WinVerifyTrust` (Windows only): embedded or catalog signature"
+            }
         }
     }
 }
