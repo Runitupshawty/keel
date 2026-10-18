@@ -39,14 +39,15 @@ fn sql_text(text: &str) -> String {
     text.replace('\'', "''")
 }
 
-/// A word as a `CONTAINS` prefix term: `"word*"`. Inner wildcards cannot be expressed
-/// there and are dropped (the `LIKE` side keeps them); quotes are already gone.
-fn contains_term(word: &str) -> String {
-    let w: String = word
-        .chars()
-        .filter(|c| !matches!(c, '*' | '?' | '"'))
-        .collect();
-    format!("\"{w}*\"")
+/// A word as a `CONTAINS` prefix term: `"word*"` (a trailing `*` is the same prefix).
+/// `None` for a word with other wildcards, which `CONTAINS` cannot express: only its
+/// file name `LIKE` pattern is used. Quotes are already gone.
+fn contains_term(word: &str) -> Option<String> {
+    let stem = word.trim_end_matches('*');
+    if stem.contains(['*', '?', '"']) {
+        return None;
+    }
+    Some(format!("\"{stem}*\""))
 }
 
 /// A word as a `LIKE` pattern on the file name: `%word%`, with `%`, `_` and `[` taken
@@ -85,11 +86,11 @@ pub fn build_sql(text: &str, within: Option<&Path>, max: u32) -> Option<String> 
     let scope = within.map_or_else(|| "file:".to_owned(), scope_url);
     let mut clauses = vec![format!("SCOPE='{}'", sql_text(&scope))];
     for w in &words {
-        clauses.push(format!(
-            "(CONTAINS(*, '{}') OR System.FileName LIKE '{}')",
-            sql_text(&contains_term(w)),
-            sql_text(&like_pattern(w))
-        ));
+        let like = format!("System.FileName LIKE '{}'", sql_text(&like_pattern(w)));
+        clauses.push(match contains_term(w) {
+            Some(term) => format!("(CONTAINS(*, '{}') OR {like})", sql_text(&term)),
+            None => like,
+        });
     }
     Some(format!(
         "SELECT TOP {} System.ItemPathDisplay FROM SystemIndex WHERE {} ORDER BY System.Search.Rank DESC",
@@ -551,10 +552,14 @@ mod tests {
              AND (CONTAINS(*, '\"100%_[draft]*\"') OR System.FileName LIKE '%100[%][_][[]draft]%') \
              ORDER BY System.Search.Rank DESC"
         );
-        // Everything's wildcards: the LIKE side keeps them, CONTAINS gets a prefix.
+        // Everything's wildcards: inside a word only the file name can match them; a
+        // trailing `*` is CONTAINS' own prefix.
         let sql = build_sql("rep*rt?", None, 1).unwrap();
-        assert!(sql.contains("CONTAINS(*, '\"report*\"')"), "{sql}");
-        assert!(sql.contains("LIKE '%rep%rt_%'"), "{sql}");
+        assert!(!sql.contains("CONTAINS"), "{sql}");
+        assert!(sql.contains("AND System.FileName LIKE '%rep%rt_%'"), "{sql}");
+        let sql = build_sql("budg*", None, 1).unwrap();
+        assert!(sql.contains("CONTAINS(*, '\"budg*\"')"), "{sql}");
+        assert!(sql.contains("LIKE '%budg%%'"), "{sql}");
         // A quote can never end the literal early: every `'` comes doubled, so what
         // the text says stays inside the literals.
         let sql = build_sql("a') OR 1=1 --", None, 10).unwrap();
@@ -633,5 +638,19 @@ mod tests {
             Err(e) => eprintln!("Windows Search unavailable here: {e:#}"),
         }
         assert!(started.elapsed() <= TIMEOUT + Duration::from_secs(2));
+    }
+}
+
+/// By hand on a machine with Windows Search: `cargo test -p keel-search live_rows --
+/// --ignored --nocapture` prints how many rows a common word returns (not the paths).
+#[cfg(all(test, windows))]
+mod live {
+    #[test]
+    #[ignore = "needs a running Windows Search index"]
+    fn live_rows() {
+        let sql = super::build_sql("the", None, 5).unwrap();
+        let rows = super::run_sql(&sql).unwrap();
+        println!("rows: {}", rows.len());
+        assert!(rows.iter().all(|p| p.is_absolute()));
     }
 }

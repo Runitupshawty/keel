@@ -344,7 +344,9 @@ pub fn info(path: &Path) -> Option<RunInfo> {
 /// Forgets every open (Settings → Search index → Run history → **Clear**). Works with the
 /// history off too, when its file exists.
 pub fn clear() -> anyhow::Result<()> {
-    if let Some(s) = global() {
+    // Opened earlier (the history may be off now): its copy in memory is cleared too.
+    let open = GLOBAL.lock().open.clone();
+    if let Some(s) = open.or_else(global) {
         return s.clear();
     }
     let path = {
