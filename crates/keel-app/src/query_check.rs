@@ -55,7 +55,7 @@ mod tests {
     fn the_problem_is_worded_in_the_interface_language() {
         crate::i18n::set("es");
         let p = problem("size:big").expect("size:big should be rejected");
-        let end = problem("(report").expect("an open bracket should be rejected");
+        let end = problem("<report").expect("an unclosed group should be rejected");
         crate::i18n::set("en");
         assert!(p.contains(" en \""), "{p}");
         assert!(problem("size:big").unwrap().contains(" at \""));
