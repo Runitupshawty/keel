@@ -189,7 +189,9 @@ impl FileWatch {
             match rx.try_recv() {
                 Ok(Ok(u)) => {
                     self.applying = None;
-                    if u.generation == generation {
+                    // A batch that changed nothing (a folder's own notification) leaves
+                    // the tree shown as it is.
+                    if u.generation == generation && !u.applied.is_empty() {
                         self.added += u.applied.added;
                         self.removed += u.applied.removed;
                         self.updated += u.applied.updated;
@@ -243,15 +245,26 @@ mod tests {
     use super::*;
     use keel_vfs::du::{self, Root, ScanHandle, ScanOptions};
 
-    fn wait(w: &mut FileWatch, ctx: &egui::Context, tree: &Arc<Tree>, gen: u64) -> Updated {
+    /// Polls, taking in each batch, until the tree shown passes `ok` (notifications of
+    /// what happened just before the watch started may come first, macOS sends some).
+    fn wait(
+        w: &mut FileWatch,
+        ctx: &egui::Context,
+        tree: &mut Arc<Tree>,
+        gen: u64,
+        ok: impl Fn(&Tree) -> bool,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if let Some(u) = w.poll(ctx, Some(tree), gen) {
-                return u;
+                *tree = Arc::new(u.tree);
+                if ok(tree) {
+                    return;
+                }
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!("no update; error {:?}", w.error);
+        panic!("no such update; error {:?}", w.error);
     }
 
     /// The watcher end to end: a new file in a scanned folder ends up in the tree, the
@@ -262,7 +275,7 @@ mod tests {
         let root = tmp.path().join("root");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("old.txt"), b"12345").unwrap();
-        let tree = Arc::new(
+        let mut tree = Arc::new(
             du::scan(
                 &[Root::Path(root.clone())],
                 &ScanOptions::default(),
@@ -284,9 +297,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         std::fs::write(root.join("new.txt"), vec![b'x'; 1000]).unwrap();
-        let u = wait(&mut w, &ctx, &tree, 1);
-        let mut tree = Arc::new(u.tree);
-        assert!(tree.find(&root.join("new.txt")).is_some());
+        let new = root.join("new.txt");
+        wait(&mut w, &ctx, &mut tree, 1, |t| t.find(&new).is_some());
         assert_eq!(tree.node(du::TOP).size, 1005);
         // The new file's further notifications settle.
         let settle = Instant::now() + Duration::from_secs(2);
@@ -335,9 +347,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         w.set_paused(false);
-        let u = wait(&mut w, &ctx, &tree, 1);
-        assert!(u.tree.find(&root.join("old.txt")).is_none());
-        assert_eq!(u.tree.node(du::TOP).size, 1000);
+        let old = root.join("old.txt");
+        wait(&mut w, &ctx, &mut tree, 1, |t| t.find(&old).is_none());
+        assert_eq!(tree.node(du::TOP).size, 1000);
         w.clear();
         assert!(w.log.is_empty());
         // A newer scan: an older one's batches are dropped.
