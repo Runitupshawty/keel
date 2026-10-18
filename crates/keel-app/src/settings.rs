@@ -1024,6 +1024,7 @@ pub fn window(
                     ui.end_row();
                     // --- Task 76 ---
                     crate::search_tab::settings_rows(ui, &mut s.search, &mut s.quote_copied_paths);
+                    crate::search_columns::settings_rows(ui, &mut s.views.search);
                     if cfg!(windows) {
                         // --- Task 85 ---
                         ui.label(tr("settings.explorer_menu"));

@@ -148,6 +148,8 @@ impl QuickSearch {
                         sizes: &s.sizes,
                         keys: true,
                     };
+                    // Task 76: the results' sort and columns as in a search tab.
+                    crate::search_columns::prepare(ui.ctx(), pane.tab_mut(), &cx);
                     crate::view_details::ui(ui, (0, 0), pane.tab_mut(), &mut cx, &mut actions);
                 });
                 for action in actions {

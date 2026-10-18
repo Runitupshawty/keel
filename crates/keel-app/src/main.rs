@@ -64,10 +64,12 @@ mod recover_cli; // Phase 17 Task 85: `keel recover`
 mod remotes;
 #[cfg(test)]
 mod screenshots; // docs/screenshots (ignored: needs a GPU)
+mod search_columns; // Task 76: search results columns and sort
 mod search_filters; // Task 76
 mod search_history; // Task 76
 mod search_settings;
 mod search_tab;
+mod search_view; // Task 76: search sidebars, search current results, complete word
 mod session;
 mod settings;
 mod settings_io; // Task 76: Settings → Advanced, import, export and reset

@@ -4246,3 +4246,103 @@ fn cloud_wizard_gcs_preset_prefills_the_s3_form() {
     click(&mut h, "Cancel");
     assert!(s(&h).clouds.wizard.is_none());
 }
+
+/// Task 76: a search tab's chosen columns, a header sort that keeps the earlier one as the
+/// secondary sort, the Filters and Folders sidebars, and Search current results.
+#[test]
+fn search_results_columns_sidebars_and_refine() {
+    use crate::search_columns::ResultCol;
+    use crate::search_view::ResultsCmd;
+    let root = demo();
+    let base = std::env::temp_dir().join(format!("keel-walk-{}-results", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let walk = keel_search::WalkIndexSearcher::open(base, vec![root.to_owned()]).unwrap();
+    let mut settings = crate::settings::Settings {
+        style: crate::design::Style::Classic,
+        ..Default::default()
+    };
+    let opts = &mut settings.views.search;
+    opts.columns = vec![
+        ResultCol::Path,
+        ResultCol::Size,
+        ResultCol::Extension,
+        ResultCol::Attributes,
+    ];
+    opts.filters_sidebar = true;
+    opts.folders_sidebar = true;
+    let boot = Boot {
+        searcher: Some(std::sync::Arc::new(walk)),
+        ..boot(&root.join("Documents"), &root.join("Backup"), settings)
+    };
+    let mut h = app_with(boot, SIZE);
+    let ready = |s: &AppState| s.searcher.as_ref().is_some_and(|x| x.available());
+    assert!(wait(&mut h, 60, &ready), "index built");
+    // One pane: the search tab's columns fit, and its headers are the only ones.
+    if s(&h).dual {
+        sm(&mut h).run(0, Action::ToggleDual);
+    }
+    key(&mut h, CMD, Key::F);
+    assert!(s(&h).tab(0).is_search());
+    type_text(&mut h, "budget");
+    let two = |s: &AppState| !s.tab(0).loading && s.tab(0).entries().len() == 2;
+    assert!(wait(&mut h, 30, &two), "{:?}", names(s(&h), 0));
+    h.run_steps(3);
+    for label in [
+        "Path",
+        "Extension",
+        "Attributes",
+        "Filters",
+        "Folders",
+        "Audio",
+    ] {
+        assert!(has(&h, label), "{label}");
+    }
+    assert!(has(&h, "All results (2)"));
+    shot(&mut h, "search-results-sidebars");
+
+    // Size first, then Name: Name leads and Size follows as the secondary sort.
+    let size = in_panes(&h, "Size", 0.0)[0];
+    click_at(&mut h, size, NONE, PointerButton::Primary);
+    h.run_steps(2);
+    let sort = |s: &AppState| s.tab(0).results.sort(s.tab(0).sort);
+    assert_eq!(
+        sort(s(&h)),
+        [(ResultCol::Size, true), (ResultCol::Name, true)],
+        "clicked {size:?} of {}",
+        dump(&h, "Size")
+    );
+    let name = in_panes(&h, "Name, sorted ascending", 0.0)[0];
+    click_at(&mut h, name, NONE, PointerButton::Primary);
+    h.run_steps(2);
+    assert_eq!(
+        sort(s(&h)),
+        [(ResultCol::Name, true), (ResultCol::Size, true)]
+    );
+
+    // The Folders sidebar narrows the results to one folder, and back.
+    click(&mut h, "Documents  (1)");
+    h.run_steps(3);
+    let shown = |s: &AppState| s.tab(0).visible_cached().len();
+    assert_eq!(shown(s(&h)), 1);
+    click(&mut h, "All results (2)");
+    h.run_steps(3);
+    assert_eq!(shown(s(&h)), 2);
+
+    // Search current results: the next search looks only in these two.
+    sm(&mut h).run(0, Action::Results(ResultsCmd::SearchCurrentResults));
+    assert!(s(&h).tab(0).filelist.is_some());
+    assert!(wait(&mut h, 30, &two), "{:?}", names(s(&h), 0));
+    let set_query = |h: &mut H, text: &str| {
+        if let crate::tab::TabKind::Search { query, due, .. } = &mut sm(h).tab_mut(0).kind {
+            *query = text.into();
+            *due = Some(std::time::Instant::now());
+        }
+        h.run_steps(2);
+    };
+    set_query(&mut h, "notes");
+    let none = |s: &AppState| !s.tab(0).loading && s.tab(0).entries().is_empty();
+    assert!(wait(&mut h, 30, &none), "notes.md is not in the results");
+    sm(&mut h).run(0, Action::Results(ResultsCmd::SearchCurrentResults));
+    assert!(s(&h).tab(0).filelist.is_none());
+    assert!(wait(&mut h, 30, &two), "{:?}", names(s(&h), 0));
+}

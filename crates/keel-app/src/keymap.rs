@@ -497,6 +497,55 @@ pub fn commands() -> Vec<Command> {
             &["Ctrl+R"],
         )
         .search(),
+        cmd(
+            "search.match_prefix",
+            "Search: Match prefix",
+            SearchToggle(Toggle::Prefix),
+            &[],
+        )
+        .search(),
+        cmd(
+            "search.match_suffix",
+            "Search: Match suffix",
+            SearchToggle(Toggle::Suffix),
+            &[],
+        )
+        .search(),
+        cmd(
+            "search.ignore_punctuation",
+            "Search: Ignore punctuation",
+            SearchToggle(Toggle::Punctuation),
+            &[],
+        )
+        .search(),
+        cmd(
+            "search.ignore_whitespace",
+            "Search: Ignore white-space",
+            SearchToggle(Toggle::Whitespace),
+            &[],
+        )
+        .search(),
+        cmd(
+            "search.current_results",
+            "Search: Search current results",
+            Results(crate::search_view::ResultsCmd::SearchCurrentResults),
+            &[],
+        )
+        .search(),
+        cmd(
+            "search.filters_sidebar",
+            "Search: Filters sidebar",
+            Results(crate::search_view::ResultsCmd::ToggleFiltersSidebar),
+            &[],
+        )
+        .search(),
+        cmd(
+            "search.folders_sidebar",
+            "Search: Folders sidebar",
+            Results(crate::search_view::ResultsCmd::ToggleFoldersSidebar),
+            &[],
+        )
+        .search(),
         cmd("search.more", "Search: Load more results", SearchMore, &[]).search(),
         // --- the palette, always ---
         cmd("go.up", "Go to parent folder", Up, &["Alt+Up"]).global(),
@@ -1733,8 +1782,8 @@ mod tests {
             .search()
             .map(|k| (k.mods(), k.chord.key, k.action.clone()))
             .collect();
-        assert_eq!(search.len(), crate::search_tab::Toggle::ALL.len());
-        for t in crate::search_tab::Toggle::ALL {
+        assert_eq!(search.len(), crate::search_tab::Toggle::KEYED.len());
+        for t in crate::search_tab::Toggle::KEYED {
             let chord = Chord::parse(t.shortcut()).unwrap();
             assert!(search.contains(&(CMD, chord.key, Action::SearchToggle(t))));
         }

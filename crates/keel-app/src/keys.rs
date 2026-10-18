@@ -308,6 +308,8 @@ pub enum Action {
     // --- Task 76 ---
     /// Bookmarks, filters and search history (`bookmarks.rs`).
     Find(crate::bookmarks::FindCmd),
+    /// The search sidebars and Search current results (`search_view.rs`).
+    Results(crate::search_view::ResultsCmd),
     // --- Task 65 ---
     /// Show / hide the sidebar (Ctrl+Alt+S, the toolbar's sidebar button).
     ToggleSidebar,
