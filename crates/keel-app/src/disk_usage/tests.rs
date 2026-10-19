@@ -709,3 +709,20 @@ fn selected_rows_are_tab_separated() {
     assert_eq!(cols[1], "10");
     assert_eq!(text.lines().count(), 2);
 }
+
+/// The scan options follow the window's scan switches.
+#[test]
+fn scan_options_follow_window_settings() {
+    let du = DiskUsage {
+        follow_junctions: true,
+        follow_mount_points: true,
+        exclude_hidden: true,
+        exclude_system: true,
+        ..DiskUsage::default()
+    };
+    let o = du.scan_options();
+    assert!(o.follow_junctions && o.follow_mount_points);
+    assert!(o.filters.exclude_hidden && o.filters.exclude_system);
+    let plain = DiskUsage::default().scan_options();
+    assert!(!plain.follow_junctions && !plain.filters.exclude_hidden);
+}

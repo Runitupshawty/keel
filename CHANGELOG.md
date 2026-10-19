@@ -6,6 +6,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Added
 
+- Disk Usage: Options to follow junctions and mount points and to skip hidden or system items in scans.
 - Disk Usage: a **Tree only** layout (the tree list without the file types or the treemap).
 - Folder indexes (the walk index) keep each item's last access time, so `da:` / `dateaccessed:` work there; existing indexes rebuild once.
 - Disk Usage: **Copy rows as text** in a row's menu copies the selected rows (path, size, size on disk, items, files, folders) as tab-separated text.

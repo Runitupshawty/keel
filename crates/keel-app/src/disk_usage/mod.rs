@@ -190,6 +190,12 @@ pub struct DuSettings {
     pub chart_unknown: bool,
     /// The CPU and I/O priority of scans.
     pub priority: Priority,
+    /// Scan into junctions (Windows) and folder mount points; off like WinDirStat.
+    pub follow_junctions: bool,
+    pub follow_mount_points: bool,
+    /// Leave hidden and system items out of scans.
+    pub exclude_hidden: bool,
+    pub exclude_system: bool,
     /// Watch the scanned folders and apply their changes (the File Watcher).
     pub watch: bool,
     /// The previous scans, newest first.
@@ -215,6 +221,10 @@ impl Default for DuSettings {
             chart_free: true,
             chart_unknown: true,
             priority: Priority::Normal,
+            follow_junctions: false,
+            follow_mount_points: false,
+            exclude_hidden: false,
+            exclude_system: false,
             watch: true,
             history: Vec::new(),
         }
@@ -377,6 +387,11 @@ pub struct DiskUsage {
     /// The scan priority and whether to watch, as last set (`ui::window` copies them from
     /// the settings each frame).
     pub priority: Priority,
+    /// The scan switches, copied from the settings each frame like `priority`.
+    pub follow_junctions: bool,
+    pub follow_mount_points: bool,
+    pub exclude_hidden: bool,
+    pub exclude_system: bool,
     /// Scroll the tree to the cursor next frame.
     pub scroll_tree: bool,
     /// Scroll the file types list to its selected row next frame.
@@ -436,10 +451,7 @@ impl DiskUsage {
         let handle = ScanHandle::new();
         let (tx, rx) = channel();
         let (h, r) = (handle.clone(), roots.clone());
-        let options = ScanOptions {
-            priority: self.priority,
-            ..ScanOptions::default()
-        };
+        let options = self.scan_options();
         crate::worker::spawn("keel-du-scan", move || {
             let result = du::scan(&r, &options, &h).map(|tree| {
                 let descriptions = os::descriptions(tree.exts().iter().map(|e| &**e));
@@ -478,10 +490,27 @@ impl DiskUsage {
         }
     }
 
+    /// The options a scan from this window runs with.
+    fn scan_options(&self) -> ScanOptions {
+        let mut options = ScanOptions {
+            priority: self.priority,
+            follow_junctions: self.follow_junctions,
+            follow_mount_points: self.follow_mount_points,
+            ..ScanOptions::default()
+        };
+        options.filters.exclude_hidden = self.exclude_hidden;
+        options.filters.exclude_system = self.exclude_system;
+        options
+    }
+
     /// Takes in a finished scan, finished metadata reads and the File Watcher's changes.
     /// Called every frame; repaints while a scan runs.
     pub fn poll(&mut self, ctx: &egui::Context, settings: &mut DuSettings) {
         self.priority = settings.priority;
+        self.follow_junctions = settings.follow_junctions;
+        self.follow_mount_points = settings.follow_mount_points;
+        self.exclude_hidden = settings.exclude_hidden;
+        self.exclude_system = settings.exclude_system;
         if let Some(s) = &self.scan {
             match s.rx.try_recv() {
                 Ok(result) => {
