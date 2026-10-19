@@ -610,7 +610,7 @@ fn column_chooser(ui: &mut Ui, settings: &mut DuSettings) {
             settings.toggle_column(c);
         }
     }
-    if ui.button("Default columns").clicked() {
+    if ui.button(tr("disk_usage.default_columns")).clicked() {
         settings.columns = Column::DEFAULT.to_vec();
         ui.close_menu();
     }
@@ -620,23 +620,25 @@ fn status(ui: &mut Ui, du: &mut DiskUsage) {
     let mut relaunch_error = None;
     let Some(m) = &du.model else { return };
     ui.horizontal(|ui| {
-        let what = if m.physical { "on disk" } else { "" };
+        let what = if m.physical { tr("disk_usage.on_disk") } else { "" };
         match m.selected.len() {
-            0 => ui.label("Nothing selected"),
+            0 => ui.label(tr("disk_usage.nothing_selected")),
             1 => ui.label(format!("{} {what}", size_text(m.selection_bytes()))),
-            n => ui.label(format!(
-                "{n} items selected: {} {what}",
-                size_text(m.selection_bytes())
-            )),
+            n => ui.label(
+                tr("disk_usage.items_selected")
+                    .replace("{n}", &n.to_string())
+                    .replace("{size}", &size_text(m.selection_bytes()))
+                    .replace("{what}", what),
+            ),
         };
         ui.separator();
         let info = &m.tree.info;
-        let mut text = format!("Scanned in {}", elapsed_text(info.elapsed));
+        let mut text = tr("disk_usage.scanned_in").replace("{time}", &elapsed_text(info.elapsed));
         if !info.complete {
-            text.push_str(" (stopped: incomplete)");
+            text.push_str(tr("disk_usage.stopped_incomplete"));
         }
         if info.unreadable > 0 {
-            text.push_str(&format!(", {} folders could not be read", info.unreadable));
+            text.push_str(&tr("disk_usage.unreadable").replace("{n}", &info.unreadable.to_string()));
         }
         ui.weak(text);
         let denied = du.denied_roots();
@@ -662,7 +664,7 @@ fn status(ui: &mut Ui, du: &mut DiskUsage) {
         if let Some(f) = &m.filter {
             ui.separator();
             let list: Vec<String> = f.iter().map(|e| format!(".{e}")).collect();
-            ui.label(format!("Showing only {}", list.join(" ")));
+            ui.label(tr("disk_usage.showing_only").replace("{list}", &list.join(" ")));
         }
     });
     if let Some(e) = relaunch_error {
@@ -727,7 +729,14 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
     }
     table
         .header(ROW_H, |mut h| {
-            for label in ["", "Extension", "Description", "Bytes", "%", "Files"] {
+            for label in [
+                "",
+                tr("disk_usage.col_extension"),
+                tr("disk_usage.col_description"),
+                tr("disk_usage.col_bytes"),
+                "%",
+                tr("disk_usage.col_files"),
+            ] {
                 h.col(|ui| {
                     ui.strong(label);
                 });
@@ -770,21 +779,21 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
                     ui.label(type_hover(t));
                 })
                 .context_menu(|ui| {
-                    if ui.button("Show only these files in the tree").clicked() {
+                    if ui.button(tr("disk_usage.show_only_these")).clicked() {
                         event = Some(TypeEvent::Filter(exts.clone()));
                         ui.close_menu();
                     }
                     let single = exts.len() == 1 && exts.iter().all(|e| !e.is_empty());
                     if single
                         && ui
-                            .button(format!("Search for {label} in a new tab"))
+                            .button(tr("disk_usage.search_type_new_tab").replace("{label}", &label))
                             .clicked()
                     {
                         let ext = exts.iter().next().cloned().unwrap_or_default();
                         out.push(Action::SearchFor(format!("*.{ext}")));
                         ui.close_menu();
                     }
-                    if single && ui.button("List these files in the Search tab").clicked() {
+                    if single && ui.button(tr("disk_usage.list_in_search")).clicked() {
                         event = Some(TypeEvent::SearchTab(
                             exts.iter().next().cloned().unwrap_or_default(),
                         ));
@@ -859,8 +868,8 @@ fn main_area(
             ui.label(status);
             if !du.steps.queue.is_empty()
                 && ui
-                    .button("Stop after this step")
-                    .on_hover_text("The steps after this one are not run")
+                    .button(tr("disk_usage.stop_after_step"))
+                    .on_hover_text(tr("disk_usage.stop_after_step_tip"))
                     .clicked()
             {
                 du.steps.queue.clear();
@@ -1083,7 +1092,7 @@ pub fn tree_list(
                         let text = egui::RichText::new(format!("{}{arrow}", c.label())).strong();
                         let r = ui
                             .add(egui::Button::new(text).frame(false))
-                            .on_hover_text("Click to sort, right-click to choose the columns");
+                            .on_hover_text(tr("disk_usage.header_tip"));
                         let name = match model.sort {
                             (k, true) if k == c => format!("{}, sorted ascending", c.label()),
                             (k, false) if k == c => format!("{}, sorted descending", c.label()),
@@ -1141,7 +1150,11 @@ pub fn tree_list(
                                                     .frame(false)
                                                     .small(),
                                             )
-                                            .named(if open { "Collapse" } else { "Expand" });
+                                            .named(if open {
+                                                tr("disk_usage.collapse")
+                                            } else {
+                                                tr("disk_usage.expand")
+                                            });
                                         if r.clicked() {
                                             events.push(TreeEvent::Toggle(id));
                                         }
@@ -1386,29 +1399,33 @@ fn row_menu(
     let container = model.tree.node(id).is_container();
     r.context_menu(|ui| {
         let Some(path) = &path else {
-            ui.weak("Free and unknown space have no files");
+            ui.weak(tr("disk_usage.free_no_files"));
             return;
         };
-        if ui.button("Show in Keel").clicked() {
+        if ui.button(tr("disk_usage.show_in_keel")).clicked() {
             out.push(Action::OpenPath(VPath::local(path)));
             ui.close_menu();
         }
-        if container && ui.button("Open in a new tab").clicked() {
+        if container && ui.button(tr("disk_usage.open_new_tab")).clicked() {
             out.push(Action::NewTabAt(VPath::local(path)));
             ui.close_menu();
         }
-        if ui.button("Copy path").clicked() {
+        if ui.button(tr("disk_usage.copy_path")).clicked() {
             ui.ctx().copy_text(path.display().to_string());
             ui.close_menu();
         }
-        if ui.button("Copy rows as text").clicked() {
+        if ui.button(tr("disk_usage.copy_rows")).clicked() {
             ui.ctx().copy_text(model.selected_tsv(id));
             ui.close_menu();
         }
         if container && model.expandable(id) && model.filter.is_none() {
             let open = model.expanded.contains(&id);
             if ui
-                .button(if open { "Collapse" } else { "Expand" })
+                .button(if open {
+                    tr("disk_usage.collapse")
+                } else {
+                    tr("disk_usage.expand")
+                })
                 .clicked()
             {
                 events.push(TreeEvent::Toggle(id));
@@ -1417,7 +1434,7 @@ fn row_menu(
         }
         if let Some(ext) = ext.filter(|e| !e.is_empty()) {
             if ui
-                .button(format!("Search for .{ext} in a new tab"))
+                .button(tr("disk_usage.search_ext_new_tab").replace("{ext}", ext))
                 .clicked()
             {
                 out.push(Action::SearchFor(format!("*.{ext}")));
