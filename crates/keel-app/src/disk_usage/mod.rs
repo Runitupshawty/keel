@@ -126,17 +126,35 @@ pub enum Layout {
     TreemapLeft,
     /// The tree and the file types side by side, no treemap.
     ListsOnly,
+    /// The tree list alone: no file types, no treemap.
+    TreeOnly,
 }
 
 impl Layout {
-    pub const ALL: [Self; 3] = [Self::Classic, Self::TreemapLeft, Self::ListsOnly];
+    pub const ALL: [Self; 4] = [
+        Self::Classic,
+        Self::TreemapLeft,
+        Self::ListsOnly,
+        Self::TreeOnly,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Classic => "Tree and types above the treemap",
             Self::TreemapLeft => "Treemap on the left",
             Self::ListsOnly => "Lists only",
+            Self::TreeOnly => "Tree only",
         }
+    }
+
+    /// Whether the layout shows the file types list.
+    pub fn shows_types(self) -> bool {
+        !matches!(self, Self::TreeOnly)
+    }
+
+    /// Whether the layout shows the treemap.
+    pub fn shows_treemap(self) -> bool {
+        matches!(self, Self::Classic | Self::TreemapLeft)
     }
 }
 

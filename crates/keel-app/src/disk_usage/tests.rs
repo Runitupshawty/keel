@@ -272,6 +272,17 @@ fn settings_columns_keep_name_first_and_their_order() {
     assert_eq!(empty, DuSettings::default());
 }
 
+#[test]
+fn tree_only_layout_hides_types_and_treemap() {
+    assert!(!Layout::TreeOnly.shows_types());
+    assert!(!Layout::TreeOnly.shows_treemap());
+    assert!(Layout::ListsOnly.shows_types());
+    assert!(!Layout::ListsOnly.shows_treemap());
+    assert!(Layout::Classic.shows_types());
+    assert!(Layout::Classic.shows_treemap());
+    assert_eq!(Layout::ALL.len(), 4);
+}
+
 /// Opening with nothing scanned asks for drives; a scan replaces the picker, finishes on its
 /// worker and selects the root; the file types are built with ranks.
 #[test]

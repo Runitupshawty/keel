@@ -257,6 +257,10 @@ fn body(
             egui::CentralPanel::default()
                 .show_inside(ui, |ui| main_area(ui, du, settings, theme, keys, out));
         }
+        Layout::TreeOnly => {
+            egui::CentralPanel::default()
+                .show_inside(ui, |ui| main_area(ui, du, settings, theme, keys, out));
+        }
     }
 }
 
@@ -344,7 +348,14 @@ fn toolbar(
             .selected_text(settings.layout.label())
             .show_ui(ui, |ui| {
                 for l in Layout::ALL {
-                    ui.selectable_value(&mut settings.layout, l, l.label());
+                    ui.selectable_value(&mut settings.layout, l, l.label())
+                        .on_hover_text(if l.shows_types() && l.shows_treemap() {
+                            "The tree list, the file types and the treemap"
+                        } else if l.shows_types() {
+                            "The tree list and the file types"
+                        } else {
+                            "The tree list alone"
+                        });
                 }
             })
             .response
