@@ -8,6 +8,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 - Disk Usage: a **Tree only** layout (the tree list without the file types or the treemap).
 - Folder indexes (the walk index) keep each item's last access time, so `da:` / `dateaccessed:` work there; existing indexes rebuild once.
+- Disk Usage: **Copy rows as text** in a row's menu copies the selected rows (path, size, size on disk, items, files, folders) as tab-separated text.
 - Finder-style motion: the list view's disclosure triangle turns over 150 ms when a folder expands or collapses, sidebar sections ease their height over 200 ms when they hide or show, and the Quick Look window fades in over 150 ms; all instant with **Reduce motion** (Settings → General), none in Classic. See [Appearance](docs/files.md#appearance).
 
 - The Disk Usage window's **File Watcher**: after a scan its folders are watched and new, changed and removed files and folders reach the tree, totals, file types and chart as they happen (what is open and selected stays). A **Changes** tab lists the changes, newest first, with a regular-expression path filter; **Pause watching** holds them until resumed and **Clear changes** empties the list; **Watch for changes** turns it off. `keel_vfs::du::Tree::apply_changes` and `du::watch`. See [The Disk Usage window](docs/files.md#the-disk-usage-window).

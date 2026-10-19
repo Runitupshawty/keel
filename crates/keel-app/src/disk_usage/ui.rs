@@ -1375,6 +1375,10 @@ fn row_menu(
             ui.ctx().copy_text(path.display().to_string());
             ui.close_menu();
         }
+        if ui.button("Copy rows as text").clicked() {
+            ui.ctx().copy_text(model.selected_tsv(id));
+            ui.close_menu();
+        }
         if container && model.expandable(id) && model.filter.is_none() {
             let open = model.expanded.contains(&id);
             if ui

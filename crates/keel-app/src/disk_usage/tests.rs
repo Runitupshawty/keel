@@ -694,3 +694,18 @@ fn the_progress_line_names_device_storages() {
         "Phone: Internal, a portable device"
     );
 }
+
+#[test]
+fn selected_rows_are_tab_separated() {
+    let (dir, mut model) = fixture();
+    let small = id(&model, dir.path(), "small.TXT");
+    model.selected.clear();
+    let text = model.selected_tsv(small);
+    assert!(text.starts_with("Path\tSize\tSize on disk\tItems\tFiles\tFolders\n"));
+    let line = text.lines().nth(1).unwrap();
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(cols.len(), 6);
+    assert!(cols[0].ends_with("small.TXT"));
+    assert_eq!(cols[1], "10");
+    assert_eq!(text.lines().count(), 2);
+}

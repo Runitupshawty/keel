@@ -421,6 +421,35 @@ impl Model {
         self.sync_extensions();
     }
 
+    /// The selected rows (or `fallback` when nothing is selected) as tab-separated text
+    /// with a header line, in the order they are listed; for pasting into a spreadsheet.
+    pub fn selected_tsv(&self, fallback: NodeId) -> String {
+        let mut out = String::from("Path\tSize\tSize on disk\tItems\tFiles\tFolders\n");
+        let ids: Vec<NodeId> = if self.selected.is_empty() {
+            vec![fallback]
+        } else {
+            self.rows
+                .iter()
+                .map(|r| r.0)
+                .filter(|id| self.selected.contains(id))
+                .collect()
+        };
+        for id in ids {
+            let Some(path) = self.tree.path(id) else { continue };
+            let n = self.tree.node(id);
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\n",
+                path.display(),
+                n.size,
+                n.allocated,
+                n.items,
+                n.files,
+                n.folders
+            ));
+        }
+        out
+    }
+
     /// The selected files' extensions become the selected file types.
     fn sync_extensions(&mut self) {
         self.highlight_extensions = (self.selected.iter())
