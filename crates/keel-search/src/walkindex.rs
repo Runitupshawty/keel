@@ -47,8 +47,8 @@ const MAX_AGE_SECS: i64 = 7 * 24 * 3600;
 const OFFLINE_POLL: Duration = Duration::from_secs(10);
 /// Longest sleep of the worker between checks (schedule due, roots still online).
 const IDLE: Duration = Duration::from_secs(60);
-/// The db layout: version 2 added `created` and `attrs`.
-const VERSION: &str = "2";
+/// The db layout: version 2 added `created` and `attrs`, 3 `accessed`.
+const VERSION: &str = "3";
 const MAX_DEPTH: usize = 512;
 /// Name buffers smaller than this are scanned on the calling thread only.
 const PARALLEL_BYTES: usize = 1 << 20;
@@ -101,8 +101,17 @@ struct Meta {
     mtime: i64,
     /// Creation time, milliseconds since the epoch, `NO_TIME` when unknown.
     created: i64,
+    /// Last access time, milliseconds since the epoch, `NO_TIME` when unknown.
+    accessed: i64,
     /// [`attr`] bits.
     attrs: u32,
+}
+
+impl Meta {
+    /// Equal apart from the access time, which reading a file changes.
+    fn same(&self, other: &Meta) -> bool {
+        Meta { accessed: other.accessed, ..*self } == *other
+    }
 }
 
 const DIR_META: Meta = Meta {
@@ -110,6 +119,7 @@ const DIR_META: Meta = Meta {
     size: 0,
     mtime: NO_TIME,
     created: NO_TIME,
+    accessed: NO_TIME,
     attrs: attr::DIRECTORY,
 };
 
@@ -133,12 +143,13 @@ const DEAD: Entry = Entry {
         size: 0,
         mtime: NO_TIME,
         created: NO_TIME,
+        accessed: NO_TIME,
         attrs: 0,
     },
 };
 
-/// A row as stored in the db: (parent, name, is_dir, size, mtime, created, attrs).
-type Row = (i64, String, bool, i64, i64, i64, u32);
+/// A row as stored in the db: (parent, name, is_dir, size, mtime, created, accessed, attrs).
+type Row = (i64, String, bool, i64, i64, i64, i64, u32);
 
 fn clean(name: &str) -> Cow<'_, str> {
     if name.contains('\n') {
@@ -228,17 +239,24 @@ impl Table {
     /// Sets an entry's meta (a changed type drops what was below a folder).
     fn set_meta(&mut self, slot: u32, meta: Meta) {
         let e = self.entries[slot as usize];
-        if e.meta != meta {
-            if e.meta.is_dir && !meta.is_dir {
-                self.remove_children(slot);
-            }
+        if e.meta == meta {
+            return;
+        }
+        if e.meta.same(&meta) {
+            // Only the access time moved: keep it, but no journal entry.
             self.entries[slot as usize].meta = meta;
             self.dirty.insert(slot);
-            if self.log.is_some() && e.parent != NONE {
-                if let Some(path) = self.path_of(slot) {
-                    let change = Change::Changed(path, stat(e.meta), stat(meta));
-                    self.log.get_or_insert_with(Vec::new).push(change);
-                }
+            return;
+        }
+        if e.meta.is_dir && !meta.is_dir {
+            self.remove_children(slot);
+        }
+        self.entries[slot as usize].meta = meta;
+        self.dirty.insert(slot);
+        if self.log.is_some() && e.parent != NONE {
+            if let Some(path) = self.path_of(slot) {
+                let change = Change::Changed(path, stat(e.meta), stat(meta));
+                self.log.get_or_insert_with(Vec::new).push(change);
             }
         }
     }
@@ -426,7 +444,7 @@ impl Table {
         let none = HashMap::new();
         while let Some((o, n, path)) = stack.pop() {
             let (oe, ne) = (old.entries[o as usize], new.entries[n as usize]);
-            if oe.parent != NONE && oe.meta != ne.meta {
+            if oe.parent != NONE && !oe.meta.same(&ne.meta) {
                 out.push(Change::Changed(path.clone(), stat(oe.meta), stat(ne.meta)));
             }
             let ok = old.children.get(&o).unwrap_or(&none);
@@ -473,6 +491,7 @@ impl Table {
             m.size as i64,
             m.mtime,
             m.created,
+            m.accessed,
             m.attrs,
         ))
     }
@@ -480,7 +499,7 @@ impl Table {
     /// Rows must come in ascending slot order.
     fn from_rows(roots: &[PathBuf], rows: Vec<(u32, Row)>) -> Option<Self> {
         let mut t = Self::empty();
-        for (slot, (parent, name, is_dir, size, mtime, created, attrs)) in rows {
+        for (slot, (parent, name, is_dir, size, mtime, created, accessed, attrs)) in rows {
             while t.entries.len() < slot as usize {
                 t.free.push(t.entries.len() as u32);
                 t.entries.push(DEAD);
@@ -497,6 +516,7 @@ impl Table {
                     size: size as u64,
                     mtime,
                     created,
+                    accessed,
                     attrs,
                 },
             });
@@ -781,6 +801,7 @@ impl Props for EntryProps<'_> {
         let ms = match which {
             DateProp::Modified => meta.mtime,
             DateProp::Created => meta.created,
+            DateProp::Accessed => meta.accessed,
             _ => return None,
         };
         (ms != NO_TIME).then_some(ms)
@@ -939,6 +960,7 @@ fn meta_of(md: &std::fs::Metadata, path: &Path) -> Meta {
         size: if md.is_dir() { 0 } else { md.len() },
         mtime,
         created: millis(md.created()),
+        accessed: millis(md.accessed()),
         attrs: attrs_of(md, path) | if link { attr::REPARSE_POINT } else { 0 },
     }
 }
@@ -1084,7 +1106,7 @@ const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS files(
     id INTEGER PRIMARY KEY, parent INTEGER NOT NULL, name TEXT NOT NULL,
     is_dir INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
-    created INTEGER NOT NULL, attrs INTEGER NOT NULL);
+    created INTEGER NOT NULL, accessed INTEGER NOT NULL, attrs INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
 /// What a db says about itself besides its rows.
@@ -1105,11 +1127,13 @@ fn save_full(path: &Path, t: &Table, roots: &[PathBuf], stamp: &Stamp) -> anyhow
         let tx = conn.transaction()?;
         {
             let mut insert =
-                tx.prepare("INSERT INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+                tx.prepare("INSERT INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
             for slot in 0..t.entries.len() as u32 {
-                if let Some((parent, name, is_dir, size, mtime, created, attrs)) = t.row(slot) {
+                if let Some((parent, name, is_dir, size, mtime, created, accessed, attrs)) =
+                    t.row(slot)
+                {
                     insert.execute(params![
-                        slot, parent, name, is_dir, size, mtime, created, attrs
+                        slot, parent, name, is_dir, size, mtime, created, accessed, attrs
                     ])?;
                 }
             }
@@ -1146,13 +1170,13 @@ fn save_changes(
     let tx = conn.transaction()?;
     {
         let mut delete = tx.prepare("DELETE FROM files WHERE id = ?1")?;
-        let mut upsert =
-            tx.prepare("INSERT OR REPLACE INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
+        let mut upsert = tx
+            .prepare("INSERT OR REPLACE INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
         for (slot, row) in changes {
             match row {
-                Some((parent, name, is_dir, size, mtime, created, attrs)) => {
+                Some((parent, name, is_dir, size, mtime, created, accessed, attrs)) => {
                     upsert.execute(params![
-                        slot, parent, name, is_dir, size, mtime, created, attrs
+                        slot, parent, name, is_dir, size, mtime, created, accessed, attrs
                     ])?;
                 }
                 None => {
@@ -1195,7 +1219,8 @@ fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, Stamp)> {
     };
     let mut stmt = conn
         .prepare(
-            "SELECT id, parent, name, is_dir, size, mtime, created, attrs FROM files ORDER BY id",
+            "SELECT id, parent, name, is_dir, size, mtime, created, accessed, attrs \
+             FROM files ORDER BY id",
         )
         .ok()?;
     let rows = stmt
@@ -1210,6 +1235,7 @@ fn load(path: &Path, roots: &[PathBuf]) -> Option<(Table, Stamp)> {
                     r.get(5)?,
                     r.get(6)?,
                     r.get(7)?,
+                    r.get(8)?,
                 ),
             ))
         })
@@ -1292,6 +1318,7 @@ pub struct EntryInfo {
     pub size: u64,
     pub modified: Option<SystemTime>,
     pub created: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
     /// [`crate::attr`] bits.
     pub attributes: u32,
 }
@@ -1389,6 +1416,7 @@ impl WalkIndexSearcher {
             size: m.size,
             modified: time_of(m.mtime),
             created: time_of(m.created),
+            accessed: time_of(m.accessed),
             attributes: m.attrs,
         })
     }

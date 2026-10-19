@@ -930,6 +930,7 @@ fn table_remove_reuses_slots_and_round_trips_rows() {
         size: 3,
         mtime: 7,
         created: 5,
+        accessed: 9,
         attrs: attr::READONLY,
     };
     let root = t.roots[0].1;
@@ -1011,4 +1012,27 @@ fn bench_synthetic_tree() {
     let start = Instant::now();
     s.rescan();
     println!("rescan queued in {:?}", start.elapsed());
+}
+
+#[test]
+fn entries_store_accessed_time() {
+    let d = Dirs::sample();
+    let s = d.open();
+    let path = d.root.join("src").join("main.rs");
+    let info = s.info(&path).expect("indexed");
+    assert!(info.accessed.is_some());
+    drop(s);
+    let s = d.open();
+    assert_eq!(s.info(&path), Some(info));
+}
+
+#[test]
+fn access_time_alone_is_not_a_change() {
+    let d = Dirs::sample();
+    let s = d.open();
+    let path = d.root.join("src").join("main.rs");
+    let before = s.info(&path).expect("indexed");
+    drop(s);
+    let s = d.open();
+    assert_eq!(s.info(&path).map(|i| i.modified), Some(before.modified));
 }
