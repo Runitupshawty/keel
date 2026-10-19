@@ -472,8 +472,14 @@ impl LibraryQuery {
                         })
                         .filter(|&(w, h)| w > 0 && h > 0)
                         .with_context(|| format!("bad dimensions (want WIDTHxHEIGHT): {value}"))?;
-                    q.width.intersect(Span { min: Some(w), max: Some(w) });
-                    q.height.intersect(Span { min: Some(h), max: Some(h) });
+                    q.width.intersect(Span {
+                        min: Some(w),
+                        max: Some(w),
+                    });
+                    q.height.intersect(Span {
+                        min: Some(h),
+                        max: Some(h),
+                    });
                 }
                 "duration" | "length" => {
                     q.duration_ms.intersect(

@@ -22,8 +22,23 @@ fn options(now: i64, offset: i64) -> Options {
         utc_offset_secs: offset.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
         allow_literal_operators: false,
         external_functions: [
-            "tag", "content", "-content", "contents", "source", "camera", "taken", "w", "width",
-            "h", "height", "dimensions", "duration", "length", "has", "modified", "type",
+            "tag",
+            "content",
+            "-content",
+            "contents",
+            "source",
+            "camera",
+            "taken",
+            "w",
+            "width",
+            "h",
+            "height",
+            "dimensions",
+            "duration",
+            "length",
+            "has",
+            "modified",
+            "type",
         ]
         .into_iter()
         .map(str::to_owned)
