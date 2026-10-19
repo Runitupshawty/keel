@@ -381,14 +381,26 @@ fn toolbar(
             ui.checkbox(&mut settings.stripes, "Striped rows");
             ui.checkbox(&mut settings.seconds, "Seconds in times");
             ui.separator();
-            ui.checkbox(&mut settings.follow_junctions, tr("disk_usage.follow_junctions"))
-                .on_hover_text(tr("disk_usage.next_scan_tip"));
-            ui.checkbox(&mut settings.follow_mount_points, tr("disk_usage.follow_mounts"))
-                .on_hover_text(tr("disk_usage.next_scan_tip"));
-            ui.checkbox(&mut settings.exclude_hidden, tr("disk_usage.exclude_hidden"))
-                .on_hover_text(tr("disk_usage.next_scan_tip"));
-            ui.checkbox(&mut settings.exclude_system, tr("disk_usage.exclude_system"))
-                .on_hover_text(tr("disk_usage.next_scan_tip"));
+            ui.checkbox(
+                &mut settings.follow_junctions,
+                tr("disk_usage.follow_junctions"),
+            )
+            .on_hover_text(tr("disk_usage.next_scan_tip"));
+            ui.checkbox(
+                &mut settings.follow_mount_points,
+                tr("disk_usage.follow_mounts"),
+            )
+            .on_hover_text(tr("disk_usage.next_scan_tip"));
+            ui.checkbox(
+                &mut settings.exclude_hidden,
+                tr("disk_usage.exclude_hidden"),
+            )
+            .on_hover_text(tr("disk_usage.next_scan_tip"));
+            ui.checkbox(
+                &mut settings.exclude_system,
+                tr("disk_usage.exclude_system"),
+            )
+            .on_hover_text(tr("disk_usage.next_scan_tip"));
             ui.separator();
             ui.label(tr("disk_usage.priority"))
                 .on_hover_text(tr("disk_usage.priority_tip"));
