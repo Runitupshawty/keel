@@ -139,12 +139,12 @@ impl Layout {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Classic => "Tree and types above the treemap",
-            Self::TreemapLeft => "Treemap on the left",
-            Self::ListsOnly => "Lists only",
-            Self::TreeOnly => "Tree only",
-        }
+        crate::i18n::tr(match self {
+            Self::Classic => "disk_usage.layout_classic",
+            Self::TreemapLeft => "disk_usage.layout_treemap_left",
+            Self::ListsOnly => "disk_usage.layout_lists",
+            Self::TreeOnly => "disk_usage.layout_tree",
+        })
     }
 
     /// Whether the layout shows the file types list.

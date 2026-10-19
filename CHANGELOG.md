@@ -54,6 +54,7 @@ All notable changes to Keel are listed here. The format follows [Keep a Changelo
 
 ### Changed
 
+- Disk Usage: the scan bar, toolbar and Options menu are translated (Spanish).
 - Web client: Finder design tokens (spacing, type scale, radii, light/dark colors) shared with the desktop app.
 - More of the interface in Spanish: system cleanups, NTFS compression, delete permanently, hard links, Go to Folder and the gallery view.
 - The Disk Usage window's Owner column names each account once (cached per SID or user id) and, on Unix, through the system's user database instead of reading `/etc/passwd` per row.

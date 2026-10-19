@@ -157,24 +157,29 @@ fn body(
         let mut cancel = false;
         ui.horizontal(|ui| {
             if p.paused {
-                ui.weak("Paused");
+                ui.weak(tr("disk_usage.paused"));
             } else {
                 crate::anim::spinner(ui);
             }
-            ui.label(format!(
-                "Scanning {what}: {} files, {} ({:.0} files/s), {}",
-                p.files,
-                size_text(p.bytes),
-                p.files_per_sec,
-                elapsed_text(p.elapsed)
-            ));
-            let label = if p.paused { "Resume" } else { "Pause" };
+            ui.label(
+                tr("disk_usage.scanning")
+                    .replace("{what}", &what)
+                    .replace("{files}", &p.files.to_string())
+                    .replace("{size}", &size_text(p.bytes))
+                    .replace("{rate}", &format!("{:.0}", p.files_per_sec))
+                    .replace("{time}", &elapsed_text(p.elapsed)),
+            );
+            let label = if p.paused {
+                tr("disk_usage.resume")
+            } else {
+                tr("disk_usage.pause")
+            };
             if ui.button(label).clicked() {
                 pause = Some(!p.paused);
             }
             if ui
-                .button("Stop")
-                .on_hover_text("Stop scanning and show what was found")
+                .button(tr("disk_usage.stop"))
+                .on_hover_text(tr("disk_usage.stop_tip"))
                 .clicked()
             {
                 cancel = true;
@@ -198,8 +203,8 @@ fn body(
         if du.scanning().is_none() {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label("Scan drives or folders to see what takes their space.");
-                if ui.button("Select drives…").clicked() {
+                ui.label(tr("disk_usage.empty"));
+                if ui.button(tr("disk_usage.select_drives")).clicked() {
                     du.picker = Some(super::picker::Picker::new(drives));
                 }
                 if !settings.history.is_empty() {
@@ -301,13 +306,13 @@ fn toolbar(
     drives: &[crate::sidebar::Drive],
 ) {
     ui.horizontal(|ui| {
-        if ui.button("Select drives…").clicked() {
+        if ui.button(tr("disk_usage.select_drives")).clicked() {
             du.picker = Some(super::picker::Picker::new(drives));
         }
         let can_rescan = !du.roots.is_empty() && du.scanning().is_none();
         if ui
             .add_enabled(can_rescan, egui::Button::new(tr("disk_usage.rescan")))
-            .on_hover_text("Scan the same drives and folders again")
+            .on_hover_text(tr("disk_usage.rescan_tip"))
             .clicked()
         {
             du.rescan();
@@ -333,10 +338,10 @@ fn toolbar(
         watch_controls(ui, du, settings);
         ui.separator();
         let mut physical = settings.physical;
-        ui.selectable_value(&mut physical, false, "Size")
-            .on_hover_text("Sizes are the files' lengths");
-        ui.selectable_value(&mut physical, true, "Size on disk")
-            .on_hover_text("Sizes are the space the files take on the drive");
+        ui.selectable_value(&mut physical, false, tr("disk_usage.size"))
+            .on_hover_text(tr("disk_usage.size_tip"));
+        ui.selectable_value(&mut physical, true, tr("disk_usage.size_on_disk"))
+            .on_hover_text(tr("disk_usage.size_on_disk_tip"));
         if physical != settings.physical {
             settings.physical = physical;
             if let Some(m) = &mut du.model {
@@ -350,21 +355,21 @@ fn toolbar(
                 for l in Layout::ALL {
                     ui.selectable_value(&mut settings.layout, l, l.label())
                         .on_hover_text(if l.shows_types() && l.shows_treemap() {
-                            "The tree list, the file types and the treemap"
+                            tr("disk_usage.layout_all_tip")
                         } else if l.shows_types() {
-                            "The tree list and the file types"
+                            tr("disk_usage.layout_lists_tip")
                         } else {
-                            "The tree list alone"
+                            tr("disk_usage.layout_tree_tip")
                         });
                 }
             })
             .response
             .named("Layout");
-        ui.menu_button("Columns", |ui| column_chooser(ui, settings));
-        ui.menu_button("Options", |ui| {
+        ui.menu_button(tr("disk_usage.columns"), |ui| column_chooser(ui, settings));
+        ui.menu_button(tr("disk_usage.options"), |ui| {
             let mut relative = settings.relative;
-            ui.radio_value(&mut relative, false, "Percentage of the whole scan");
-            ui.radio_value(&mut relative, true, "Percentage of the parent folder");
+            ui.radio_value(&mut relative, false, tr("disk_usage.percent_whole"));
+            ui.radio_value(&mut relative, true, tr("disk_usage.percent_parent"));
             if relative != settings.relative {
                 settings.relative = relative;
                 if let Some(m) = &mut du.model {
@@ -374,12 +379,12 @@ fn toolbar(
             ui.separator();
             ui.checkbox(
                 &mut settings.group_unregistered,
-                "Group unregistered extensions",
+                tr("disk_usage.group_unregistered"),
             )
-            .on_hover_text("One row for every extension this system has no file type for");
-            ui.checkbox(&mut settings.grid, "Grid lines");
-            ui.checkbox(&mut settings.stripes, "Striped rows");
-            ui.checkbox(&mut settings.seconds, "Seconds in times");
+            .on_hover_text(tr("disk_usage.group_unregistered_tip"));
+            ui.checkbox(&mut settings.grid, tr("disk_usage.grid"));
+            ui.checkbox(&mut settings.stripes, tr("disk_usage.stripes"));
+            ui.checkbox(&mut settings.seconds, tr("disk_usage.seconds"));
             ui.separator();
             ui.checkbox(
                 &mut settings.follow_junctions,
