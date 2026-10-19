@@ -64,21 +64,21 @@ impl Column {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Name => "Name",
-            Self::Subtree => "Subtree %",
-            Self::Percentage => "Percentage",
-            Self::Size => "Size",
-            Self::Allocated => "Size on disk",
-            Self::Items => "Items",
-            Self::Files => "Files",
-            Self::Folders => "Folders",
-            Self::Changed => "Last change",
-            Self::Attributes => "Attributes",
-            Self::Owner => "Owner",
-            Self::Accessed => "Last accessed",
-            Self::Created => "Created",
-        }
+        crate::i18n::tr(match self {
+            Self::Name => "du_columns.name",
+            Self::Subtree => "du_columns.subtree",
+            Self::Percentage => "du_columns.percentage",
+            Self::Size => "du_columns.size",
+            Self::Allocated => "du_columns.allocated",
+            Self::Items => "du_columns.items",
+            Self::Files => "du_columns.files",
+            Self::Folders => "du_columns.folders",
+            Self::Changed => "du_columns.changed",
+            Self::Attributes => "du_columns.attributes",
+            Self::Owner => "du_columns.owner",
+            Self::Accessed => "du_columns.accessed",
+            Self::Created => "du_columns.created",
+        })
     }
 
     /// Read from the file system per visible row (not part of the scan).

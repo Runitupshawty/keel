@@ -94,12 +94,12 @@ impl Tab {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Tree => "Tree",
-            Self::Largest => "Largest files",
-            Self::Duplicates => "Duplicates",
-            Self::Search => "Search",
-            Self::Storage => "Storage analytics",
-            Self::Permissions => "Permissions",
+            Self::Tree => crate::i18n::tr("du_columns.tab_tree"),
+            Self::Largest => crate::i18n::tr("du_columns.tab_largest"),
+            Self::Duplicates => crate::i18n::tr("du_columns.tab_duplicates"),
+            Self::Search => crate::i18n::tr("du_columns.tab_search"),
+            Self::Storage => crate::i18n::tr("du_columns.tab_storage"),
+            Self::Permissions => crate::i18n::tr("du_columns.tab_permissions"),
             Self::Changes => crate::i18n::tr("disk_usage.changes_tab"),
         }
     }
