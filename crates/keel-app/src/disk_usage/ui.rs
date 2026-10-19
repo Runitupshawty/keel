@@ -620,7 +620,11 @@ fn status(ui: &mut Ui, du: &mut DiskUsage) {
     let mut relaunch_error = None;
     let Some(m) = &du.model else { return };
     ui.horizontal(|ui| {
-        let what = if m.physical { tr("disk_usage.on_disk") } else { "" };
+        let what = if m.physical {
+            tr("disk_usage.on_disk")
+        } else {
+            ""
+        };
         match m.selected.len() {
             0 => ui.label(tr("disk_usage.nothing_selected")),
             1 => ui.label(format!("{} {what}", size_text(m.selection_bytes()))),
@@ -638,7 +642,9 @@ fn status(ui: &mut Ui, du: &mut DiskUsage) {
             text.push_str(tr("disk_usage.stopped_incomplete"));
         }
         if info.unreadable > 0 {
-            text.push_str(&tr("disk_usage.unreadable").replace("{n}", &info.unreadable.to_string()));
+            text.push_str(
+                &tr("disk_usage.unreadable").replace("{n}", &info.unreadable.to_string()),
+            );
         }
         ui.weak(text);
         let denied = du.denied_roots();
