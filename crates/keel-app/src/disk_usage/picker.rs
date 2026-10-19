@@ -120,8 +120,9 @@ impl Picker {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
         crate::worker::spawn("keel-du-pick", move || {
-            let picked = crate::platform::file_dialog(tr("du_picker.dialog_title"), |d| d.pick_folders())
-                .unwrap_or_default();
+            let picked =
+                crate::platform::file_dialog(tr("du_picker.dialog_title"), |d| d.pick_folders())
+                    .unwrap_or_default();
             let _ = tx.send(picked);
             ctx.request_repaint();
         });
@@ -154,7 +155,11 @@ impl Picker {
             ui.set_width(460.0);
             ui.heading(tr("du_picker.title"));
             ui.add_space(4.0);
-            ui.radio_value(&mut self.choice, Choice::AllLocal, tr("du_picker.all_local"));
+            ui.radio_value(
+                &mut self.choice,
+                Choice::AllLocal,
+                tr("du_picker.all_local"),
+            );
             ui.radio_value(&mut self.choice, Choice::Drives, tr("du_picker.individual"));
             let drives_on = self.choice == Choice::Drives;
             ui.indent("keel-du-drives", |ui| {
@@ -249,7 +254,8 @@ impl Picker {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let roots = self.roots();
-                let scan = ui.add_enabled(!roots.is_empty(), egui::Button::new(tr("du_picker.scan")));
+                let scan =
+                    ui.add_enabled(!roots.is_empty(), egui::Button::new(tr("du_picker.scan")));
                 crate::a11y::first_focus(&scan);
                 if scan.clicked() {
                     answer = Some(Answer::Scan(roots));
