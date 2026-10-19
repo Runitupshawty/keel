@@ -463,6 +463,18 @@ impl LibraryQuery {
                         q.height.intersect(sp);
                     }
                 }
+                "dimensions" => {
+                    let (w, h) = value
+                        .trim()
+                        .split_once(['x', 'X'])
+                        .and_then(|(w, h)| {
+                            Some((w.trim().parse::<i64>().ok()?, h.trim().parse::<i64>().ok()?))
+                        })
+                        .filter(|&(w, h)| w > 0 && h > 0)
+                        .with_context(|| format!("bad dimensions (want WIDTHxHEIGHT): {value}"))?;
+                    q.width.intersect(Span { min: Some(w), max: Some(w) });
+                    q.height.intersect(Span { min: Some(h), max: Some(h) });
+                }
                 "duration" | "length" => {
                     q.duration_ms.intersect(
                         span(&value, millis).with_context(|| format!("bad duration: {value}"))?,

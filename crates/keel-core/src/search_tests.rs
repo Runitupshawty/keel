@@ -598,6 +598,15 @@ fn media_filters_use_the_media_rows() {
 }
 
 #[test]
+fn dimensions_filter_matches_width_and_height() {
+    let f = media_fixture();
+    let l = &f.lib;
+    assert_eq!(sorted(l, "dimensions:4000x3000"), ["bravo.jpg"]);
+    assert_eq!(sorted(l, "dimensions:6000X4000"), ["alpha.jpg"]);
+    assert!(sorted(l, "dimensions:4000x2000").is_empty());
+}
+
+#[test]
 fn media_filters_combine_with_each_other_and_words() {
     let f = media_fixture();
     let l = &f.lib;

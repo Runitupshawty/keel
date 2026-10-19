@@ -23,7 +23,7 @@ fn options(now: i64, offset: i64) -> Options {
         allow_literal_operators: false,
         external_functions: [
             "tag", "content", "-content", "contents", "source", "camera", "taken", "w", "width",
-            "h", "height", "duration", "length", "has", "modified", "type",
+            "h", "height", "dimensions", "duration", "length", "has", "modified", "type",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -76,6 +76,7 @@ fn sql_term(term: &Term, text: &str, now: i64, offset: i64) -> Result<Option<Lib
                         | "width"
                         | "h"
                         | "height"
+                        | "dimensions"
                         | "duration"
                         | "length"
                         | "has"

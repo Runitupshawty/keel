@@ -64,6 +64,7 @@ A chip writes its term into the query box (Kind → Document adds `kind:document
 | `camera:canon` | media: camera starts with the word (`camera:"canon eos"`) |
 | `taken:2024`, `taken:2023-06..2023-08` | media: capture date (same dates as `dm:`; never the modified time) |
 | `w:>4000`, `h:<=1080` | media: width or height in pixels (`size:` comparisons) |
+| `dimensions:4000x3000` | media: exact pixel width and height |
 | `duration:>30s`, `duration:<2m` | media: video length (`ms`, `s`, `m`, `h`) |
 | `has:gps` | media: has a GPS position |
 | `kind:photo` | media: images (not videos) with media metadata |
