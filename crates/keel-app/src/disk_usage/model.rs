@@ -435,7 +435,9 @@ impl Model {
                 .collect()
         };
         for id in ids {
-            let Some(path) = self.tree.path(id) else { continue };
+            let Some(path) = self.tree.path(id) else {
+                continue;
+            };
             let n = self.tree.node(id);
             out.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\n",
