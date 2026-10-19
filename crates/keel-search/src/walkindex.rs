@@ -110,7 +110,10 @@ struct Meta {
 impl Meta {
     /// Equal apart from the access time, which reading a file changes.
     fn same(&self, other: &Meta) -> bool {
-        Meta { accessed: other.accessed, ..*self } == *other
+        Meta {
+            accessed: other.accessed,
+            ..*self
+        } == *other
     }
 }
 
@@ -1170,8 +1173,8 @@ fn save_changes(
     let tx = conn.transaction()?;
     {
         let mut delete = tx.prepare("DELETE FROM files WHERE id = ?1")?;
-        let mut upsert = tx
-            .prepare("INSERT OR REPLACE INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+        let mut upsert =
+            tx.prepare("INSERT OR REPLACE INTO files VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
         for (slot, row) in changes {
             match row {
                 Some((parent, name, is_dir, size, mtime, created, accessed, attrs)) => {
