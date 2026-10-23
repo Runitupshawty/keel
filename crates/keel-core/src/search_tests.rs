@@ -1155,3 +1155,57 @@ fn within_rel_adds_a_path_filter() {
     assert_eq!(args[args.len() - 2], Value::Text("docs".into()));
     assert_eq!(args[args.len() - 1], Value::Text("docs/%".into()));
 }
+
+#[test]
+fn within_keeps_deep_hits_past_the_cap() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("root");
+    write(&root.join("top report.pdf"), "pdf");
+    write(&root.join("Reports/target report.pdf"), "pdf");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "s").unwrap();
+    let src = lib
+        .source(&lib.add_source(folder("A", &root)).unwrap())
+        .unwrap();
+    walk(&src, &lib.router()).unwrap();
+    // The better-ranked hit is outside the folder: a filter query ranks by recency alone.
+    let set_mtime = |rel: &str, t: i64| {
+        src.store
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE record SET mtime = ?2 WHERE id = ?1",
+                rusqlite::params![id_of(&src, rel).unwrap(), t * 1_000_000_000],
+            )
+            .unwrap();
+    };
+    set_mtime("top report.pdf", days_from_civil(2026, 10, 5) * 86_400);
+    set_mtime(
+        "Reports/target report.pdf",
+        days_from_civil(2024, 1, 1) * 86_400,
+    );
+
+    // Without the folder, the recent outside hit takes the one slot the cap leaves.
+    let mut q = LibraryQuery::parse("ext:pdf", 0).unwrap();
+    q.max = 1;
+    assert_eq!(
+        lib.search(&q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.name)
+            .collect::<Vec<_>>(),
+        ["top report.pdf"]
+    );
+    // With it, only the deep hit inside is a candidate, so it survives the same cap.
+    let mut q = LibraryQuery::parse("ext:pdf", 0).unwrap();
+    q.max = 1;
+    q.within = Some(VPath::local(root.join("Reports")));
+    assert_eq!(
+        lib.search(&q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.name)
+            .collect::<Vec<_>>(),
+        ["target report.pdf"]
+    );
+}

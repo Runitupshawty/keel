@@ -1241,13 +1241,28 @@ impl Library {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         let mut hits = Vec::new();
         for src in sources.iter().filter(|s| q.wants(s)) {
+            // Restrict to `within` per source: a source-relative path when the folder is
+            // under the root (whole source when the root is under it); skip a root neither
+            // under nor above the folder.
+            let q = match &q.within {
+                Some(within) => match crate::library::relative(&src.def.root, within) {
+                    Some(rel) => {
+                        let mut cq = q.clone();
+                        cq.within_rel = (!rel.is_empty()).then_some(rel);
+                        cq
+                    }
+                    None if crate::library::relative(within, &src.def.root).is_some() => q.clone(),
+                    None => continue,
+                },
+                None => q.clone(),
+            };
             let contents = has_text(&self.shared, src);
             // A walk rebuilds the filter indexes (a schema change); FTS5 reports that from
             // its constructor on a connection that read the old schema instead of preparing
             // again, so the search would come back empty: once more on the fresh schema.
             let found =
-                search_source(src, q, now, contents).or_else(|e| match schema_changed(&e) {
-                    true => search_source(src, q, now, contents),
+                search_source(src, &q, now, contents).or_else(|e| match schema_changed(&e) {
+                    true => search_source(src, &q, now, contents),
                     false => Err(e),
                 });
             match found {
