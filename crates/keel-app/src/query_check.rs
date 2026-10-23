@@ -12,6 +12,21 @@ pub fn options(t: crate::search_tab::Toggles) -> keel_query::Options {
     }
 }
 
+#[allow(dead_code)] // pub API for the search box; not yet called outside tests
+/// Map toggles and custom filters onto keel-query options, filling `macros`
+/// from each filter's lowercased name → search.
+pub fn options_with_filters(
+    t: crate::search_tab::Toggles,
+    filters: &[crate::search_filters::CustomFilter],
+) -> keel_query::Options {
+    let mut o = options(t);
+    o.macros = filters
+        .iter()
+        .map(|f| (f.name.to_lowercase(), f.search.clone()))
+        .collect();
+    o
+}
+
 /// The problem with `text` as a search query, if the parser rejects it.
 #[allow(dead_code)] // pub API for the search box; not yet called outside tests
 pub fn problem(text: &str) -> Option<String> {
@@ -44,7 +59,8 @@ pub fn problem_with(text: &str, opts: &keel_query::Options) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{options, problem, problem_with};
+    use super::{options, options_with_filters, problem, problem_with};
+    use keel_query::ErrorKind;
 
     #[test]
     fn a_valid_query_has_no_problem() {
@@ -100,5 +116,21 @@ mod tests {
         assert!(!es.contains("at \"big\""));
         assert!(en.contains("at \"big\""));
         assert_ne!(es_end, en_end);
+    }
+
+    #[test]
+    fn custom_filters_are_query_macros() {
+        let t = crate::search_tab::Toggles::default();
+        let filter = crate::search_filters::CustomFilter {
+            name: "docs".into(),
+            search: "ext:pdf doc:all".into(),
+            matching: Default::default(),
+        };
+        let with = options_with_filters(t, std::slice::from_ref(&filter));
+        assert!(problem_with("docs:x", &with).is_none());
+
+        let without = options(t);
+        let err = keel_query::parse("docs:x", &without).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unknown);
     }
 }
