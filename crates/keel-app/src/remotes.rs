@@ -187,17 +187,22 @@ impl Remotes {
         let id = tab.dir.authority.as_str();
         let label = self.label(id);
         if tab.is_search() {
-            return Some(format!(
-                "Remote search: names under {} on {label} (first {SEARCH_LIMIT} entries)",
-                tab.dir.path
-            ));
+            return Some(
+                crate::i18n::tr("remotes.remote_search")
+                    .replace("{path}", &tab.dir.path)
+                    .replace("{label}", label)
+                    .replace("{n}", &SEARCH_LIMIT.to_string()),
+            );
         }
+        let connect = || crate::i18n::tr("remotes.connecting").replace("{label}", label);
         Some(match self.state(id)? {
             ConnStatus::Connected => return None,
-            ConnStatus::Connecting => format!("Connecting to {label}…"),
-            ConnStatus::Failed => format!("Reconnecting to {label}… (showing the last listing)"),
-            ConnStatus::Disconnected if tab.loading => format!("Connecting to {label}…"),
-            ConnStatus::Disconnected => format!("Disconnected from {label}; F5 reconnects"),
+            ConnStatus::Connecting => connect(),
+            ConnStatus::Failed => crate::i18n::tr("remotes.reconnecting").replace("{label}", label),
+            ConnStatus::Disconnected if tab.loading => connect(),
+            ConnStatus::Disconnected => {
+                crate::i18n::tr("remotes.disconnected").replace("{label}", label)
+            }
         })
     }
 
@@ -242,33 +247,36 @@ impl Remotes {
             ui.set_width(440.0);
             match &p.problem {
                 None => {
-                    ui.strong(format!("First connection to {label}"));
+                    ui.strong(
+                        crate::i18n::tr("remotes.first_connection").replace("{label}", &label),
+                    );
+                    ui.label(&p.endpoint);
+                    ui.add_space(4.0);
+                    ui.label(crate::i18n::tr("remotes.first_connection_note"));
+                }
+                Some(problem) => {
+                    ui.strong(
+                        crate::i18n::tr("remotes.unverified_certificate")
+                            .replace("{label}", &label),
+                    );
                     ui.label(&p.endpoint);
                     ui.add_space(4.0);
                     ui.label(
-                        "This host's key is not in ~/.ssh/known_hosts yet. Check that the \
-                         fingerprint matches the server's before trusting it:",
+                        crate::i18n::tr("remotes.certificate_note").replace("{problem}", problem),
                     );
-                }
-                Some(problem) => {
-                    ui.strong(format!("Unverified certificate on {label}"));
-                    ui.label(&p.endpoint);
-                    ui.add_space(4.0);
-                    ui.label(format!(
-                        "The server's TLS certificate could not be verified ({problem}). \
-                         Check that its SHA-256 fingerprint matches the server's certificate \
-                         before trusting it; Keel then remembers it for this server:"
-                    ));
                 }
             }
             ui.add_space(4.0);
             ui.monospace(&p.fingerprint);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Trust and connect").clicked() {
+                if ui
+                    .button(crate::i18n::tr("remotes.trust_and_connect"))
+                    .clicked()
+                {
                     answer = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("remotes.cancel")).clicked() {
                     answer = Some(false);
                 }
             });
@@ -287,12 +295,12 @@ impl Remotes {
     pub fn settings_page(&mut self, ui: &mut egui::Ui, s: &mut Settings, tx: &Sender<Msg>) {
         ui.checkbox(
             &mut s.remote_thumbnails,
-            "Thumbnails for remote and cloud files",
+            crate::i18n::tr("remotes.thumbnails"),
         )
-        .on_hover_text("Grid view then downloads every image and video it shows");
+        .on_hover_text(crate::i18n::tr("remotes.thumbnails_tip"));
         ui.add_space(6.0);
         if s.remotes.is_empty() {
-            ui.weak("No remote hosts yet.");
+            ui.weak(crate::i18n::tr("remotes.no_hosts"));
         }
         let mut remove = None;
         egui::Grid::new("settings-remotes")
@@ -313,14 +321,14 @@ impl Remotes {
                     }
                     ui.weak(auth_name(h));
                     ui.horizontal(|ui| {
-                        if ui.button("Edit…").clicked() {
+                        if ui.button(crate::i18n::tr("remotes.edit")).clicked() {
                             self.editor = Some(Editor::edit(h));
                         }
                         let confirming = self.confirm_remove.as_deref() == Some(h.id.as_str());
                         let text = if confirming {
-                            "Really remove?"
+                            crate::i18n::tr("remotes.really_remove")
                         } else {
-                            "Remove"
+                            crate::i18n::tr("remotes.remove")
                         };
                         if ui.button(text).clicked() {
                             if confirming {
@@ -347,7 +355,7 @@ impl Remotes {
             });
         }
         ui.add_space(6.0);
-        if ui.button("Add host…").clicked() {
+        if ui.button(crate::i18n::tr("remotes.add_host")).clicked() {
             self.editor = Some(Editor::default());
         }
     }
@@ -356,14 +364,14 @@ impl Remotes {
 fn auth_name(h: &RemoteHost) -> &'static str {
     if h.protocol != RemoteProtocol::Sftp {
         return match is_anonymous(&h.user) {
-            true => "Anonymous",
-            false => "Password (keychain)",
+            true => crate::i18n::tr("remotes.anonymous"),
+            false => crate::i18n::tr("remotes.password_keychain"),
         };
     }
     match &h.auth {
-        RemoteAuth::Agent => "SSH agent",
-        RemoteAuth::KeyFile { .. } => "Key file",
-        RemoteAuth::PasswordInKeyring => "Password (keychain)",
+        RemoteAuth::Agent => crate::i18n::tr("remotes.ssh_agent"),
+        RemoteAuth::KeyFile { .. } => crate::i18n::tr("remotes.key_file"),
+        RemoteAuth::PasswordInKeyring => crate::i18n::tr("remotes.password_keychain"),
     }
 }
 
@@ -1737,5 +1745,21 @@ mod tests {
             .unwrap()
             .is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_status_in_spanish() {
+        crate::i18n::set("es");
+        let (tx, _rx) = crossbeam_channel::unbounded::<Msg>();
+        let mut remotes = Remotes::new(tx, egui::Context::default());
+        remotes.hosts.push(host("box", RemoteAuth::Agent));
+        remotes
+            .status
+            .insert("box".into(), (ConnStatus::Connecting, String::new()));
+        let tab = Tab::new(remote_path(RemoteProtocol::Sftp, "box", "/Files"));
+        let banner = remotes.banner(&tab).expect("connecting banner");
+        assert_ne!(banner, "Connecting to Box box…", "banner is not Spanish");
+        assert!(banner.contains("Box box"), "{banner}");
+        crate::i18n::set("en");
     }
 }
