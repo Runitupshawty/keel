@@ -64,6 +64,20 @@ impl Props for HitProps<'_> {
     }
 }
 
+// Re-evaluate a search's hits against a second query: keep only the hits whose
+// name/path/size/date match `text` under `opts`.
+#[allow(dead_code)] // pending search-box wiring
+pub fn refine(
+    hits: Vec<Hit>,
+    text: &str,
+    opts: &keel_query::Options,
+) -> Result<Vec<Hit>, keel_query::Error> {
+    let query = keel_query::parse(text, opts)?;
+    let props: Vec<HitProps> = hits.iter().map(HitProps::new).collect();
+    let selected = query.select(props.iter(), None)?;
+    Ok(selected.into_iter().map(|i| hits[i].clone()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +107,31 @@ mod tests {
         let ms: i64 = 1_700_000_000_000;
         assert_eq!(p.date(DateProp::Modified), Some(ms));
         assert_eq!(p.date(DateProp::Created), None);
+    }
+
+    #[test]
+    fn refine_keeps_ext_and_size_matches() {
+        let hits = vec![
+            file_hit("/a/report.pdf", 2_000_000, 1_700_000_000),
+            file_hit("/b/note.pdf", 1_000, 1_700_000_000),
+            file_hit("/c/photo.jpg", 3_000_000, 1_700_000_000),
+        ];
+        let out = refine(hits, "ext:pdf size:>=1mb", &keel_query::Options::default()).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path.name(), "report.pdf");
+    }
+
+    #[test]
+    fn refine_runs_dupe_set_function() {
+        let hits = vec![
+            file_hit("/a/copy1.pdf", 1_000, 1_700_000_000),
+            file_hit("/b/copy2.pdf", 1_000, 1_700_000_000),
+            file_hit("/c/other.pdf", 5_000, 1_700_000_000),
+        ];
+        let out = refine(hits, "dupe:size", &keel_query::Options::default()).unwrap();
+        assert_eq!(out.len(), 2);
+        let names: Vec<&str> = out.iter().map(|h| h.path.name()).collect();
+        assert!(names.contains(&"copy1.pdf"));
+        assert!(names.contains(&"copy2.pdf"));
     }
 }
