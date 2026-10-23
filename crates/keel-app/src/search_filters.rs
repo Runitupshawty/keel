@@ -191,6 +191,9 @@ pub fn apply(
     matching: MatchToggles,
 ) -> Applied {
     let text = text.trim();
+    // The Keel index and plain backends cannot read the full query language: send only
+    // the plain terms and re-evaluate the full query over the kept hits.
+    let (text, refine) = split_full_language(target, matching, text);
     let join = |a: &str, b: &str| match (a.trim(), b.trim()) {
         ("", b) => b.to_owned(),
         (a, "") => a.to_owned(),
@@ -198,21 +201,23 @@ pub fn apply(
     };
     if let Some(c) = custom.iter().find(|c| c.name == filter) {
         return Applied {
-            text: join(&c.search, text),
+            text: join(&c.search, &text),
             matching: matching.or(c.matching),
+            refine,
             ..Applied::default()
         };
     }
     let Some(b) = Builtin::of(filter) else {
         return Applied {
-            text: text.to_owned(),
+            text,
             matching,
+            refine,
             ..Applied::default()
         };
     };
     if target == Target::Library {
         return Applied {
-            text: join(text, &b.library_term()),
+            text: join(&text, &b.library_term()),
             matching,
             ..Applied::default()
         };
@@ -229,12 +234,36 @@ pub fn apply(
         _ => String::new(),
     };
     Applied {
-        text: join(&prefix, text),
+        // With a refine query the ext prefix is redundant: `keep` still filters the hits.
+        text: match refine {
+            Some(_) => text,
+            None => join(&prefix, &text),
+        },
         folders_only: folder,
         matching,
         keep: Some(exts.iter().map(|e| (*e).to_owned()).collect()),
-        refine: None,
+        refine,
     }
+}
+
+/// `KeelIndex` and `Plain` (without regex mode): when `text` needs the full query
+/// language and still has plain terms, send only the terms and refine with all of
+/// `text`; anything else is unchanged.
+fn split_full_language(
+    target: Target,
+    matching: MatchToggles,
+    text: &str,
+) -> (String, Option<String>) {
+    if (target == Target::KeelIndex || target == Target::Plain)
+        && !matching.regex
+        && crate::query_filter::needs_full_language(text)
+    {
+        let terms = crate::query_filter::backend_terms(text);
+        if !terms.is_empty() {
+            return (terms, Some(text.to_owned()));
+        }
+    }
+    (text.to_owned(), None)
 }
 
 /// Every filter name for the combo: the built-ins, then the profile's.
@@ -314,6 +343,55 @@ mod tests {
             }
         );
         assert_eq!(apply("x", "", &[], Target::Plain, none()).keep, None);
+    }
+
+    #[test]
+    fn full_language_on_keel_index_splits_into_backend_terms_and_refine() {
+        let k = apply(
+            "report ext:pdf size:>1mb",
+            "Everything",
+            &[],
+            Target::KeelIndex,
+            none(),
+        );
+        assert_eq!(k.text, "report");
+        assert_eq!(k.refine.as_deref(), Some("report ext:pdf size:>1mb"));
+
+        let p = apply("report ext:pdf", "Everything", &[], Target::Plain, none());
+        assert_eq!(p.text, "report");
+        assert_eq!(p.refine.as_deref(), Some("report ext:pdf"));
+
+        // Unchanged: plain words, regex mode, or no plain terms left (functions only).
+        assert_eq!(
+            apply("report", "Everything", &[], Target::KeelIndex, none()),
+            "report".into()
+        );
+        assert_eq!(
+            apply("ext:pdf", "Everything", &[], Target::KeelIndex, none()),
+            "ext:pdf".into()
+        );
+        let rx = apply(
+            "^rep",
+            "Everything",
+            &[],
+            Target::KeelIndex,
+            MatchToggles {
+                regex: true,
+                ..none()
+            },
+        );
+        assert_eq!((rx.text.as_str(), rx.refine), ("^rep", None));
+        let e = apply(
+            "report ext:pdf",
+            "Everything",
+            &[],
+            Target::Everything,
+            none(),
+        );
+        assert_eq!((e.text.as_str(), e.refine), ("report ext:pdf", None));
+        let l = apply("report ext:pdf", "Audio", &[], Target::Library, none());
+        assert_eq!(l.refine, None);
+        assert!(l.text.starts_with("report ext:pdf kind:audio"));
     }
 
     #[test]
