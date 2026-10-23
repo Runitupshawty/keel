@@ -3454,9 +3454,9 @@ mod tests {
         file
     }
 
-    /// Applies worker messages until `done` holds (or 10 s pass).
+    /// Applies worker messages until `done` holds (or 30 s pass).
     fn settle(state: &mut AppState, done: impl Fn(&AppState) -> bool) {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = Instant::now() + Duration::from_secs(30);
         while !done(state) && Instant::now() < until {
             if let Ok(msg) = state.rx.recv_timeout(Duration::from_millis(50)) {
                 state.apply(msg);

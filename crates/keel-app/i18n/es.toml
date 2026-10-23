@@ -1081,3 +1081,13 @@ err_home = "La carpeta inicial debe empezar por /"
 err_bookmark_path = "Marcador \"{name}\": la ruta debe empezar por /"
 err_password = "Introduce la contraseña (se guarda en el llavero del sistema)"
 err_key_passphrase = "Introduce la frase de la clave (se guarda en el llavero del sistema)"
+
+[clouds]
+thumbnails = "Miniaturas para archivos remotos y de la nube"
+thumbnails_tip = "La vista de cuadrícula descarga entonces cada imagen y vídeo que muestra"
+no_accounts = "Aún no hay cuentas de nube."
+refresh = "Actualizar"
+refresh_tip = "Pide ahora al servicio su almacenamiento"
+edit = "Editar…"
+remove = "Eliminar…"
+add_account = "Añadir cuenta…"

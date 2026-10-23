@@ -969,3 +969,13 @@ err_home = "The initial folder must start with /"
 err_bookmark_path = "Bookmark \"{name}\": the path must start with /"
 err_password = "Enter the password (it is kept in the OS keychain)"
 err_key_passphrase = "Enter the key passphrase (it is kept in the OS keychain)"
+
+[clouds]
+thumbnails = "Thumbnails for remote and cloud files"
+thumbnails_tip = "Grid view then downloads every image and video it shows"
+no_accounts = "No cloud accounts yet."
+refresh = "Refresh"
+refresh_tip = "Ask the service for its storage now"
+edit = "Edit…"
+remove = "Remove…"
+add_account = "Add account…"

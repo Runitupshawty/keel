@@ -502,12 +502,12 @@ impl Clouds {
     pub fn settings_page(&mut self, ui: &mut egui::Ui, s: &mut Settings, _tx: &Sender<Msg>) {
         ui.checkbox(
             &mut s.remote_thumbnails,
-            "Thumbnails for remote and cloud files",
+            crate::i18n::tr("clouds.thumbnails"),
         )
-        .on_hover_text("Grid view then downloads every image and video it shows");
+        .on_hover_text(crate::i18n::tr("clouds.thumbnails_tip"));
         ui.add_space(6.0);
         if s.clouds.is_empty() {
-            ui.weak("No cloud accounts yet.");
+            ui.weak(crate::i18n::tr("clouds.no_accounts"));
         }
         let mut ask = Vec::new();
         egui::Grid::new("settings-clouds")
@@ -530,15 +530,15 @@ impl Clouds {
                         ui.label(quota_text(slot));
                         let idle = !slot.is_some_and(|q| q.asking);
                         let refresh = ui
-                            .add_enabled(idle, egui::Button::new("Refresh"))
-                            .on_hover_text("Ask the service for its storage now");
+                            .add_enabled(idle, egui::Button::new(crate::i18n::tr("clouds.refresh")))
+                            .on_hover_text(crate::i18n::tr("clouds.refresh_tip"));
                         ask.push((a.id.clone(), refresh.clicked()));
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("Edit…").clicked() {
+                        if ui.button(crate::i18n::tr("clouds.edit")).clicked() {
                             self.wizard = Some(Wizard::edit(a));
                         }
-                        if ui.button("Remove…").clicked() {
+                        if ui.button(crate::i18n::tr("clouds.remove")).clicked() {
                             self.removing = Some(a.id.clone());
                         }
                     });
@@ -550,7 +550,10 @@ impl Clouds {
             self.want_quota(&id, force);
         }
         ui.add_space(6.0);
-        let add = ui.add_enabled(self.cpu.is_ok(), egui::Button::new("Add account…"));
+        let add = ui.add_enabled(
+            self.cpu.is_ok(),
+            egui::Button::new(crate::i18n::tr("clouds.add_account")),
+        );
         if add.clicked() {
             self.wizard = Some(Wizard::default());
         }
@@ -2586,5 +2589,33 @@ mod tests {
             .list
             .iter()
             .any(|t| t.text == "Connected to drive label"));
+    }
+
+    /// The Cloud settings page's labels and buttons in Spanish (the UI thread sets the
+    /// language each frame; this test thread sets it here and restores English).
+    #[test]
+    fn cloud_page_strings_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(
+            crate::i18n::tr("clouds.thumbnails"),
+            "Miniaturas para archivos remotos y de la nube"
+        );
+        assert_eq!(
+            crate::i18n::tr("clouds.thumbnails_tip"),
+            "La vista de cuadrícula descarga entonces cada imagen y vídeo que muestra"
+        );
+        assert_eq!(
+            crate::i18n::tr("clouds.no_accounts"),
+            "Aún no hay cuentas de nube."
+        );
+        assert_eq!(crate::i18n::tr("clouds.refresh"), "Actualizar");
+        assert_eq!(
+            crate::i18n::tr("clouds.refresh_tip"),
+            "Pide ahora al servicio su almacenamiento"
+        );
+        assert_eq!(crate::i18n::tr("clouds.edit"), "Editar…");
+        assert_eq!(crate::i18n::tr("clouds.remove"), "Eliminar…");
+        assert_eq!(crate::i18n::tr("clouds.add_account"), "Añadir cuenta…");
+        crate::i18n::set("en");
     }
 }
