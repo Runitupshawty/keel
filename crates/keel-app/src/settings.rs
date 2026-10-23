@@ -718,7 +718,7 @@ fn appearance_page(ui: &mut egui::Ui, s: &mut Settings) {
         .num_columns(2)
         .spacing([crate::design::space::XL, crate::design::space::M])
         .show(ui, |ui| {
-            ui.label("Style");
+            ui.label(tr("settings.style"));
             ui.horizontal(|ui| {
                 for style in Style::ALL {
                     ui.radio_value(&mut s.style, style, style.label());
@@ -727,11 +727,11 @@ fn appearance_page(ui: &mut egui::Ui, s: &mut Settings) {
             ui.end_row();
             ui.label("");
             ui.weak(match s.style {
-                Style::Finder => "Finder's spacing, corners and type; the Finder colors on the dark and light themes",
-                Style::Classic => "Keel's original look: egui's spacing and type, the theme's colors",
+                Style::Finder => tr("settings.style_finder_tip"),
+                Style::Classic => tr("settings.style_classic_tip"),
             });
             ui.end_row();
-            let label = ui.label("Accent color");
+            let label = ui.label(tr("settings.accent"));
             ui.horizontal(|ui| {
                 let combo = egui::ComboBox::from_id_salt("settings-accent")
                     .selected_text(s.accent.label())
@@ -756,35 +756,43 @@ fn appearance_page(ui: &mut egui::Ui, s: &mut Settings) {
                 let _ = combo.response.labelled_by(label.id);
                 if let Accent::Custom(c) = &mut s.accent {
                     let _ = egui::color_picker::color_edit_button_srgb(ui, c)
-                        .named("Custom accent color");
+                        .named(tr("settings.accent_custom_picker"));
                 }
             });
             ui.end_row();
             ui.label("");
             ui.weak(match s.accent {
-                Accent::Auto => "The system accent in Finder-style on the dark and light themes, else the theme's",
-                Accent::System => "The accent color of the system (blue where it has none)",
-                Accent::Theme => "The color theme's accent",
-                Accent::Custom(_) => "Made darker or lighter where it would be hard to read",
+                Accent::Auto => tr("settings.accent_auto_tip"),
+                Accent::System => tr("settings.accent_system_tip"),
+                Accent::Theme => tr("settings.accent_theme_tip"),
+                Accent::Custom(_) => tr("settings.accent_custom_tip"),
             });
             ui.end_row();
             // Task 65: the Finder style's toolbar.
-            ui.label("Toolbar");
+            ui.label(tr("settings.toolbar"));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut s.toolbar.labels, false, "Icon only");
-                ui.radio_value(&mut s.toolbar.labels, true, "Icon and text");
-                if ui.button("Customize toolbar…").clicked() {
+                ui.radio_value(
+                    &mut s.toolbar.labels,
+                    false,
+                    tr("settings.toolbar_icon_only"),
+                );
+                ui.radio_value(
+                    &mut s.toolbar.labels,
+                    true,
+                    tr("settings.toolbar_icon_and_text"),
+                );
+                if ui.button(tr("settings.toolbar_customize")).clicked() {
                     crate::toolbar::open_customize(ui.ctx());
                 }
             });
             ui.end_row();
             ui.label("");
             ui.weak(if cfg!(target_os = "macos") {
-                "Finder-style puts the toolbar in the title bar; a style change moves the title bar at the next start"
+                tr("settings.toolbar_tip_macos")
             } else if cfg!(windows) {
-                "Finder-style puts the toolbar in the title bar, with the window buttons at its right"
+                tr("settings.toolbar_tip_windows")
             } else {
-                "Finder-style shows the toolbar under the window manager's title bar"
+                tr("settings.toolbar_tip_linux")
             });
             ui.end_row();
         });
@@ -1135,6 +1143,45 @@ mod tests {
         let text = std::fs::read_to_string(Settings::path()).unwrap();
         assert!(text.contains("style = \"finder\""), "{text}");
         assert!(text.contains("accent = \"theme\""), "{text}");
+    }
+
+    /// The Appearance page's labels, and Style/Accent's own labels, are in Spanish
+    /// when the language is Spanish (the UI thread sets it each frame).
+    #[test]
+    fn appearance_labels_in_spanish() {
+        use crate::design::{Accent, Style};
+        crate::i18n::set("es");
+        assert_eq!(crate::i18n::tr("settings.style"), "Estilo");
+        assert_eq!(Style::Finder.label(), "Estilo Finder");
+        assert_eq!(Style::Classic.label(), "Clásico");
+        assert_eq!(
+            crate::i18n::tr("settings.style_finder_tip"),
+            "Los espaciados, esquinas y tipografía de Finder; los colores de Finder en los temas oscuro y claro"
+        );
+        assert_eq!(crate::i18n::tr("settings.accent"), "Color de acento");
+        assert_eq!(Accent::Auto.label(), "Automático");
+        assert_eq!(Accent::System.label(), "Sistema");
+        assert_eq!(Accent::Theme.label(), "Tema");
+        assert_eq!(Accent::Custom([0; 3]).label(), "Personalizado");
+        assert_eq!(
+            crate::i18n::tr("settings.accent_custom_picker"),
+            "Color de acento personalizado"
+        );
+        assert_eq!(crate::i18n::tr("settings.toolbar"), "Barra de herramientas");
+        assert_eq!(crate::i18n::tr("settings.toolbar_icon_only"), "Solo icono");
+        assert_eq!(
+            crate::i18n::tr("settings.toolbar_icon_and_text"),
+            "Icono y texto"
+        );
+        assert_eq!(
+            crate::i18n::tr("settings.toolbar_customize"),
+            "Personalizar barra de herramientas…"
+        );
+        assert_eq!(
+            crate::i18n::tr("settings.toolbar_tip_macos"),
+            "El estilo Finder coloca la barra de herramientas en la barra de título; un cambio de estilo mueve la barra de título en el próximo inicio"
+        );
+        crate::i18n::set("en");
     }
 
     #[test]
