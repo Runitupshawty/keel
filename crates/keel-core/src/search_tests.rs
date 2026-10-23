@@ -1209,3 +1209,40 @@ fn within_keeps_deep_hits_past_the_cap() {
         ["target report.pdf"]
     );
 }
+
+#[test]
+fn library_searcher_passes_within() {
+    let f = fixture();
+    let searcher = LibrarySearcher(Arc::new(f.lib));
+    // No folder: the text also reaches the other source.
+    let hits = searcher
+        .query(&keel_search::Query {
+            text: "report".into(),
+            ..keel_search::Query::default()
+        })
+        .unwrap();
+    assert!(hits
+        .iter()
+        .any(|h| h.path == f.b.absolute("report draft.docx")));
+    // With one, only the hits inside remain (the folder itself inclusive).
+    let within = f.a.def.root.to_local_path().unwrap().join("Reports");
+    let mut paths: Vec<VPath> = searcher
+        .query(&keel_search::Query {
+            text: "report".into(),
+            within: Some(within),
+            ..keel_search::Query::default()
+        })
+        .unwrap()
+        .into_iter()
+        .map(|h| h.path)
+        .collect();
+    paths.sort_by(|a, b| a.path.cmp(&b.path));
+    assert_eq!(
+        paths,
+        [
+            f.a.absolute("Reports"),
+            f.a.absolute("Reports/Q3 report.pdf"),
+            f.a.absolute("Reports/old report.pdf")
+        ]
+    );
+}

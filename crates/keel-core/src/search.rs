@@ -1336,6 +1336,7 @@ impl keel_search::Searcher for LibrarySearcher {
             lq.kind = Some(KindFilter::Folder);
         }
         lq.max = q.max as usize;
+        lq.within = q.within.clone().map(VPath::local);
         Ok(self
             .0
             .search(&lq)?
