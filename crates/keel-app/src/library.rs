@@ -1662,7 +1662,24 @@ impl Searcher for LibSearch {
     // a big library can show fewer hits than it has; filtering in the query needs the folder
     // in LibraryQuery per source (relative paths) and in the daemon's `search` call.
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
-        let mut hits = self.search(q)?;
+        // Operator queries (keel-query language, not the library's own `name:`/`in:`/...):
+        // the library narrows by the plain words, then every hit is re-checked against the
+        // full query.
+        let text = q.text.trim();
+        let backend = (crate::query_filter::needs_full_language(text)
+            && !crate::query_filter::library_only(text))
+        .then(|| crate::query_filter::backend_terms(text));
+        let mut hits = if let Some(backend) = &backend {
+            let mut narrowed = q.clone();
+            narrowed.text = backend.clone();
+            self.search(&narrowed)?
+        } else {
+            self.search(q)?
+        };
+        if backend.is_some() {
+            hits = crate::query_filter::refine(hits, text, &keel_query::Options::default())
+                .map_err(|e| anyhow::anyhow!(e.message))?;
+        }
         if let Some(dir) = &q.within {
             hits.retain(|h| {
                 (h.path.to_local_path()).is_some_and(|p| keel_search::is_under(&p, dir))

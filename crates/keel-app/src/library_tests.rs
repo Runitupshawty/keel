@@ -114,6 +114,30 @@ fn library_search_keeps_to_a_pane_folder() {
     assert_eq!(search(Some(tmp.join("DOCS").join("Sub"))), ["b.txt"]);
 }
 
+/// Operator queries run the library on the plain words and refine the hits.
+#[test]
+fn library_search_refines_operator_queries() {
+    let (_tmp, lib, _) = fixture("refine", false);
+    let search = |text: &str| {
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+            .query(&Query {
+                text: text.into(),
+                ..Query::default()
+            })
+            .unwrap();
+        let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+        names.sort();
+        names
+    };
+    // `!a` has no plain words: every hit comes back, refine drops a.txt (the folder stays).
+    assert_eq!(search("!a"), ["b.txt", "c.txt", "sub"]);
+    // `a | c`: refine keeps both or-branches (folder names match too, `sub` has neither).
+    assert_eq!(search("a | c"), ["a.txt", "c.txt"]);
+    // Plain word narrows in the library, the size operator refines it away or keeps it.
+    assert_eq!(search("a size:>=5"), Vec::<String>::new());
+    assert_eq!(search("c size:>=5"), ["c.txt"]);
+}
+
 #[test]
 fn sidebar_rows_follow_source_status_and_stats() {
     let rows = source_rows(&[
