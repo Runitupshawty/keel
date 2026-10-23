@@ -1,6 +1,6 @@
 //! Adapters that let `keel-query` evaluate matches against `keel-search` hits.
 
-use keel_query::{DateProp, Expr, Props, Timestamp};
+use keel_query::{DateProp, Expr, Props, Term, Timestamp};
 use keel_search::Hit;
 use std::time::UNIX_EPOCH;
 
@@ -103,6 +103,46 @@ fn expr_needs_full(expr: &Expr) -> bool {
     }
 }
 
+/// The plain top-level words a backend can still use to narrow by name: the
+/// top-level `And`/`Term` items with no function and no comparison operator,
+/// joined by spaces. Parse errors give an empty string.
+#[allow(dead_code)] // pending search-box wiring
+pub fn backend_terms(text: &str) -> String {
+    match keel_query::parse_ast(text, &keel_query::Options::default()) {
+        Ok(ast) => {
+            let mut out = Vec::new();
+            top_level_terms(&ast.expr, &mut out);
+            out.join(" ")
+        }
+        Err(_) => String::new(),
+    }
+}
+
+fn top_level_terms(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::And(children) => {
+            for child in children {
+                if let Expr::Term(term) = child {
+                    push_plain(term, out);
+                }
+            }
+        }
+        Expr::Term(term) => push_plain(term, out),
+        Expr::Or(_) | Expr::Not(_) => {}
+    }
+}
+
+fn push_plain(term: &Term, out: &mut Vec<String>) {
+    if term.function.is_some() {
+        return;
+    }
+    for item in &term.items {
+        if item.op.is_none() {
+            out.push(item.text.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +219,10 @@ mod tests {
         assert!(needs_full_language("name:report"));
         assert!(needs_full_language("!pdf"));
         assert!(needs_full_language("pdf | jpg"));
+    }
+
+    #[test]
+    fn backend_terms_drop_functions_and_operators() {
+        assert_eq!(backend_terms("report ext:pdf size:>1mb"), "report");
     }
 }
