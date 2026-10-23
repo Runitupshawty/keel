@@ -143,6 +143,30 @@ fn push_plain(term: &Term, out: &mut Vec<String>) {
     }
 }
 
+/// `true` when `text` uses a library-only prefix: any whitespace-delimited
+/// token begins with one of the library-only modifiers (`in:`, `tag:`,
+/// `source:`, `camera:`, `taken:`, `has:`, `contents:`, `content:`, `name:`,
+/// `w:`, `h:`, `duration:`).
+#[allow(dead_code)] // pending search-box wiring
+pub fn library_only(text: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "in:",
+        "tag:",
+        "source:",
+        "camera:",
+        "taken:",
+        "has:",
+        "contents:",
+        "content:",
+        "name:",
+        "w:",
+        "h:",
+        "duration:",
+    ];
+    text.split_whitespace()
+        .any(|token| PREFIXES.iter().any(|prefix| token.starts_with(prefix)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +248,24 @@ mod tests {
     #[test]
     fn backend_terms_drop_functions_and_operators() {
         assert_eq!(backend_terms("report ext:pdf size:>1mb"), "report");
+    }
+
+    #[test]
+    fn library_only_terms_are_detected() {
+        assert!(library_only("in:Documents"));
+        assert!(library_only("tag:work"));
+        assert!(library_only("source:backup"));
+        assert!(library_only("camera:iphone"));
+        assert!(library_only("taken:2024"));
+        assert!(library_only("has:audio"));
+        assert!(library_only("contents:invoice"));
+        assert!(library_only("content:invoice"));
+        assert!(library_only("name:report"));
+        assert!(library_only("w:>1000"));
+        assert!(library_only("h:<800"));
+        assert!(library_only("duration:>=2h"));
+        assert!(!library_only("report"));
+        assert!(!library_only("width:1000"));
+        assert!(!library_only("height:800"));
     }
 }
