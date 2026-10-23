@@ -114,6 +114,39 @@ fn library_search_keeps_to_a_pane_folder() {
     assert_eq!(search(Some(tmp.join("DOCS").join("Sub"))), ["b.txt"]);
 }
 
+/// A plain library search keeps a deep hit when the pane's folder is set, even though the
+/// search page's cap is full of better-ranked hits outside the folder.
+#[test]
+fn lib_search_finds_hits_deep_in_a_folder() {
+    let (tmp, lib, id) = fixture("deep", false);
+    let src = tmp.join("docs");
+    std::fs::create_dir_all(src.join("deep").join("nested")).unwrap();
+    let deep = src.join("deep").join("nested").join("target.txt");
+    std::fs::write(&deep, "old").unwrap();
+    // Oldest of the four: the three shallow fixture hits rank above it (recency), so a
+    // page capped at three holds only the shallow ones.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&deep)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+        .unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+
+    let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+        .query(&Query {
+            text: "ext:txt".into(),
+            max: 3,
+            within: Some(src.join("deep")),
+            ..Query::default()
+        })
+        .unwrap();
+    let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+    names.sort();
+    assert_eq!(names, ["target.txt"]);
+}
+
 /// Operator queries run the library on the plain words and refine the hits.
 #[test]
 fn library_search_refines_operator_queries() {
