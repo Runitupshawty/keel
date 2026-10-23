@@ -186,6 +186,11 @@ pub struct LibraryQuery {
     /// The first this many hits (best first) found by their text carry a snippet of it.
     #[serde(default = "snippet_page")]
     pub snippets: usize,
+    /// Restrict hits to a folder (inclusive of its contents).
+    #[serde(default)]
+    pub within: Option<VPath>,
+    #[serde(skip)]
+    within_rel: Option<String>,
 }
 
 fn yes() -> bool {
@@ -222,6 +227,8 @@ impl Default for LibraryQuery {
             not_content: Vec::new(),
             name: Vec::new(),
             snippets: SNIPPET_PAGE,
+            within: None,
+            within_rel: None,
         }
     }
 }
@@ -585,6 +592,7 @@ impl LibraryQuery {
             || self.has_media_filters()
             || !self.content.is_empty()
             || !self.not_content.is_empty()
+            || self.within_rel.is_some()
     }
 
     fn has_media_filters(&self) -> bool {
@@ -683,6 +691,11 @@ impl LibraryQuery {
         for c in &self.not_content {
             sql.push_str(&format!(" AND r.id NOT IN ({IN_CONTENT})"));
             args.push(Value::Text(quote(c)));
+        }
+        if let Some(rel) = &self.within_rel {
+            sql.push_str(" AND (r.path = ? OR r.path LIKE ? ESCAPE '\\')");
+            args.push(Value::Text(rel.clone()));
+            args.push(Value::Text(like_escape(rel) + "/%"));
         }
         Some((sql, args))
     }

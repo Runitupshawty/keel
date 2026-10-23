@@ -1133,3 +1133,25 @@ fn bughunt_photo_kind_excludes_video_extensions() {
         ["alpha.jpg", "bravo.jpg", "charlie.jpg", "echo.jpg"]
     );
 }
+
+#[test]
+fn within_rel_adds_a_path_filter() {
+    let q = LibraryQuery {
+        within: Some(VPath {
+            scheme: "file".into(),
+            authority: String::new(),
+            path: "/docs".into(),
+        }),
+        within_rel: Some("docs".into()),
+        ..Default::default()
+    };
+    assert!(q.has_filters());
+    let (sql, args) = q.filters().unwrap();
+    assert!(
+        sql.contains("AND (r.path = ? OR r.path LIKE ? ESCAPE '\\')"),
+        "missing within clause: {sql}"
+    );
+    // The within args are the last two: "docs" and "docs/%".
+    assert_eq!(args[args.len() - 2], Value::Text("docs".into()));
+    assert_eq!(args[args.len() - 1], Value::Text("docs/%".into()));
+}
