@@ -41,6 +41,8 @@ impl Hover {
         self.shown = None;
         let Some(e) = entry.filter(|e| on && e.kind != Kind::Dir && !e.encrypted) else {
             self.at = None;
+            // Clear the asked-once guard too, so the next landing re-requests.
+            self.asked = None;
             return;
         };
         if self.at.as_ref().map(|(p, _)| p) != Some(&e.path) {
@@ -185,6 +187,46 @@ mod tests {
         assert!(
             rx.try_recv().is_ok(),
             "relanding on a file that left the cache re-requests its preview"
+        );
+    }
+
+    /// `PreviewPanel::reset` wipes the shared cache; the pointer passing over a
+    /// folder (leaving all files) must clear the asked-once guard as well, so
+    /// landing back on the file re-requests its preview.
+    #[test]
+    fn relanding_after_reset_rerequests_the_preview() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(tx);
+        let ctx = egui::Context::default();
+        let a = test_entry(&dir, "a.md", Kind::File, 10);
+        let folder = test_entry(&dir, "sub", Kind::Dir, 0);
+        let mut hover = Hover::default();
+
+        // Land on `a`: not cached, so it is requested once.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(rx.try_recv().is_ok(), "first landing requests the preview");
+        while rx.try_recv().is_ok() {} // drain
+
+        // The worker answers (cached), then the panel is reset (crash recovery /
+        // profile switch) and the cache is wiped.
+        let px = (ctx.screen_rect().size().x * MAX_SHARE * ctx.pixels_per_point()).round() as u32;
+        let key = PreviewKey::of(&a, 0, crate::preview_panel::width_bucket(&a, px));
+        panel.insert(&ctx, key, Preview::Markdown("# hi\n".into()));
+        panel.reset();
+
+        // The pointer passes over a folder row: no preview here, but the
+        // asked-once guard for `a` must not survive.
+        stash(&ctx, &folder);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+
+        // Landing back on `a` must re-request the now-missing preview.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(
+            rx.try_recv().is_ok(),
+            "relanding after a reset re-requests the preview"
         );
     }
 }

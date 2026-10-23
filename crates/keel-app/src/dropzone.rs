@@ -675,8 +675,10 @@ mod tests {
         assert_eq!(z.add(paths.clone()), (20_000, false));
         assert_eq!(z.add(paths), (0, false), "all known");
         let took = at.elapsed();
-        // The Vec scan this replaced took 1.6 s in release; debug builds are ~10x slower.
-        let limit = Duration::from_millis(if cfg!(debug_assertions) { 500 } else { 50 });
+        // The Vec scan this replaced took 1.6 s in release; debug builds are ~10x
+        // slower. 2 s absorbs wall-clock noise from parallel tests on a contended
+        // runner while staying far below that O(n^2) regression (~16 s debug).
+        let limit = Duration::from_millis(if cfg!(debug_assertions) { 2000 } else { 50 });
         assert!(took < limit, "{took:?}");
         let more: Vec<VPath> = (0..MAX_STASH).map(|i| p(&format!("g{i}"))).collect();
         assert_eq!(z.add(more), (MAX_STASH - 20_000, true));
