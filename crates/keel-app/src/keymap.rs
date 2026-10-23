@@ -1484,8 +1484,10 @@ impl KeymapUi {
                         for c in &all {
                             let chords = map.chords(c);
                             let texts: Vec<String> = chords.iter().map(|k| k.label()).collect();
+                            let name = crate::i18n::command(c.id, c.label);
                             let hit = pat.is_empty()
                                 || c.label.to_lowercase().contains(&pat)
+                                || name.to_lowercase().contains(&pat)
                                 || c.id.contains(&pat)
                                 || c.fixed.to_lowercase().contains(&pat)
                                 || texts.iter().any(|t| t.to_lowercase().contains(&pat));
@@ -1493,9 +1495,9 @@ impl KeymapUi {
                                 continue;
                             }
                             let name = if map.is_default(c.id) {
-                                egui::RichText::new(c.label)
+                                egui::RichText::new(name)
                             } else {
-                                egui::RichText::new(c.label).strong()
+                                egui::RichText::new(name).strong()
                             };
                             ui.label(name).on_hover_text(c.id);
                             ui.horizontal_wrapped(|ui| {
@@ -2036,6 +2038,39 @@ mod tests {
             crate::i18n::tr("keymap.remove").replace("{chord}", "⌘Z"),
             "Quitar ⌘Z"
         );
+        crate::i18n::set("en");
+    }
+
+    /// The Keyboard page's names for the keys the palette does not list, in Spanish
+    /// (i18n::command's fallback would leave them in English).
+    #[test]
+    fn keyboard_page_names_commands_in_spanish() {
+        crate::i18n::set("es");
+        for id in [
+            "go.backspace",
+            "select.toggle",
+            "finder.space",
+            crate::keymap::ESCAPE_ID,
+            "terminal.leave",
+            "cursor.up",
+            "cursor.down",
+            "cursor.left",
+            "cursor.right",
+            "cursor.page_up",
+            "cursor.page_down",
+            "cursor.home",
+            "cursor.end",
+        ] {
+            let c = crate::keymap::commands()
+                .into_iter()
+                .find(|c| c.id == id)
+                .unwrap();
+            assert_ne!(
+                crate::i18n::command(id, c.label),
+                c.label,
+                "{id} is not translated"
+            );
+        }
         crate::i18n::set("en");
     }
 }

@@ -357,6 +357,20 @@ settings = "Ajustes"
 "sidebar.pin" = "Añadir a la barra lateral"
 "filelist.open" = "Abrir lista de archivos…"
 "filelist.export" = "Exportar resultados…"
+# Keys the palette does not list (keymap.rs).
+"go.backspace" = "Carpeta superior (en una búsqueda: borra un carácter)"
+"select.toggle" = "Seleccionar o deseleccionar el elemento del cursor"
+"finder.space" = "Vista rápida, o seleccionar el elemento del cursor (Ajustes)"
+"cancel" = "Cancelar: cerrar el filtro o un cambio de nombre"
+"terminal.leave" = "Salir de la terminal"
+"cursor.up" = "Cursor arriba"
+"cursor.down" = "Cursor abajo"
+"cursor.left" = "Cursor a la izquierda"
+"cursor.right" = "Cursor a la derecha"
+"cursor.page_up" = "Cursor una página arriba"
+"cursor.page_down" = "Cursor una página abajo"
+"cursor.home" = "Cursor al primer elemento"
+"cursor.end" = "Cursor al último elemento"
 
 # Los nombres de los elementos de la barra de herramientas (Item::label en toolbar.rs).
 [toolbar]
