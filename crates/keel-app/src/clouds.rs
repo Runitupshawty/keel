@@ -78,11 +78,13 @@ pub fn quota_text(slot: Option<&QuotaSlot>) -> String {
     };
     match slot {
         Some(QuotaSlot { value: Some(q), .. }) => match q.total {
-            Some(total) => format!("{} of {} used", size(q.used), size(total)),
-            None => format!("{} used (no limit)", size(q.used)),
+            Some(total) => crate::i18n::tr("clouds.quota_of")
+                .replace("{used}", &size(q.used))
+                .replace("{total}", &size(total)),
+            None => crate::i18n::tr("clouds.quota_no_limit").replace("{used}", &size(q.used)),
         },
-        Some(s) if s.asking => "Checking storage…".into(),
-        _ => "Quota unknown".into(),
+        Some(s) if s.asking => crate::i18n::tr("clouds.quota_checking").into(),
+        _ => crate::i18n::tr("clouds.quota_unknown").into(),
     }
 }
 
@@ -137,19 +139,20 @@ pub fn root_of(id: &str) -> VPath {
 pub fn delete_text(n: usize, kind: RemoveKind) -> String {
     let items = crate::jobs::items(n);
     match kind {
-        RemoveKind::Trash => format!("Move {items} to the Drive trash?"),
-        RemoveKind::RecoverableDelete => {
-            format!("Delete {items} on Dropbox? (recoverable for 30 days)")
-        }
-        RemoveKind::Permanent => format!("Delete {items} from the bucket permanently?"),
+        RemoveKind::Trash => crate::i18n::tr("clouds.delete_trash"),
+        RemoveKind::RecoverableDelete => crate::i18n::tr("clouds.delete_dropbox"),
+        RemoveKind::Permanent => crate::i18n::tr("clouds.delete_permanent"),
     }
+    .replace("{items}", &items)
 }
 
 /// The delete confirmation's button: a move to the Drive trash says so.
 pub fn delete_button(kind: RemoveKind) -> &'static str {
     match kind {
-        RemoveKind::Trash => "Move to trash",
-        RemoveKind::RecoverableDelete | RemoveKind::Permanent => "Delete",
+        RemoveKind::Trash => crate::i18n::tr("clouds.delete_button_trash"),
+        RemoveKind::RecoverableDelete | RemoveKind::Permanent => {
+            crate::i18n::tr("clouds.delete_button_delete")
+        }
     }
 }
 
@@ -208,6 +211,9 @@ struct LazyCloud {
     account: CloudAccount,
     secrets: Arc<dyn SecretStore>,
     events: Sender<RemoteEvent>,
+    /// "Connecting" / "Connected" status text, taken on the UI thread in `register`.
+    connecting: String,
+    connected: String,
     inner: Mutex<Option<Arc<CloudProvider>>>,
     last: Mutex<Option<(ConnStatus, String)>>,
 }
@@ -254,12 +260,12 @@ impl Provider for LazyCloud {
     fn list(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
         let connected = matches!(&*self.last.lock(), Some((ConnStatus::Connected, _)));
         if !connected {
-            self.status(ConnStatus::Connecting, "connecting".into());
+            self.status(ConnStatus::Connecting, self.connecting.clone());
         }
         let result = self.get()?.list(dir);
         match &result {
             Err(e) if !folder_error(e) => self.status(ConnStatus::Failed, format!("{e:#}")),
-            _ => self.status(ConnStatus::Connected, "connected".into()),
+            _ => self.status(ConnStatus::Connected, self.connected.clone()),
         }
         result
     }
@@ -437,6 +443,8 @@ impl Clouds {
             account: a.clone(),
             secrets: self.secrets.clone(),
             events: self.events.clone(),
+            connecting: crate::i18n::tr("clouds.status_connecting").into(),
+            connected: crate::i18n::tr("clouds.status_connected").into(),
             inner: Mutex::default(),
             last: Mutex::default(),
         });
@@ -563,12 +571,20 @@ impl Clouds {
     }
 }
 
+/// The sign-out's toasts, taken on the UI thread (the worker's language is English).
+struct SignOutMsgs {
+    removed: String,
+    removed_out: String,
+    removed_failed: String,
+}
+
 /// Deletes the keychain entries and, with `revoke`, then revokes the grant where the service
 /// allows it, on a worker (both block).
 fn sign_out(
     account: CloudAccount,
     secrets: Arc<dyn SecretStore>,
     revoke: Option<Revoke>,
+    msgs: SignOutMsgs,
     tx: Sender<Msg>,
     ctx: egui::Context,
 ) {
@@ -576,18 +592,17 @@ fn sign_out(
         let label = &account.label;
         let Some(revoke) = revoke else {
             forget_account(&*secrets, &account.id);
-            let text = format!("Removed {label}; its keys are deleted from this PC");
+            let text = msgs.removed.replace("{label}", label);
             return send(&tx, &ctx, Msg::Info(text));
         };
         let revoked = cloud::sign_out_with(&account, &*secrets, |t, c| revoke(account.kind, t, c));
         let msg = match revoked {
-            Ok(()) => Msg::Info(format!(
-                "Removed {label}; signed out and its keys are deleted from this PC"
-            )),
-            Err(e) => Msg::Toast(format!(
-                "Removed {label} and deleted its keys from this PC, but the service did not \
-                 confirm the sign-out: {e:#}"
-            )),
+            Ok(()) => Msg::Info(msgs.removed_out.replace("{label}", label)),
+            Err(e) => Msg::Toast(
+                msgs.removed_failed
+                    .replace("{label}", label)
+                    .replace("{error}", &format!("{e:#}")),
+            ),
         };
         send(&tx, &ctx, msg);
     });
@@ -597,21 +612,11 @@ fn sign_out(
 pub fn remove_text(a: &CloudAccount) -> String {
     let label = &a.label;
     match a.kind {
-        CloudKind::S3 | CloudKind::AzureBlob => format!(
-            "Remove {label}? Keel deletes its keys from this PC (revoke them in the \
-             provider's console); the files in storage stay."
-        ),
-        CloudKind::WebDav => format!(
-            "Remove {label}? Keel deletes its password from this PC (change it on the server \
-             if you want it invalid); the files on the server stay."
-        ),
-        _ => format!(
-            "Remove {label}?\n\nSign out and remove: signs this app out of {label} everywhere \
-             it uses this client id and deletes its keys from this PC.\n\nRemove from this PC \
-             only: deletes its keys here; other devices stay signed in.\n\nThe files in the \
-             cloud stay."
-        ),
+        CloudKind::S3 | CloudKind::AzureBlob => crate::i18n::tr("clouds.remove_keys"),
+        CloudKind::WebDav => crate::i18n::tr("clouds.remove_password"),
+        _ => crate::i18n::tr("clouds.remove_oauth"),
     }
+    .replace("{label}", label)
 }
 
 /// The "Remove?" dialog: Some(answer) once answered, `Some(None)` = cancelled.
@@ -623,18 +628,27 @@ fn remove_ui(ctx: &egui::Context, a: &CloudAccount) -> Option<Option<CloudCmd>> 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if !uses_oauth(a.kind) {
-                if ui.button("Remove").clicked() {
+                if ui
+                    .button(crate::i18n::tr("clouds.remove_confirm"))
+                    .clicked()
+                {
                     answer = Some(Some(CloudCmd::RemoveLocal));
                 }
             } else {
-                if ui.button("Sign out and remove").clicked() {
+                if ui
+                    .button(crate::i18n::tr("clouds.sign_out_and_remove"))
+                    .clicked()
+                {
                     answer = Some(Some(CloudCmd::RemoveNow));
                 }
-                if ui.button("Remove from this PC only").clicked() {
+                if ui
+                    .button(crate::i18n::tr("clouds.remove_pc_only"))
+                    .clicked()
+                {
                     answer = Some(Some(CloudCmd::RemoveLocal));
                 }
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 answer = Some(None);
             }
         });
@@ -654,10 +668,10 @@ fn link_ui(ctx: &egui::Context, name: &str, question: &str) -> Option<bool> {
         ui.label(question);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Create link").clicked() {
+            if ui.button(crate::i18n::tr("clouds.create_link")).clicked() {
                 answer = Some(true);
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 answer = Some(false);
             }
         });
@@ -1511,18 +1525,24 @@ impl AppState {
         }
         let label = &account.label;
         match status {
-            ConnStatus::Connected => self.toasts.info(format!("Connected to {label}")),
+            ConnStatus::Connected => self
+                .toasts
+                .info(crate::i18n::tr("clouds.connected_to").replace("{label}", label)),
             ConnStatus::Failed if uses_oauth(account.kind) && needs_sign_in(&detail) => {
                 self.toasts.with_action(
-                    format!("{label}: the sign-in expired or was revoked"),
-                    "Sign in",
+                    crate::i18n::tr("clouds.sign_in_expired").replace("{label}", label),
+                    crate::i18n::tr("clouds.sign_in_button"),
                     Action::Cloud {
                         id: id.to_owned(),
                         cmd: CloudCmd::SignIn,
                     },
                 )
             }
-            ConnStatus::Failed => self.toasts.error(format!("{label}: {detail}")),
+            ConnStatus::Failed => self.toasts.error(
+                crate::i18n::tr("clouds.failed_detail")
+                    .replace("{label}", label)
+                    .replace("{detail}", &detail),
+            ),
             _ => {}
         }
     }
@@ -1569,9 +1589,7 @@ impl AppState {
             return;
         }
         let Some(account) = self.clouds.account(&id).cloned() else {
-            return self
-                .toasts
-                .error("That cloud account is no longer configured");
+            return self.toasts.error(crate::i18n::tr("clouds.not_configured"));
         };
         match cmd {
             CloudCmd::Reconnect => {
@@ -1588,15 +1606,18 @@ impl AppState {
                     account,
                     self.clouds.secrets.clone(),
                     revoke,
+                    SignOutMsgs {
+                        removed: crate::i18n::tr("clouds.removed_keys").into(),
+                        removed_out: crate::i18n::tr("clouds.removed_signed_out").into(),
+                        removed_failed: crate::i18n::tr("clouds.removed_revoke_failed").into(),
+                    },
                     self.tx.clone(),
                     self.ctx.clone(),
                 );
             }
             CloudCmd::SignIn => {
                 if self.clouds.wizard.is_some() {
-                    return self
-                        .toasts
-                        .info("Finish or close the open cloud account dialog first");
+                    return self.toasts.info(crate::i18n::tr("clouds.dialog_open"));
                 }
                 let mut w = Wizard::edit(&account);
                 w.submit(
@@ -1639,7 +1660,7 @@ impl AppState {
             .cloned();
         match target {
             Some(e) if can_link(&self.ctx, &e) => self.clouds.want_link(e.path, false),
-            _ => self.toasts.info("Copy link works on cloud files"),
+            _ => self.toasts.info(crate::i18n::tr("clouds.link_cloud_only")),
         }
     }
 
@@ -1652,13 +1673,14 @@ impl AppState {
             }
             // One question at a time: a second would replace the first one's dialog.
             Ok(ShareLink::Confirm { .. }) if self.clouds.link_ask.is_some() => {
-                self.toasts.info(format!(
-                    "Copy link: answer the open question first, then ask again for {}",
-                    path.name()
-                ));
+                self.toasts.info(
+                    crate::i18n::tr("clouds.link_answer_first").replace("{name}", path.name()),
+                );
             }
             Ok(ShareLink::Confirm { question }) => self.clouds.link_ask = Some((path, question)),
-            Err(e) => self.toasts.error(format!("Copy link: {e:#}")),
+            Err(e) => self
+                .toasts
+                .error(crate::i18n::tr("clouds.link_error").replace("{error}", &format!("{e:#}"))),
         }
     }
 
@@ -1708,7 +1730,8 @@ impl AppState {
                 let account = *account;
                 self.clouds.wizard = None;
                 let id = account.id.clone();
-                let text = format!("Saved {}", account.label);
+                let text =
+                    crate::i18n::tr("clouds.saved_account").replace("{label}", &account.label);
                 match self.settings.clouds.iter_mut().find(|a| a.id == id) {
                     Some(slot) => *slot = account,
                     None => self.settings.clouds.push(account),
@@ -2088,6 +2111,8 @@ mod tests {
                 account: a,
                 secrets: Arc::new(store),
                 events,
+                connecting: "connecting".into(),
+                connected: "connected".into(),
                 inner: Mutex::default(),
                 last: Mutex::default(),
             }
@@ -2769,6 +2794,121 @@ mod tests {
             tr("clouds.sign_in_worker_stopped"),
             "el hilo de inicio de sesión se detuvo"
         );
+        crate::i18n::set("en");
+    }
+
+    /// The account toasts, the status/quota text and the delete/remove/link confirmations.
+    #[test]
+    fn cloud_toasts_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(tr("clouds.status_connecting"), "conectando");
+        assert_eq!(tr("clouds.status_connected"), "conectado");
+        assert_eq!(
+            tr("clouds.connected_to").replace("{label}", "Drive"),
+            "Conectado a Drive"
+        );
+        assert_eq!(
+            tr("clouds.sign_in_expired").replace("{label}", "Drive"),
+            "Drive: el inicio de sesión expiró o se revocó"
+        );
+        assert_eq!(tr("clouds.sign_in_button"), "Iniciar sesión");
+        assert_eq!(
+            tr("clouds.failed_detail")
+                .replace("{label}", "Drive")
+                .replace("{detail}", "sin red"),
+            "Drive: sin red"
+        );
+        assert_eq!(
+            tr("clouds.quota_of")
+                .replace("{used}", "12,3 GB")
+                .replace("{total}", "15 GB"),
+            "12,3 GB de 15 GB en uso"
+        );
+        assert_eq!(
+            tr("clouds.quota_no_limit").replace("{used}", "1,5 MB"),
+            "1,5 MB en uso (sin límite)"
+        );
+        assert_eq!(
+            tr("clouds.quota_checking"),
+            "Comprobando el almacenamiento…"
+        );
+        assert_eq!(tr("clouds.quota_unknown"), "Cuota desconocida");
+        assert_eq!(
+            tr("clouds.link_cloud_only"),
+            "Copiar enlace funciona en archivos de la nube"
+        );
+        assert_eq!(
+            tr("clouds.link_answer_first").replace("{name}", "foto.jpg"),
+            "Copiar enlace: responde primero la pregunta abierta y vuelve a pedirlo para foto.jpg"
+        );
+        assert_eq!(
+            tr("clouds.link_error").replace("{error}", "sin red"),
+            "Copiar enlace: sin red"
+        );
+        assert_eq!(
+            tr("clouds.not_configured"),
+            "Esa cuenta de nube ya no está configurada"
+        );
+        assert_eq!(
+            tr("clouds.dialog_open"),
+            "Termina o cierra primero el diálogo de cuenta de nube abierto"
+        );
+        assert_eq!(
+            tr("clouds.saved_account").replace("{label}", "Drive"),
+            "Guardado Drive"
+        );
+        assert_eq!(
+            tr("clouds.removed_keys").replace("{label}", "Drive"),
+            "Eliminado Drive; sus claves se han borrado de este equipo"
+        );
+        assert_eq!(
+            tr("clouds.removed_signed_out").replace("{label}", "Drive"),
+            "Eliminado Drive; se ha cerrado la sesión y sus claves se han borrado de este equipo"
+        );
+        assert_eq!(
+            tr("clouds.removed_revoke_failed")
+                .replace("{label}", "Drive")
+                .replace("{error}", "timeout"),
+            "Eliminado Drive y borradas sus claves de este equipo, pero el servicio no confirmó \
+             el cierre de sesión: timeout"
+        );
+        assert_eq!(
+            tr("clouds.delete_trash").replace("{items}", "2 elementos"),
+            "¿Mover 2 elementos a la papelera de Drive?"
+        );
+        assert_eq!(
+            tr("clouds.delete_dropbox").replace("{items}", "1 elemento"),
+            "¿Eliminar 1 elemento en Dropbox? (recuperable durante 30 días)"
+        );
+        assert_eq!(
+            tr("clouds.delete_permanent").replace("{items}", "3 elementos"),
+            "¿Eliminar 3 elementos del bucket permanentemente?"
+        );
+        assert_eq!(tr("clouds.delete_button_trash"), "Mover a la papelera");
+        assert_eq!(tr("clouds.delete_button_delete"), "Eliminar");
+        assert_eq!(
+            tr("clouds.remove_keys").replace("{label}", "B2"),
+            "¿Eliminar B2? Keel borra sus claves de este equipo (revócalas en la consola del \
+             proveedor); los archivos en el almacenamiento se quedan."
+        );
+        assert_eq!(
+            tr("clouds.remove_password").replace("{label}", "NAS"),
+            "¿Eliminar NAS? Keel borra su contraseña de este equipo (cámbiala en el servidor si \
+             quieres invalidarla); los archivos en el servidor se quedan."
+        );
+        assert_eq!(
+            tr("clouds.remove_oauth").replace("{label}", "Drive"),
+            "¿Eliminar Drive?\n\nCerrar sesión y eliminar: cierra la sesión de esta aplicación \
+             en Drive en todas partes donde usa este client id y borra sus claves de este \
+             equipo.\n\nEliminar solo de este equipo: borra sus claves aquí; los otros \
+             dispositivos se quedan con la sesión iniciada.\n\nLos archivos en la nube se \
+             quedan."
+        );
+        assert_eq!(tr("clouds.remove_confirm"), "Eliminar");
+        assert_eq!(tr("clouds.sign_out_and_remove"), "Cerrar sesión y eliminar");
+        assert_eq!(tr("clouds.remove_pc_only"), "Eliminar solo de este equipo");
+        assert_eq!(tr("clouds.create_link"), "Crear enlace");
         crate::i18n::set("en");
     }
 }
