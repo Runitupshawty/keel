@@ -120,6 +120,8 @@ pub struct PreviewPanel {
     cache: HashMap<PreviewKey, (Preview, u64, usize)>,
     cache_bytes: usize,
     clock: u64,
+    /// Bumped when the cache loses entries (reset or eviction) so hover re-requests.
+    generation: u64,
     jobs: Sender<PreviewJob>,
 }
 
@@ -135,6 +137,7 @@ impl PreviewPanel {
         self.player = None;
         self.cache.clear();
         self.cache_bytes = 0;
+        self.generation += 1;
     }
 
     /// F3 / Ctrl+I: shows the panel on `tab`, or hides it when it already shows `tab`.
@@ -167,6 +170,7 @@ impl PreviewPanel {
             cache: HashMap::new(),
             cache_bytes: 0,
             clock: 0,
+            generation: 0,
             jobs,
         }
     }
@@ -226,6 +230,11 @@ impl PreviewPanel {
         false
     }
 
+    /// How many times the cache has lost entries; hover re-requests per generation.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// A cached preview (hover previews), without touching what the panel shows.
     pub fn cached(&self, key: &PreviewKey) -> Option<&Preview> {
         self.cache.get(key).map(|(p, ..)| p)
@@ -254,6 +263,7 @@ impl PreviewPanel {
         }
         self.cache_bytes += w;
         // Evict least recently used past 64 entries or 256 MB; the newest always stays.
+        let mut evicted = false;
         while self.cache.len() > 1 && (self.cache.len() > CACHE || self.cache_bytes > CACHE_BYTES) {
             // ponytail: O(n) scan over at most 64 entries.
             let Some(oldest) = self
@@ -266,7 +276,11 @@ impl PreviewPanel {
             };
             if let Some((_, _, w)) = self.cache.remove(&oldest) {
                 self.cache_bytes -= w;
+                evicted = true;
             }
+        }
+        if evicted {
+            self.generation += 1;
         }
     }
 
