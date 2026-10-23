@@ -1,6 +1,6 @@
 //! Adapters that let `keel-query` evaluate matches against `keel-search` hits.
 
-use keel_query::{DateProp, Props, Timestamp};
+use keel_query::{DateProp, Expr, Props, Timestamp};
 use keel_search::Hit;
 use std::time::UNIX_EPOCH;
 
@@ -78,6 +78,31 @@ pub fn refine(
     Ok(selected.into_iter().map(|i| hits[i].clone()).collect())
 }
 
+/// `true` when `text` needs the full query engine rather than the simple
+/// word/glob matcher: `Or` or `Not`, a comparison operator, or any function
+/// other than `regex`, `folder` or `in`. Parse errors are `false`.
+#[allow(dead_code)] // pending search-box wiring
+pub fn needs_full_language(text: &str) -> bool {
+    match keel_query::parse_ast(text, &keel_query::Options::default()) {
+        Ok(ast) => expr_needs_full(&ast.expr),
+        Err(_) => false,
+    }
+}
+
+fn expr_needs_full(expr: &Expr) -> bool {
+    match expr {
+        Expr::Or(_) | Expr::Not(_) => true,
+        Expr::And(children) => children.iter().any(expr_needs_full),
+        Expr::Term(term) => {
+            term.items.iter().any(|item| item.op.is_some())
+                || term
+                    .function
+                    .as_ref()
+                    .is_some_and(|f| !matches!(f.name.as_str(), "regex" | "folder" | "in"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +158,26 @@ mod tests {
         let names: Vec<&str> = out.iter().map(|h| h.path.name()).collect();
         assert!(names.contains(&"copy1.pdf"));
         assert!(names.contains(&"copy2.pdf"));
+    }
+
+    #[test]
+    fn plain_words_and_globs_stay_simple() {
+        assert!(!needs_full_language("report"));
+        assert!(!needs_full_language("report.pdf"));
+        assert!(!needs_full_language("*.pdf"));
+        assert!(!needs_full_language("photo_2024*"));
+        assert!(!needs_full_language("in:Documents"));
+        assert!(!needs_full_language("regex:^photo"));
+        assert!(!needs_full_language("folder:"));
+        assert!(!needs_full_language("zzz:nope"));
+    }
+
+    #[test]
+    fn ext_size_not_and_or_need_full_language() {
+        assert!(needs_full_language("ext:pdf"));
+        assert!(needs_full_language("size:>=1mb"));
+        assert!(needs_full_language("name:report"));
+        assert!(needs_full_language("!pdf"));
+        assert!(needs_full_language("pdf | jpg"));
     }
 }
