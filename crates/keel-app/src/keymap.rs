@@ -1331,7 +1331,7 @@ impl KeymapUi {
             None => {}
             Some(Err(())) => {
                 self.recording = None;
-                self.notice = Some(("Ctrl+C, Ctrl+X and Ctrl+V are the clipboard's".into(), true));
+                self.notice = Some((crate::i18n::tr("keymap.clipboard_reserved").into(), true));
             }
             Some(Ok((Key::Escape, m))) if !m.any() => {
                 self.recording = None;
@@ -1340,7 +1340,7 @@ impl KeymapUi {
             Some(Ok((key, m))) => {
                 self.recording = None;
                 if m.ctrl && !m.command {
-                    self.notice = Some(("Use Cmd instead of Control".into(), true));
+                    self.notice = Some((crate::i18n::tr("keymap.use_cmd").into(), true));
                     return;
                 }
                 self.offer(map, id, Chord::new(m, key));
@@ -1353,7 +1353,7 @@ impl KeymapUi {
         self.notice = match map.bind(id, chord, false) {
             Ok(Bind::Done) => None,
             Ok(Bind::Already) => Some((
-                format!("{} is already this command's", chord.label()),
+                crate::i18n::tr("keymap.already_bound").replace("{chord}", &chord.label()),
                 false,
             )),
             Ok(Bind::Conflict(others)) => {
@@ -1370,52 +1370,74 @@ impl KeymapUi {
         ui.horizontal(|ui| {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search commands or keys")
+                    .hint_text(crate::i18n::tr("keymap.search_hint"))
                     .desired_width(220.0),
             );
             let _ = r.named("Search commands");
-            if ui.button("Import…").clicked() {
-                if let Some(path) = crate::platform::file_dialog("Import keymap", |d| {
-                    d.add_filter("Keymap", &["toml"]).pick_file()
-                }) {
+            if ui.button(crate::i18n::tr("keymap.import")).clicked() {
+                if let Some(path) =
+                    crate::platform::file_dialog(crate::i18n::tr("keymap.import_dialog"), |d| {
+                        d.add_filter(crate::i18n::tr("keymap.filter"), &["toml"])
+                            .pick_file()
+                    })
+                {
                     self.notice = Some(match import_file(&path) {
                         Ok((imported, notes)) => {
                             *map = imported;
                             if notes.is_empty() {
-                                ("Keymap imported".into(), false)
+                                (crate::i18n::tr("keymap.imported").into(), false)
                             } else {
                                 (
-                                    format!("Keymap imported; skipped: {}", notes.join("; ")),
+                                    crate::i18n::tr("keymap.imported_skipped")
+                                        .replace("{notes}", &notes.join("; ")),
                                     true,
                                 )
                             }
                         }
-                        Err(e) => (format!("Could not import {}: {e}", path.display()), true),
+                        Err(e) => (
+                            crate::i18n::tr("keymap.import_failed")
+                                .replace("{path}", &path.display().to_string())
+                                .replace("{error}", &e),
+                            true,
+                        ),
                     });
                 }
             }
-            if ui.button("Export…").clicked() {
-                if let Some(path) = crate::platform::file_dialog("Export keymap", |d| {
-                    d.set_file_name("keel-keymap.toml")
-                        .add_filter("Keymap", &["toml"])
-                        .save_file()
-                }) {
+            if ui.button(crate::i18n::tr("keymap.export")).clicked() {
+                if let Some(path) =
+                    crate::platform::file_dialog(crate::i18n::tr("keymap.export_dialog"), |d| {
+                        d.set_file_name("keel-keymap.toml")
+                            .add_filter(crate::i18n::tr("keymap.filter"), &["toml"])
+                            .save_file()
+                    })
+                {
                     self.notice = Some(
                         match crate::settings::write_atomic(&path, export_text(map).as_bytes()) {
-                            Ok(()) => (format!("Exported to {}", path.display()), false),
-                            Err(e) => (format!("Could not export: {e:#}"), true),
+                            Ok(()) => (
+                                crate::i18n::tr("keymap.exported")
+                                    .replace("{path}", &path.display().to_string()),
+                                false,
+                            ),
+                            Err(e) => (
+                                crate::i18n::tr("keymap.export_failed")
+                                    .replace("{error}", &format!("{e:#}")),
+                                true,
+                            ),
                         },
                     );
                 }
             }
             if ui
-                .add_enabled(!map.0.is_empty(), egui::Button::new("Reset all"))
-                .on_hover_text("Every command back to its default keys")
+                .add_enabled(
+                    !map.0.is_empty(),
+                    egui::Button::new(crate::i18n::tr("keymap.reset_all")),
+                )
+                .on_hover_text(crate::i18n::tr("keymap.reset_all_tip"))
                 .clicked()
             {
                 map.reset_all();
                 self.conflict = None;
-                self.notice = Some(("Every key is back to its default".into(), false));
+                self.notice = Some((crate::i18n::tr("keymap.reset_all_done").into(), false));
             }
         });
         if let Some((text, error)) = &self.notice {
@@ -1430,10 +1452,12 @@ impl KeymapUi {
                 let names: Vec<&str> = others.iter().map(|o| label_of(o)).collect();
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    format!("{} is already \"{}\".", chord.label(), names.join("\", \"")),
+                    crate::i18n::tr("keymap.conflict")
+                        .replace("{chord}", &chord.label())
+                        .replace("{taken}", &names.join("\", \"")),
                 );
                 if ui
-                    .button(format!("Use it for \"{}\"", label_of(id)))
+                    .button(crate::i18n::tr("keymap.use_for").replace("{command}", label_of(id)))
                     .clicked()
                 {
                     self.conflict = None;
@@ -1441,14 +1465,12 @@ impl KeymapUi {
                         self.notice = Some((e, true));
                     }
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("keymap.cancel")).clicked() {
                     self.conflict = None;
                 }
             });
         }
-        ui.weak(
-            "Record adds a key; click a key to remove it. Global hotkeys are on the General page.",
-        );
+        ui.weak(crate::i18n::tr("keymap.record_hint"));
         let pat = self.search.trim().to_lowercase();
         egui::ScrollArea::vertical()
             .max_height(420.0)
@@ -1479,12 +1501,14 @@ impl KeymapUi {
                             ui.horizontal_wrapped(|ui| {
                                 if !c.fixed.is_empty() {
                                     ui.weak(crate::keys::shortcut_label(c.fixed))
-                                        .on_hover_text("The system's clipboard key (always on)");
+                                        .on_hover_text(crate::i18n::tr("keymap.clipboard_key_tip"));
                                 }
                                 for (chord, text) in chords.iter().zip(&texts) {
-                                    let r = ui
-                                        .small_button(format!("{text} \u{d7}"))
-                                        .on_hover_text(format!("Remove {text}"));
+                                    let r =
+                                        ui.small_button(format!("{text} \u{d7}")).on_hover_text(
+                                            crate::i18n::tr("keymap.remove")
+                                                .replace("{chord}", text),
+                                        );
                                     if r.clicked() {
                                         self.conflict = None;
                                         self.notice =
@@ -1492,16 +1516,19 @@ impl KeymapUi {
                                     }
                                 }
                                 if chords.is_empty() && c.fixed.is_empty() {
-                                    ui.weak("none");
+                                    ui.weak(crate::i18n::tr("keymap.none"));
                                 }
                             });
                             ui.horizontal(|ui| {
                                 if self.recording == Some(c.id) {
                                     ui.colored_label(
                                         ui.visuals().warn_fg_color,
-                                        "Press a key… (Esc cancels)",
+                                        crate::i18n::tr("keymap.press_a_key"),
                                     );
-                                } else if ui.small_button("Record").clicked() {
+                                } else if ui
+                                    .small_button(crate::i18n::tr("keymap.record"))
+                                    .clicked()
+                                {
                                     self.recording = Some(c.id);
                                     self.conflict = None;
                                     self.notice = None;
@@ -1514,9 +1541,9 @@ impl KeymapUi {
                                 if ui
                                     .add_enabled(
                                         !map.is_default(c.id),
-                                        egui::Button::new("Reset").small(),
+                                        egui::Button::new(crate::i18n::tr("keymap.reset")).small(),
                                     )
-                                    .on_hover_text("Back to the default keys")
+                                    .on_hover_text(crate::i18n::tr("keymap.reset_tip"))
                                     .clicked()
                                 {
                                     map.reset(c.id);
@@ -1977,5 +2004,38 @@ mod tests {
         );
         assert_eq!(ui.recording, None);
         assert_eq!(map.0["view.theme"], ["Ctrl+K"]);
+    }
+
+    /// The Keyboard page's labels, hints and notices in Spanish (the UI thread sets the
+    /// language each frame; this test thread sets it here and restores English).
+    #[test]
+    fn keyboard_page_strings_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(
+            crate::i18n::tr("keymap.search_hint"),
+            "Buscar comandos o teclas"
+        );
+        assert_eq!(crate::i18n::tr("keymap.import"), "Importar…");
+        assert_eq!(crate::i18n::tr("keymap.export"), "Exportar…");
+        assert_eq!(crate::i18n::tr("keymap.reset_all"), "Restablecer todo");
+        assert_eq!(crate::i18n::tr("keymap.record"), "Grabar");
+        assert_eq!(crate::i18n::tr("keymap.reset"), "Restablecer");
+        assert_eq!(
+            crate::i18n::tr("keymap.press_a_key"),
+            "Pulsa una tecla… (Esc cancela)"
+        );
+        assert_eq!(
+            crate::i18n::tr("keymap.imported_skipped").replace("{notes}", "a; b"),
+            "Mapa de teclado importado; omitidos: a; b"
+        );
+        assert_eq!(
+            crate::i18n::tr("keymap.use_cmd"),
+            "Usa Cmd en vez de Control"
+        );
+        assert_eq!(
+            crate::i18n::tr("keymap.remove").replace("{chord}", "⌘Z"),
+            "Quitar ⌘Z"
+        );
+        crate::i18n::set("en");
     }
 }
