@@ -333,6 +333,13 @@ struct Suggest {
     remembered: Option<String>,
 }
 
+/// The query-problem hint shows only where the backend speaks Everything's query
+/// language: the Everything backend, outside the library, on a folder tab (not a file
+/// list). Toggles (including regex) do not change this; they only change the check.
+fn checks_syntax(backend: Option<&str>, library: bool, listing: bool) -> bool {
+    backend == Some("Everything") && !library && !listing
+}
+
 /// The query box. Editing schedules the query after the search delay (when searching as
 /// you type); Enter runs it now; Up/Down move the result cursor while typing. The toggles
 /// and the Search menu follow; with the Library backend the filter chips (`chip_row`)
@@ -486,16 +493,20 @@ pub fn bar(
         // A query Everything's search language rejects shows its problem beside the box. Only for
         // the Everything backend: Keel's index, locate and the library read their own terms
         // (`in:` is a source there) until keel-query is wired into them.
-        let everything_syntax = name == Some("Everything") && !tab.library_search && !toggles.regex;
-        if list.is_none() && everything_syntax && !query.is_empty() {
+        if !query.is_empty() && checks_syntax(name, tab.library_search, list.is_some()) {
             let cache_id = id.with("query_problem");
             let problem = ui.ctx().data_mut(|d| {
-                let cache = d.get_temp_mut_or_default::<(String, Option<String>)>(cache_id);
-                if cache.0 != *query {
+                let cache =
+                    d.get_temp_mut_or_default::<(String, Toggles, Option<String>)>(cache_id);
+                if cache.0 != *query || cache.1 != *toggles {
                     cache.0 = query.clone();
-                    cache.1 = crate::query_check::problem(query);
+                    cache.1 = *toggles;
+                    cache.2 = crate::query_check::problem_with(
+                        query,
+                        &crate::query_check::options(*toggles),
+                    );
                 }
-                cache.1.clone()
+                cache.2.clone()
             });
             if let Some(p) = problem {
                 ui.colored_label(ui.visuals().warn_fg_color, &p)
@@ -1039,6 +1050,21 @@ mod tests {
         assert!(native.contains("in:") && native.contains("regex:"));
         assert!(hint(Some("Library"), true).contains("tag:"));
         assert_eq!(hint(None, false), "Search file names");
+    }
+
+    /// The problem hint shows in regex mode too: the scope check ignores the toggles, and
+    /// keel-query checks the query under them (a broken regex is reported).
+    #[test]
+    fn syntax_check_applies_in_regex_mode() {
+        assert!(checks_syntax(Some("Everything"), false, false));
+        assert!(!checks_syntax(Some("System"), false, false));
+        assert!(!checks_syntax(Some("Everything"), true, false));
+        assert!(!checks_syntax(Some("Everything"), false, true));
+        let t = Toggles {
+            regex: true,
+            ..Default::default()
+        };
+        assert!(crate::query_check::problem_with("a(", &crate::query_check::options(t)).is_some());
     }
 
     /// Everything's toggle shortcuts reach a search tab, also from its query box.

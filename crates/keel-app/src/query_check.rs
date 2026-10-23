@@ -1,7 +1,6 @@
 //! Checks a search box query against Keel's search language (keel-query).
 
 /// Map a search tab's Everything toggles onto keel-query's options.
-#[allow(dead_code)] // pub API for the search box; not yet called outside tests
 pub fn options(t: crate::search_tab::Toggles) -> keel_query::Options {
     keel_query::Options {
         match_case: t.match_case,
@@ -14,6 +13,7 @@ pub fn options(t: crate::search_tab::Toggles) -> keel_query::Options {
 }
 
 /// The problem with `text` as a search query, if the parser rejects it.
+#[allow(dead_code)] // pub API for the search box; not yet called outside tests
 pub fn problem(text: &str) -> Option<String> {
     problem_with(text, &keel_query::Options::default())
 }
