@@ -298,9 +298,18 @@ impl SearchWorker {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
-                let mut result = searcher.query(&query).map(|mut hits| {
+                let mut result = searcher.query(&query).and_then(|mut hits| {
                     hits.retain(|h| applied.keeps(h.path.name(), h.is_dir));
-                    omissions.apply(hits)
+                    let hits = omissions.apply(hits);
+                    match applied.refine {
+                        Some(text) => crate::query_filter::refine(
+                            hits,
+                            &text,
+                            &keel_query::Options::default(),
+                        )
+                        .map_err(|e| anyhow::anyhow!(e.message)),
+                        None => Ok(hits),
+                    }
                 });
                 if let Ok(hits) = &mut result {
                     if wanted.lock().contains(&id) {
@@ -533,6 +542,51 @@ mod tests {
             };
             assert_eq!(names, want);
         }
+    }
+
+    /// Task 76: an `Applied::refine` Keel query re-filters the kept hits.
+    #[test]
+    fn search_worker_refines_hits_with_keel_query() {
+        struct Fixed;
+        impl Searcher for Fixed {
+            fn query(&self, _: &Query) -> anyhow::Result<Vec<keel_search::Hit>> {
+                Ok([
+                    ("/x/report.pdf", 2_000_000u64),
+                    ("/x/note.txt", 1_000u64),
+                    ("/x/photo.jpg", 3_000_000u64),
+                ]
+                .into_iter()
+                .map(|(p, size)| keel_search::Hit {
+                    path: keel_vfs::VPath::local(p),
+                    is_dir: false,
+                    size,
+                    modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                    snippet: None,
+                })
+                .collect())
+            }
+            fn available(&self) -> bool {
+                true
+            }
+        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = SearchWorker::new(tx, egui::Context::default());
+        let applied = crate::search_filters::Applied {
+            refine: Some("ext:pdf".into()),
+            ..Default::default()
+        };
+        worker.search(Arc::new(Fixed), q("x"), applied, Default::default(), 1, 0);
+        let names = match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {
+            Msg::Search { id: got, result } => {
+                assert_eq!(got, 1);
+                let hits = result.unwrap();
+                hits.iter()
+                    .map(|h| h.path.name().to_owned())
+                    .collect::<Vec<_>>()
+            }
+            _ => panic!("unexpected message"),
+        };
+        assert_eq!(names, vec!["report.pdf".to_owned()]);
     }
 
     /// Polish backlog: one search thread; a tab's superseded query is never run.

@@ -150,6 +150,8 @@ pub struct Applied {
     /// Hits are kept only when they are folders (`Some(empty)`) or files with one of these
     /// lowercase extensions; None keeps every hit.
     pub keep: Option<Vec<String>>,
+    /// A second Keel query re-evaluated over the kept hits; None leaves them as found.
+    pub refine: Option<String>,
 }
 
 /// Tests: a plain search with no filter.
@@ -231,6 +233,7 @@ pub fn apply(
         folders_only: folder,
         matching,
         keep: Some(exts.iter().map(|e| (*e).to_owned()).collect()),
+        refine: None,
     }
 }
 
