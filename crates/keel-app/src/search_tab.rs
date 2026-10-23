@@ -1042,12 +1042,15 @@ mod tests {
         assert!(!old.quote_copied_paths);
     }
 
-    /// The hint names only what the backend understands (Keel's index has no `ext:`).
+    /// The hint names only what the backend understands. Keel's index refines with
+    /// keel-query, so its hint also names `ext:`, `size:`, `dm:` and negation.
     #[test]
     fn hint_matches_the_backend() {
         assert!(hint(Some("Everything"), false).contains("ext:"));
         let native = hint(Some("Keel index"), false);
-        assert!(!native.contains("ext:") && !native.contains("dm:"));
+        for term in ["ext:", "size:", "dm:", "!"] {
+            assert!(native.contains(term), "Keel index hint missing {term}");
+        }
         assert!(native.contains("in:") && native.contains("regex:"));
         assert!(hint(Some("Library"), true).contains("tag:"));
         assert_eq!(hint(None, false), "Search file names");
