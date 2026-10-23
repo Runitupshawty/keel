@@ -333,11 +333,12 @@ struct Suggest {
     remembered: Option<String>,
 }
 
-/// The query-problem hint shows only where the backend speaks Everything's query
-/// language: the Everything backend, outside the library, on a folder tab (not a file
-/// list). Toggles (including regex) do not change this; they only change the check.
+/// The query-problem hint shows only where the backend speaks keel-query's language:
+/// the Everything backend, or the Keel index (whose results are refined with keel-query
+/// in `search_filters::apply`), outside the library, on a folder tab (not a file list).
+/// Toggles (including regex) do not change this; they only change the check.
 fn checks_syntax(backend: Option<&str>, library: bool, listing: bool) -> bool {
-    backend == Some("Everything") && !library && !listing
+    matches!(backend, Some("Everything") | Some("Keel index")) && !library && !listing
 }
 
 /// The query box. Editing schedules the query after the search delay (when searching as
@@ -1065,6 +1066,16 @@ mod tests {
             ..Default::default()
         };
         assert!(crate::query_check::problem_with("a(", &crate::query_check::options(t)).is_some());
+    }
+
+    /// The Keel index backend refines with keel-query, so it speaks the query language
+    /// too: the hint shows there, under the same library/listing exclusions.
+    #[test]
+    fn syntax_check_covers_keel_index() {
+        assert!(checks_syntax(Some("Keel index"), false, false));
+        assert!(!checks_syntax(Some("Keel index"), true, false));
+        assert!(!checks_syntax(Some("Keel index"), false, true));
+        assert!(!checks_syntax(Some("Plain"), false, false));
     }
 
     /// Everything's toggle shortcuts reach a search tab, also from its query box.
