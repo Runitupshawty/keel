@@ -561,14 +561,14 @@ impl Editor {
         let host = self.host.trim();
         let user = self.user.trim();
         if label.is_empty() {
-            return Err("Enter a label".into());
+            return Err(crate::i18n::tr("remotes.err_label").to_owned());
         }
         if !valid_host(host) {
-            return Err("Enter a host name or IP address (no spaces)".into());
+            return Err(crate::i18n::tr("remotes.err_host").to_owned());
         }
         let port: u16 = match self.port.trim().parse() {
             Ok(p) if p > 0 => p,
-            _ => return Err("The port must be 1-65535".into()),
+            _ => return Err(crate::i18n::tr("remotes.err_port").to_owned()),
         };
         let ftp = self.protocol != RemoteProtocol::Sftp;
         let user = match ftp && self.anonymous {
@@ -577,15 +577,15 @@ impl Editor {
         };
         if ftp {
             if !valid_ftp_user(user) {
-                return Err("Enter a user name (no spaces), or sign in anonymously".into());
+                return Err(crate::i18n::tr("remotes.err_user_ftp").to_owned());
             }
         // With ~/.ssh/config an empty user comes from the config (or the local account).
         } else if !(valid_user(user) || user.is_empty() && self.use_ssh_config) {
-            return Err("Enter a user name (letters, digits, . _ -)".into());
+            return Err(crate::i18n::tr("remotes.err_user_sftp").to_owned());
         }
         let home = self.home.trim();
         if !home.is_empty() && !home.starts_with('/') {
-            return Err("The initial folder must start with /".into());
+            return Err(crate::i18n::tr("remotes.err_home").to_owned());
         }
         let mut bookmarks = Vec::new();
         for (name, path) in &self.bookmarks {
@@ -594,7 +594,7 @@ impl Editor {
                 continue;
             }
             if !path.starts_with('/') {
-                return Err(format!("Bookmark \"{name}\": the path must start with /"));
+                return Err(crate::i18n::tr("remotes.err_bookmark_path").replace("{name}", name));
             }
             let name = if name.is_empty() { path } else { name };
             bookmarks.push((name.to_owned(), path.to_owned()));
@@ -620,7 +620,7 @@ impl Editor {
             ),
             Some(AuthKind::Password) => {
                 if new && secret.is_none() {
-                    return Err("Enter the password (it is kept in the OS keychain)".into());
+                    return Err(crate::i18n::tr("remotes.err_password").to_owned());
                 }
                 (
                     RemoteAuth::PasswordInKeyring,
@@ -634,7 +634,7 @@ impl Editor {
             && self.passphrase_in_keyring
             && secret.is_none()
         {
-            return Err("Enter the key passphrase (it is kept in the OS keychain)".into());
+            return Err(crate::i18n::tr("remotes.err_key_passphrase").to_owned());
         }
         let taken: Vec<String> = existing.iter().map(|h| h.id.clone()).collect();
         let id = self.id.clone().unwrap_or_else(|| slug(label, &taken));
@@ -665,9 +665,9 @@ impl Editor {
         self.refresh_summary(ctx);
         let mut outcome = EditorOutcome::Open;
         let title = if self.id.is_some() {
-            "Edit remote host"
+            crate::i18n::tr("remotes.editor_edit_title")
         } else {
-            "Add remote host"
+            crate::i18n::tr("remotes.editor_add_title")
         };
         let modal = Modal::new(Id::new("keel-remote-editor")).show(ctx, |ui| {
             ui.set_width(460.0);
@@ -686,8 +686,13 @@ impl Editor {
                         );
                         ui.end_row();
                     };
-                    field(ui, "Label", &mut self.label, "Mac mini");
-                    ui.label("Protocol");
+                    field(
+                        ui,
+                        crate::i18n::tr("remotes.label"),
+                        &mut self.label,
+                        crate::i18n::tr("remotes.label_hint"),
+                    );
+                    ui.label(crate::i18n::tr("remotes.protocol"));
                     ui.vertical(|ui| {
                         let before = self.protocol;
                         ui.horizontal(|ui| {
@@ -713,7 +718,7 @@ impl Editor {
                                 );
                             }
                             RemoteProtocol::Ftps => {
-                                ui.weak("TLS from the start on port 990, else AUTH TLS");
+                                ui.weak(crate::i18n::tr("remotes.ftps_note"));
                             }
                             RemoteProtocol::Sftp => {}
                         }
@@ -721,14 +726,17 @@ impl Editor {
                     ui.end_row();
                     let ftp = self.protocol != RemoteProtocol::Sftp;
                     let hint = match ftp {
-                        true => "host name or IP",
-                        false => "host name, IP or ~/.ssh/config alias",
+                        true => crate::i18n::tr("remotes.host_hint_ftp"),
+                        false => crate::i18n::tr("remotes.host_hint_sftp"),
                     };
-                    field(ui, "Host", &mut self.host, hint);
+                    field(ui, crate::i18n::tr("remotes.host"), &mut self.host, hint);
                     if !ftp {
                         ui.label("");
                         ui.vertical(|ui| {
-                            ui.checkbox(&mut self.use_ssh_config, "Use ~/.ssh/config");
+                            ui.checkbox(
+                                &mut self.use_ssh_config,
+                                crate::i18n::tr("remotes.use_ssh_config"),
+                            );
                             if !self.summary.is_empty() {
                                 ui.add(
                                     egui::Label::new(egui::RichText::new(&self.summary).small())
@@ -739,40 +747,65 @@ impl Editor {
                         ui.end_row();
                     }
                     let port_hint = self.protocol.default_port().to_string();
-                    field(ui, "Port", &mut self.port, &port_hint);
+                    field(
+                        ui,
+                        crate::i18n::tr("remotes.port"),
+                        &mut self.port,
+                        &port_hint,
+                    );
                     if ftp {
-                        ui.label("Sign in");
-                        ui.checkbox(&mut self.anonymous, "Anonymously");
+                        ui.label(crate::i18n::tr("remotes.sign_in"));
+                        ui.checkbox(&mut self.anonymous, crate::i18n::tr("remotes.anonymously"));
                         ui.end_row();
                         if !self.anonymous {
-                            field(ui, "User", &mut self.user, "");
-                            ui.label("Password");
+                            field(ui, crate::i18n::tr("remotes.user"), &mut self.user, "");
+                            ui.label(crate::i18n::tr("remotes.password"));
                             secret_field(ui, &mut self.secret, self.id.is_some());
                             ui.end_row();
                         }
-                        field(ui, "Initial folder", &mut self.home, "/ (optional)");
+                        field(
+                            ui,
+                            crate::i18n::tr("remotes.initial_folder"),
+                            &mut self.home,
+                            crate::i18n::tr("remotes.initial_folder_hint"),
+                        );
                         return;
                     }
-                    field(ui, "User", &mut self.user, "");
-                    ui.label("Sign in with");
+                    field(ui, crate::i18n::tr("remotes.user"), &mut self.user, "");
+                    ui.label(crate::i18n::tr("remotes.sign_in_with"));
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.auth, AuthKind::KeyFile, "Key file");
-                        ui.radio_value(&mut self.auth, AuthKind::Agent, "SSH agent");
-                        ui.radio_value(&mut self.auth, AuthKind::Password, "Password");
+                        ui.radio_value(
+                            &mut self.auth,
+                            AuthKind::KeyFile,
+                            crate::i18n::tr("remotes.key_file"),
+                        );
+                        ui.radio_value(
+                            &mut self.auth,
+                            AuthKind::Agent,
+                            crate::i18n::tr("remotes.ssh_agent"),
+                        );
+                        ui.radio_value(
+                            &mut self.auth,
+                            AuthKind::Password,
+                            crate::i18n::tr("remotes.password"),
+                        );
                     });
                     ui.end_row();
                     match self.auth {
                         AuthKind::KeyFile => {
-                            ui.label("Key file");
+                            ui.label(crate::i18n::tr("remotes.key_file"));
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.key_path)
-                                        .hint_text("default keys in ~/.ssh")
+                                        .hint_text(crate::i18n::tr("remotes.key_file_hint"))
                                         .desired_width(220.0),
                                 );
                                 let busy = self.picker.is_some();
                                 if ui
-                                    .add_enabled(!busy, egui::Button::new("Browse…"))
+                                    .add_enabled(
+                                        !busy,
+                                        egui::Button::new(crate::i18n::tr("remotes.browse")),
+                                    )
                                     .clicked()
                                 {
                                     self.picker = Some(pick_key(ctx.clone()));
@@ -782,37 +815,42 @@ impl Editor {
                             ui.label("");
                             ui.checkbox(
                                 &mut self.passphrase_in_keyring,
-                                "Key has a passphrase (kept in the OS keychain)",
+                                crate::i18n::tr("remotes.key_passphrase_note"),
                             );
                             ui.end_row();
                             if self.passphrase_in_keyring {
-                                ui.label("Passphrase");
+                                ui.label(crate::i18n::tr("remotes.passphrase"));
                                 secret_field(ui, &mut self.secret, self.id.is_some());
                                 ui.end_row();
                             }
                         }
                         AuthKind::Password => {
-                            ui.label("Password");
+                            ui.label(crate::i18n::tr("remotes.password"));
                             secret_field(ui, &mut self.secret, self.id.is_some());
                             ui.end_row();
                         }
                         AuthKind::Agent => {}
                     }
-                    field(ui, "Initial folder", &mut self.home, "/ (optional)");
+                    field(
+                        ui,
+                        crate::i18n::tr("remotes.initial_folder"),
+                        &mut self.home,
+                        crate::i18n::tr("remotes.initial_folder_hint"),
+                    );
                 });
             ui.add_space(4.0);
-            ui.label("Bookmarks");
+            ui.label(crate::i18n::tr("remotes.bookmarks"));
             let mut drop_row = None;
             for (i, (name, path)) in self.bookmarks.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(name)
-                            .hint_text("label")
+                            .hint_text(crate::i18n::tr("remotes.bookmark_label_hint"))
                             .desired_width(120.0),
                     );
                     ui.add(
                         egui::TextEdit::singleline(path)
-                            .hint_text("/remote/path")
+                            .hint_text(crate::i18n::tr("remotes.bookmark_path_hint"))
                             .desired_width(250.0),
                     );
                     if ui.small_button("×").clicked() {
@@ -823,7 +861,10 @@ impl Editor {
             if let Some(i) = drop_row {
                 self.bookmarks.remove(i);
             }
-            if ui.small_button("Add bookmark").clicked() {
+            if ui
+                .small_button(crate::i18n::tr("remotes.add_bookmark"))
+                .clicked()
+            {
                 self.bookmarks.push(Default::default());
             }
             if let Some(e) = &self.error {
@@ -832,13 +873,13 @@ impl Editor {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
+                if ui.button(crate::i18n::tr("remotes.save")).clicked() {
                     match self.build(existing) {
                         Ok((host, secret)) => outcome = EditorOutcome::Save(Box::new(host), secret),
                         Err(e) => self.error = Some(e),
                     }
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("remotes.cancel")).clicked() {
                     outcome = EditorOutcome::Cancel;
                 }
             });
@@ -1370,6 +1411,27 @@ mod tests {
         assert!(
             off.build(&[]).is_err(),
             "without the config a user is needed"
+        );
+    }
+
+    #[test]
+    fn remote_validation_errors_in_spanish() {
+        crate::i18n::set("es");
+        let mut editor = Editor::default();
+        assert_eq!(editor.build(&[]).unwrap_err(), "Introduce una etiqueta");
+        editor.label = "Media box".into();
+        editor.host = "example.invalid".into();
+        editor.port = "0".into();
+        assert_eq!(
+            editor.build(&[]).unwrap_err(),
+            "El puerto debe estar entre 1 y 65535"
+        );
+        editor.port = "2222".into();
+        editor.user = "alice".into();
+        editor.bookmarks = vec![("Logs".into(), "var/log".into())];
+        assert_eq!(
+            editor.build(&[]).unwrap_err(),
+            "Marcador \"Logs\": la ruta debe empezar por /"
         );
     }
 
