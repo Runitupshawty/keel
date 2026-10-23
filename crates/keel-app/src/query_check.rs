@@ -31,9 +31,13 @@ pub fn problem_with(text: &str, opts: &keel_query::Options) -> Option<String> {
                 snippet = text.get(e.span.start..).unwrap_or("");
             }
             if snippet.is_empty() {
-                snippet = "end of query";
+                snippet = crate::i18n::tr("search_tab.end_of_query");
             }
-            Some(format!("{} at \"{}\"", e.message, snippet))
+            Some(
+                crate::i18n::tr("search_tab.query_problem")
+                    .replace("{message}", &e.message)
+                    .replace("{at}", snippet),
+            )
         }
     }
 }
@@ -82,5 +86,19 @@ mod tests {
             ..Default::default()
         };
         assert!(problem_with("a(", &options(t)).is_some());
+    }
+
+    #[test]
+    fn problem_wording_is_translated() {
+        crate::i18n::set("es");
+        let es = problem("size:big").expect("size:big should be rejected");
+        let es_end = crate::i18n::tr("search_tab.end_of_query");
+        crate::i18n::set("en");
+        let en = problem("size:big").expect("size:big should be rejected");
+        let en_end = crate::i18n::tr("search_tab.end_of_query");
+        assert!(es.contains("en \"big\""));
+        assert!(!es.contains("at \"big\""));
+        assert!(en.contains("at \"big\""));
+        assert_ne!(es_end, en_end);
     }
 }
