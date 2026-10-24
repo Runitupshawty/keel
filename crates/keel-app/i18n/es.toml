@@ -1508,6 +1508,31 @@ dialog_open_with = "Abrir con"
 dialog_restore_to = "Restaurar en"
 dialog_extract_to = "Extraer en"
 
+# El diálogo de renombrado en lote (bulk_rename.rs) y su aviso de resultado (summary).
+# Los motivos de fallo de los hilos de trabajo se quedan en inglés.
+[bulk_rename]
+title = "Renombrar {items}"
+pattern = "Patrón"
+counter = "Contador"
+start = "inicio"
+step = "paso"
+find = "Buscar"
+replace_with = "Reemplazar con"
+regex = "regex"
+ignore_case = "sin distinguir mayúsculas"
+case = "Mayúsculas y minúsculas"
+case_keep = "conservar"
+case_lower = "minúsculas"
+case_upper = "MAYÚSCULAS"
+case_title = "Título"
+apply = "Aplicar"
+cancel = "Cancelar"
+renamed = "Se renombraron"
+renamed_back = "Se restauraron"
+done = "{verb} {items}"
+partial = "{verb} {renamed} de {total} elementos. Errores: {failed}"
+more = "; y {more} más"
+
 [index_ui]
 search_loading = "Búsqueda: …"
 search_loading_tip = "Cargando el motor de búsqueda"

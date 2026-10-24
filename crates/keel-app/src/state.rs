@@ -827,7 +827,11 @@ impl AppState {
                 if generation != self.undo.generation() {
                     items.clear(); // started in another profile
                 }
-                let (text, ok) = crate::bulk_rename::summary(&outcome, total, "Renamed");
+                let (text, ok) = crate::bulk_rename::summary(
+                    &outcome,
+                    total,
+                    crate::i18n::tr("bulk_rename.renamed"),
+                );
                 let op = crate::undo::Op::Rename(outcome.done.clone());
                 let id = self.undo.record(op, items).map(|e| e.id);
                 match (ok, id) {

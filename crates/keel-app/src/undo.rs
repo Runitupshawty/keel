@@ -844,7 +844,14 @@ pub fn run(
             let out =
                 crate::bulk_rename::run_steps(&back, |a, b| provider(router, a)?.rename(a, b));
             if !out.failed.is_empty() {
-                anyhow::bail!(crate::bulk_rename::summary(&out, back.len(), "Renamed back").0);
+                anyhow::bail!(
+                    crate::bulk_rename::summary(
+                        &out,
+                        back.len(),
+                        crate::i18n::tr("bulk_rename.renamed_back")
+                    )
+                    .0
+                );
             }
         }
         Op::Move => {
