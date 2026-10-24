@@ -632,11 +632,11 @@ pub fn bar(
             .selected_text(crate::search_filters::shown(&tab.search_filter))
             .show_ui(ui, |ui| {
                 for name in &names {
-                    let value = match name.as_str() {
-                        "Everything" => String::new(),
-                        n => n.to_owned(),
-                    };
-                    ui.selectable_value(&mut tab.search_filter, value, name.as_str());
+                    ui.selectable_value(
+                        &mut tab.search_filter,
+                        crate::search_filters::value(name),
+                        name.as_str(),
+                    );
                 }
                 ui.separator();
                 if ui

@@ -550,6 +550,18 @@ size = "Size"
 journal_size = "Journal size in MB"
 journal_note = "When the journal reaches its size the oldest entries go first. Open it with Index journal in the command palette, or `keel journal` on the command line."
 
+# The built-in filter combo (search_filters.rs): display names only; the stored filter
+# names stay English.
+[search_filters]
+everything = "Everything"
+audio = "Audio"
+compressed = "Compressed"
+document = "Document"
+executable = "Executable"
+folder = "Folder"
+picture = "Picture"
+video = "Video"
+
 # The library's UI (library_ui.rs): the sidebar, the Overview, the add-source dialog, the plan
 # preview, the tag picker, the duplicate finder and Settings → Library.
 [library_ui]

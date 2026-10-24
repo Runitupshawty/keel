@@ -664,6 +664,18 @@ size = "Tamaño"
 journal_size = "Tamaño del registro en MB"
 journal_note = "Cuando el registro alcanza su tamaño, primero se eliminan las entradas más antiguas. Ábrelo con Registro del índice en la paleta de comandos, o con `keel journal` en la línea de comandos."
 
+# El combo de filtros predefinidos (search_filters.rs): solo los nombres en pantalla; los
+# nombres guardados de los filtros siguen en inglés.
+[search_filters]
+everything = "Todo"
+audio = "Audio"
+compressed = "Comprimidos"
+document = "Documentos"
+executable = "Ejecutables"
+folder = "Carpetas"
+picture = "Imágenes"
+video = "Vídeos"
+
 [library_ui]
 assign_tags_to = "Asignar etiquetas a {items}:"
 toggle = "Alternar {name}"

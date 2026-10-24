@@ -797,11 +797,11 @@ fn editor(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     .selected_text(crate::search_filters::shown(&ed.view.filter))
                     .show_ui(ui, |ui| {
                         for name in &filter_names {
-                            let value = match name.as_str() {
-                                "Everything" => String::new(),
-                                n => n.to_owned(),
-                            };
-                            ui.selectable_value(&mut ed.view.filter, value, name.as_str());
+                            ui.selectable_value(
+                                &mut ed.view.filter,
+                                crate::search_filters::value(name),
+                                name.as_str(),
+                            );
                         }
                     });
                 ui.end_row();
