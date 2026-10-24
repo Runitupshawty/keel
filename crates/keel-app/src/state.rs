@@ -1828,10 +1828,10 @@ impl AppState {
         self.tab_mut(p).visible(show_hidden);
         let in_trash = self.tab(p).is_trash();
         if crate::trash_ui::refuses(&action, in_trash) {
-            return self.toasts.error(format!(
-                "The {} is read-only; restore items to work with them",
-                keel_vfs::trashbin::label()
-            ));
+            return self.toasts.error(
+                crate::i18n::tr("state.readonly_trash")
+                    .replace("{label}", keel_vfs::trashbin::label()),
+            );
         }
         if let Some(why) = self.archive_write_refusal(p, &action) {
             return self.toasts.error(why);
@@ -1930,9 +1930,9 @@ impl AppState {
             Action::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.toasts.info(if self.show_hidden {
-                    "Showing hidden files"
+                    crate::i18n::tr("state.showing_hidden")
                 } else {
-                    "Hiding hidden files"
+                    crate::i18n::tr("state.hiding_hidden")
                 });
             }
             Action::FocusFilter => {
@@ -2016,8 +2016,8 @@ impl AppState {
                 };
                 self.ctx.copy_text(paths.join("\n"));
                 self.toasts.info(match paths.len() {
-                    1 => "Copied path".to_owned(),
-                    n => format!("Copied {n} paths"),
+                    1 => crate::i18n::tr("state.copied_path").to_owned(),
+                    n => crate::i18n::tr("state.copied_paths").replace("{n}", &n.to_string()),
                 });
             }
             Action::CopyName => {
@@ -2028,8 +2028,8 @@ impl AppState {
                 };
                 self.ctx.copy_text(names.join("\n"));
                 self.toasts.info(match names.len() {
-                    1 => "Copied name".to_owned(),
-                    n => format!("Copied {n} names"),
+                    1 => crate::i18n::tr("state.copied_name").to_owned(),
+                    n => crate::i18n::tr("state.copied_names").replace("{n}", &n.to_string()),
                 });
             }
             // --- Task 76 ---
@@ -2133,7 +2133,7 @@ impl AppState {
                 } else if dir.scheme == "sftp" {
                     self.remote_cmd(dir.authority, crate::remotes::RemoteCmd::Terminal);
                 } else {
-                    self.toasts.error("Terminal requires a local folder");
+                    self.toasts.error(crate::i18n::tr("state.terminal_local"));
                 }
             }
             // Focused: hide it, the shell keeps running (only × ends it). Hidden or
@@ -2162,9 +2162,9 @@ impl AppState {
                 views.set_always_open(&dir, on.then_some(view));
                 let name = crate::view_prefs::view_name(view);
                 self.toasts.info(if on {
-                    format!("This folder always opens in the {name} view")
+                    crate::i18n::tr("state.always_open_on").replace("{name}", name)
                 } else {
-                    format!("This folder no longer always opens in the {name} view")
+                    crate::i18n::tr("state.always_open_off").replace("{name}", name)
                 });
             }
             Action::ToggleTheme => {
@@ -2216,16 +2216,16 @@ impl AppState {
                 let Some(picked) = self.local_picked(p) else {
                     return self
                         .toasts
-                        .error("Only files and folders on this computer can be compressed");
+                        .error(crate::i18n::tr("state.compress_local_only"));
                 };
                 if let Some((first, _)) = picked
                     .first()
                     .filter(|(f, _)| !keel_vfs::compress::supported(f))
                 {
-                    return self.toasts.error(format!(
-                        "{} is not on a drive with NTFS compression",
-                        first.display()
-                    ));
+                    return self.toasts.error(
+                        crate::i18n::tr("state.compress_ntfs")
+                            .replace("{path}", &first.display().to_string()),
+                    );
                 }
                 let (paths, dirs): (Vec<_>, Vec<_>) = picked.into_iter().unzip();
                 let d = crate::compress_ui::CompressDialog::new(paths, &dirs, &self.ctx);
@@ -2242,7 +2242,7 @@ impl AppState {
                     }
                     _ => self
                         .toasts
-                        .error("Disk usage scans local folders and drives only"),
+                        .error(crate::i18n::tr("state.disk_usage_local_only")),
                 }
             }
             Action::DiskUsage(crate::disk_usage::DuCmd::Plans(ops)) => {
@@ -2269,7 +2269,9 @@ impl AppState {
                 let tab = self.tab(p);
                 let targets = tab.targets();
                 if targets.is_empty() {
-                    return self.toasts.info("Select the items to rename");
+                    return self
+                        .toasts
+                        .info(crate::i18n::tr("state.select_items_rename"));
                 }
                 let picked: std::collections::HashSet<&VPath> =
                     targets.iter().map(|e| &e.path).collect();
@@ -2342,7 +2344,7 @@ impl AppState {
             },
             Action::UndoEntry(id) => {
                 let Some(e) = self.undo.get(id).cloned() else {
-                    return self.toasts.info("That operation can no longer be undone");
+                    return self.toasts.info(crate::i18n::tr("state.no_longer_undo"));
                 };
                 // Stats may block (a sleeping disk): the check runs on a worker, the
                 // preview (or a rename's undo) follows its answer.
@@ -2366,7 +2368,7 @@ impl AppState {
                 {
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::trash_ui::delete_text(paths.len()),
-                        yes: "Delete permanently",
+                        yes: crate::i18n::tr("state.delete_permanently"),
                         on_yes: Action::PurgeTrash(paths),
                     });
                     return;
@@ -2379,7 +2381,7 @@ impl AppState {
                             jobs::items(paths.len()),
                             archive.name()
                         ),
-                        yes: "Delete",
+                        yes: crate::i18n::tr("state.delete"),
                         on_yes: Action::DeleteRemote(paths),
                     });
                     return;
@@ -2407,20 +2409,20 @@ impl AppState {
                     let label = self.remotes.label(&host).to_owned();
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::remotes::delete_text(paths.len(), &label),
-                        yes: "Delete",
+                        yes: crate::i18n::tr("state.delete"),
                         on_yes: Action::DeleteRemote(paths),
                     });
                 } else if let Some(distro) = crate::wsl::one_distro(&paths) {
                     // Task 51: WSL folders have no Recycle Bin; say the delete is for good.
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::wsl::delete_text(paths.len(), &distro),
-                        yes: "Delete",
+                        yes: crate::i18n::tr("state.delete"),
                         on_yes: Action::DeleteRemote(paths),
                     });
                 } else if !paths.is_empty() {
                     self.dialog = Some(Dialog::Confirm {
                         text: format!("Move {} to the trash?", jobs::items(paths.len())),
-                        yes: "Move to trash",
+                        yes: crate::i18n::tr("state.move_to_trash"),
                         on_yes: Action::Trash(paths),
                     });
                 }
@@ -2461,12 +2463,14 @@ impl AppState {
             Action::EmptyTrash => {
                 let n = self.tab(p).entries().len();
                 if n == 0 {
-                    self.toasts
-                        .info(format!("The {} is empty", keel_vfs::trashbin::label()));
+                    self.toasts.info(
+                        crate::i18n::tr("state.trash_empty")
+                            .replace("{label}", keel_vfs::trashbin::label()),
+                    );
                 } else {
                     self.dialog = Some(Dialog::Confirm {
                         text: crate::trash_ui::empty_text(n),
-                        yes: "Empty",
+                        yes: crate::i18n::tr("state.empty"),
                         on_yes: Action::EmptyTrashNow,
                     });
                 }
@@ -4320,5 +4324,164 @@ mod tests {
         s.run(0, Action::ToggleAlwaysOpen);
         assert_eq!(s.settings.views.always_open(&docs), None);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn run_toasts_in_spanish() {
+        crate::i18n::set("es");
+        let new =
+            |dir: VPath| AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        let local = VPath::local(std::env::temp_dir());
+        let remote = VPath::parse("mem://t/").unwrap();
+        let trash = keel_vfs::trashbin::root();
+        let label = keel_vfs::trashbin::label();
+
+        // Toggle hidden on, then off.
+        let mut s = new(local.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::ToggleHidden);
+        assert_eq!(s.toasts.list[0].text, "Mostrando archivos ocultos");
+        s.toasts.list.clear();
+        s.run(0, Action::ToggleHidden);
+        assert_eq!(s.toasts.list[0].text, "Ocultando archivos ocultos");
+
+        // Copy name / path with nothing selected: the folder itself.
+        let mut s = new(local.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::CopyName);
+        assert_eq!(s.toasts.list[0].text, "Nombre copiado");
+        s.toasts.list.clear();
+        s.run(0, Action::CopyPath);
+        assert_eq!(s.toasts.list[0].text, "Ruta copiada");
+
+        // Terminal on a non-local folder.
+        let mut s = new(remote.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::OpenTerminal);
+        assert_eq!(
+            s.toasts.list[0].text,
+            "La terminal requiere una carpeta local"
+        );
+
+        // "Always open in" the folder's view, then off again.
+        let mut s = new(local.clone());
+        s.settings.views = Default::default();
+        s.toasts.list.clear();
+        s.run(0, Action::ToggleAlwaysOpen);
+        let on = s.toasts.list[0].text.clone();
+        s.toasts.list.clear();
+        s.run(0, Action::ToggleAlwaysOpen);
+        let off = s.toasts.list[0].text.clone();
+        assert!(on.contains("abre siempre en la vista"), "{on}");
+        assert!(off.contains("ya no abre siempre en la vista"), "{off}");
+
+        // Compress: non-local is refused; local is not on an NTFS drive.
+        let mut s = new(remote.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::Compress);
+        assert_eq!(
+            s.toasts.list[0].text,
+            "Solo se pueden comprimir archivos y carpetas de este equipo"
+        );
+        let mut s = new(local.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::Compress);
+        assert!(
+            s.toasts.list[0]
+                .text
+                .contains("no está en una unidad con compresión NTFS"),
+            "{}",
+            s.toasts.list[0].text
+        );
+
+        // Disk usage on a non-local folder.
+        let mut s = new(remote.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::DiskUsage(crate::disk_usage::DuCmd::ScanCurrent));
+        assert_eq!(
+            s.toasts.list[0].text,
+            "El uso en disco analiza solo carpetas y unidades locales"
+        );
+
+        // Bulk rename with nothing selected.
+        let mut s = new(local.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::BulkRename);
+        assert_eq!(
+            s.toasts.list[0].text,
+            "Selecciona los elementos a renombrar"
+        );
+
+        // Undo of an unknown id.
+        let mut s = new(local.clone());
+        s.toasts.list.clear();
+        s.run(0, Action::UndoEntry(9_999_999));
+        assert_eq!(
+            s.toasts.list[0].text,
+            "Esa operación ya no se puede deshacer"
+        );
+
+        // The trash is read-only (a rename is refused).
+        let mut s = new(local.clone());
+        s.tab_mut(0).dir = trash.clone();
+        s.toasts.list.clear();
+        s.run(0, Action::Rename);
+        assert_eq!(
+            s.toasts.list[0].text,
+            format!(
+                "La {label} es de solo lectura; restaura los elementos para trabajar con ellos"
+            )
+        );
+
+        // Empty trash: the empty note, then the Empty button.
+        let mut s = new(trash.clone());
+        s.tab_mut(0).set_entries(vec![]);
+        s.toasts.list.clear();
+        s.run(0, Action::EmptyTrash);
+        assert_eq!(s.toasts.list[0].text, format!("La {label} está vacía"));
+        s.tab_mut(0)
+            .set_entries(vec![test_entry(&trash, "victim.txt", Kind::File, 1)]);
+        s.toasts.list.clear();
+        s.run(0, Action::EmptyTrash);
+        match s.dialog.take() {
+            Some(Dialog::Confirm { yes, .. }) => assert_eq!(yes, "Vaciar"),
+            _ => panic!("no empty-trash confirm"),
+        }
+
+        // Delete: local asks to move to trash.
+        let mut s = new(local.clone());
+        s.tab_mut(0)
+            .set_entries(vec![test_entry(&local, "victim.txt", Kind::File, 1)]);
+        s.tab_mut(0).cursor = Some("victim.txt".into());
+        s.run(0, Action::Delete);
+        match s.dialog.take() {
+            Some(Dialog::Confirm { yes, .. }) => assert_eq!(yes, "Mover a la papelera"),
+            _ => panic!("no move-to-trash confirm"),
+        }
+
+        // Delete in the trash is permanent.
+        let mut s = new(trash.clone());
+        s.tab_mut(0)
+            .set_entries(vec![test_entry(&trash, "victim.txt", Kind::File, 1)]);
+        s.tab_mut(0).cursor = Some("victim.txt".into());
+        s.run(0, Action::Delete);
+        match s.dialog.take() {
+            Some(Dialog::Confirm { yes, .. }) => assert_eq!(yes, "Eliminar definitivamente"),
+            _ => panic!("no delete-permanently confirm"),
+        }
+
+        // Delete inside an archive is for good.
+        let zip_root = VPath::join_archive(&VPath::parse("mem://t/x.zip").unwrap(), "");
+        let mut s = new(remote.clone());
+        s.tab_mut(0)
+            .set_entries(vec![test_entry(&zip_root, "inner.txt", Kind::File, 1)]);
+        s.tab_mut(0).cursor = Some("inner.txt".into());
+        s.run(0, Action::Delete);
+        match s.dialog.take() {
+            Some(Dialog::Confirm { yes, .. }) => assert_eq!(yes, "Eliminar"),
+            _ => panic!("no archive delete confirm"),
+        }
+
+        crate::i18n::set("en");
     }
 }
