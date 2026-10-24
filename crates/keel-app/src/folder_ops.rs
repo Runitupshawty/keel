@@ -26,12 +26,12 @@ pub enum Kind {
 impl Kind {
     pub fn title(self) -> &'static str {
         match self {
-            Kind::Merge => "Merge into…",
-            Kind::Flatten => "Flatten…",
-            Kind::Organize => "Organize by…",
-            Kind::Attributes => "Attributes…",
-            Kind::Link => "Create link…",
-            Kind::RemoveEmpty => "Remove empty folders…",
+            Kind::Merge => crate::i18n::tr("folder_ops.merge_title"),
+            Kind::Flatten => crate::i18n::tr("folder_ops.flatten_title"),
+            Kind::Organize => crate::i18n::tr("folder_ops.organize_title"),
+            Kind::Attributes => crate::i18n::tr("folder_ops.attributes_title"),
+            Kind::Link => crate::i18n::tr("folder_ops.link_title"),
+            Kind::RemoveEmpty => crate::i18n::tr("folder_ops.remove_empty_title"),
             Kind::FolderDates => FOLDER_DATES,
         }
     }
@@ -244,14 +244,14 @@ fn tri(ui: &mut egui::Ui, value: &mut Option<bool>, label: &str) {
 }
 
 fn conflict_choice(ui: &mut egui::Ui, c: &mut OnConflict) {
-    ui.label("When a name is taken:");
+    ui.label(crate::i18n::tr("folder_ops.when_taken"));
     ui.horizontal(|ui| {
-        for (text, rule) in [
-            ("Skip", OnConflict::Skip),
-            ("Keep both", OnConflict::RenameNew),
-            ("Overwrite", OnConflict::Overwrite),
+        for (key, rule) in [
+            ("dialogs.skip", OnConflict::Skip),
+            ("dialogs.keep_both", OnConflict::RenameNew),
+            ("dialogs.overwrite", OnConflict::Overwrite),
         ] {
-            ui.radio_value(c, rule, text);
+            ui.radio_value(c, rule, crate::i18n::tr(key));
         }
     });
 }
@@ -263,18 +263,15 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
     let one = d.targets[0].display();
     match d.kind {
         Kind::Merge => {
-            ui.label("Move everything in the selected folders into:");
+            ui.label(crate::i18n::tr("folder_ops.merge_into"));
             for (i, t) in d.targets.iter().enumerate() {
                 ui.radio_value(&mut d.into, i, t.name());
             }
-            ui.weak("The other folders are removed once they are empty.");
+            ui.weak(crate::i18n::tr("folder_ops.merge_removes"));
             conflict_choice(ui, &mut d.conflict);
         }
         Kind::Flatten => {
-            ui.label(format!(
-                "Move every file in the subfolders of {one} up into it, then remove the \
-                 subfolders left empty. The preview counts them."
-            ));
+            ui.label(crate::i18n::tr("folder_ops.flatten_body").replace("{one}", &one));
             conflict_choice(ui, &mut d.conflict);
         }
         Kind::RemoveEmpty => {
@@ -283,79 +280,106 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
                 .first()
                 .is_some_and(|t| t.to_local_path().is_some());
             ui.label(if local {
-                format!(
-                    "Move every empty folder below {one} to the {}: folders holding no files                      and no links, at any depth. The preview lists them.",
-                    keel_vfs::trashbin::label()
-                )
+                crate::i18n::tr("folder_ops.remove_empty_local")
+                    .replace("{one}", &one)
+                    .replace("{trash}", keel_vfs::trashbin::label())
             } else {
-                format!(
-                    "Remove every empty folder below {one}: folders holding no files and no                      links, at any depth. Where there is no trash (SFTP, FTP, S3, WebDAV) they                      are deleted for good. The preview lists them and says so."
-                )
+                crate::i18n::tr("folder_ops.remove_empty_remote").replace("{one}", &one)
             });
         }
         Kind::Organize => {
-            ui.label(format!("Move the files in {one} into subfolders by:"));
+            ui.label(crate::i18n::tr("folder_ops.organize_body").replace("{one}", &one));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut d.by, OrganizeBy::Type, "Type")
-                    .on_hover_text("Images, Videos, Audio, Documents, Archives, Other");
-                ui.radio_value(&mut d.by, OrganizeBy::Year, "Year");
-                ui.radio_value(&mut d.by, OrganizeBy::Month, "Year and month");
+                ui.radio_value(
+                    &mut d.by,
+                    OrganizeBy::Type,
+                    crate::i18n::tr("folder_ops.organize_type"),
+                )
+                .on_hover_text(crate::i18n::tr("folder_ops.organize_type_tip"));
+                ui.radio_value(
+                    &mut d.by,
+                    OrganizeBy::Year,
+                    crate::i18n::tr("folder_ops.organize_year"),
+                );
+                ui.radio_value(
+                    &mut d.by,
+                    OrganizeBy::Month,
+                    crate::i18n::tr("folder_ops.organize_year_month"),
+                );
             });
             conflict_choice(ui, &mut d.conflict);
         }
         Kind::Attributes => {
             ui.label(match d.targets.len() {
-                1 => format!("For {one}"),
-                n => format!("For {n} items"),
+                1 => crate::i18n::tr("folder_ops.attributes_one").replace("{one}", &one),
+                n => crate::i18n::tr("folder_ops.attributes_n").replace("{n}", &n.to_string()),
             });
             if cfg!(any(windows, target_os = "macos")) {
-                tri(ui, &mut d.attrs.hidden, "Hidden");
+                tri(
+                    ui,
+                    &mut d.attrs.hidden,
+                    crate::i18n::tr("folder_ops.attributes_hidden"),
+                );
             }
-            tri(ui, &mut d.attrs.readonly, "Read-only");
+            tri(
+                ui,
+                &mut d.attrs.readonly,
+                crate::i18n::tr("folder_ops.attributes_readonly"),
+            );
             if cfg!(unix) {
                 ui.horizontal(|ui| {
-                    ui.label("Mode (octal)");
+                    let mode = crate::i18n::tr("folder_ops.attributes_mode");
+                    ui.label(mode);
                     let r = ui.add(egui::TextEdit::singleline(&mut d.mode).desired_width(60.0));
-                    r.named("Mode (octal)");
+                    r.named(mode);
                 });
             }
         }
         Kind::Link => {
-            ui.label(format!("A link to {one}, in the same folder"));
+            ui.label(crate::i18n::tr("folder_ops.link_body").replace("{one}", &one));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut d.link_kind, LinkKind::Symlink, "Symbolic link");
+                ui.radio_value(
+                    &mut d.link_kind,
+                    LinkKind::Symlink,
+                    crate::i18n::tr("folder_ops.link_symlink"),
+                );
                 if cfg!(windows) && d.target_is_dir {
-                    ui.radio_value(&mut d.link_kind, LinkKind::Junction, "Junction");
+                    ui.radio_value(
+                        &mut d.link_kind,
+                        LinkKind::Junction,
+                        crate::i18n::tr("folder_ops.link_junction"),
+                    );
                 }
                 if !d.target_is_dir {
-                    ui.radio_value(&mut d.link_kind, LinkKind::Hardlink, "Hard link");
+                    ui.radio_value(
+                        &mut d.link_kind,
+                        LinkKind::Hardlink,
+                        crate::i18n::tr("folder_ops.link_hardlink"),
+                    );
                 }
             });
             if d.link_kind == LinkKind::Symlink && !d.symlinks_ok {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "Windows makes symbolic links only with Developer Mode on (Settings → \
-                     System → For developers) or for an elevated program; Keel never elevates.",
+                    crate::i18n::tr("folder_ops.link_symlink_warning"),
                 );
-                let (text, kind) = match d.target_is_dir {
-                    true => ("Make a junction instead", LinkKind::Junction),
-                    false => ("Make a hard link instead", LinkKind::Hardlink),
+                let (key, kind) = match d.target_is_dir {
+                    true => ("folder_ops.link_make_junction", LinkKind::Junction),
+                    false => ("folder_ops.link_make_hardlink", LinkKind::Hardlink),
                 };
-                if ui.button(text).clicked() {
+                if ui.button(crate::i18n::tr(key)).clicked() {
                     d.link_kind = kind;
                 }
             }
             ui.horizontal(|ui| {
-                ui.label("Name");
+                ui.label(crate::i18n::tr("folder_ops.link_name_label"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.link_name).desired_width(240.0));
-                r.named("Link name");
+                r.named(crate::i18n::tr("folder_ops.link_name_a11y"));
             });
         }
         // Not shown: it previews at once (`Kind::asks`).
         Kind::FolderDates => {
-            ui.label(format!(
-                "Set each folder in {one} to the date of the newest file below it"
-            ));
+            ui.label(crate::i18n::tr("folder_ops.folder_dates_body").replace("{one}", &one));
         }
     }
     if let Some(e) = &d.error {
@@ -364,7 +388,7 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
     ui.add_space(8.0);
     let mut out = None;
     ui.horizontal(|ui| {
-        let go = ui.button("Preview");
+        let go = ui.button(crate::i18n::tr("folder_ops.preview"));
         crate::a11y::first_focus(&go);
         let enter = !std::mem::take(&mut d.fresh) && ui.input(|i| i.key_pressed(Key::Enter));
         if go.clicked() || enter {
@@ -373,7 +397,7 @@ pub fn ui(ui: &mut egui::Ui, d: &mut FolderDialog, cancel: &mut bool) -> Option<
                 Err(e) => d.error = Some(e),
             }
         }
-        *cancel |= ui.button("Cancel").clicked();
+        *cancel |= ui.button(crate::i18n::tr("dialogs.cancel")).clicked();
     });
     out
 }
@@ -489,5 +513,112 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn folder_op_titles_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(Kind::Merge.title(), "Fusionar en…");
+        assert_eq!(Kind::Flatten.title(), "Aplanar…");
+        assert_eq!(Kind::Organize.title(), "Organizar por…");
+        assert_eq!(Kind::Attributes.title(), "Atributos…");
+        assert_eq!(Kind::Link.title(), "Crear enlace…");
+        assert_eq!(Kind::RemoveEmpty.title(), "Quitar carpetas vacías…");
+        assert_eq!(
+            crate::i18n::tr("folder_ops.when_taken"),
+            "Si el nombre ya está en uso:"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.merge_into"),
+            "Mover todo lo de las carpetas seleccionadas a:"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.merge_removes"),
+            "Las otras carpetas se eliminan cuando queden vacías."
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.flatten_body").replace("{one}", "docs"),
+            "Mover cada archivo de las subcarpetas de docs a esa carpeta y luego eliminar las \
+             subcarpetas que queden vacías. La vista previa los cuenta."
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.remove_empty_local")
+                .replace("{one}", "docs")
+                .replace("{trash}", "Trash"),
+            "Mover cada carpeta vacía bajo docs a la Trash: carpetas sin archivos y sin \
+             enlaces, a cualquier profundidad. La vista previa las lista."
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.remove_empty_remote").replace("{one}", "docs"),
+            "Eliminar cada carpeta vacía bajo docs: carpetas sin archivos y sin enlaces, a \
+             cualquier profundidad. Donde no hay papelera (SFTP, FTP, S3, WebDAV) se eliminan \
+             para siempre. La vista previa las lista y lo dice."
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.organize_body").replace("{one}", "docs"),
+            "Mover los archivos de docs a subcarpetas por:"
+        );
+        assert_eq!(crate::i18n::tr("folder_ops.organize_type"), "Tipo");
+        assert_eq!(
+            crate::i18n::tr("folder_ops.organize_type_tip"),
+            "Imágenes, vídeos, audio, documentos, archivos, otros"
+        );
+        assert_eq!(crate::i18n::tr("folder_ops.organize_year"), "Año");
+        assert_eq!(
+            crate::i18n::tr("folder_ops.organize_year_month"),
+            "Año y mes"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.attributes_one").replace("{one}", "docs"),
+            "Para docs"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.attributes_n").replace("{n}", "3"),
+            "Para 3 elementos"
+        );
+        assert_eq!(crate::i18n::tr("folder_ops.attributes_hidden"), "Oculto");
+        assert_eq!(
+            crate::i18n::tr("folder_ops.attributes_readonly"),
+            "Solo lectura"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.attributes_mode"),
+            "Modo (octal)"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.link_body").replace("{one}", "nota.txt"),
+            "Un enlace a nota.txt, en la misma carpeta"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.link_symlink"),
+            "Enlace simbólico"
+        );
+        assert_eq!(crate::i18n::tr("folder_ops.link_junction"), "Unión");
+        assert_eq!(crate::i18n::tr("folder_ops.link_hardlink"), "Enlace físico");
+        assert_eq!(
+            crate::i18n::tr("folder_ops.link_symlink_warning"),
+            "Windows solo crea enlaces simbólicos con el Modo desarrollador activado \
+             (Configuración → Sistema → Para desarrolladores) o en un programa elevado; Keel \
+             nunca se eleva."
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.link_make_junction"),
+            "Hacer una unión en su lugar"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.link_make_hardlink"),
+            "Hacer un enlace físico en su lugar"
+        );
+        assert_eq!(crate::i18n::tr("folder_ops.link_name_label"), "Nombre");
+        assert_eq!(
+            crate::i18n::tr("folder_ops.link_name_a11y"),
+            "Nombre del enlace"
+        );
+        assert_eq!(
+            crate::i18n::tr("folder_ops.folder_dates_body").replace("{one}", "docs"),
+            "Poner a cada carpeta bajo docs la fecha del cambio más reciente de dentro"
+        );
+        assert_eq!(crate::i18n::tr("folder_ops.preview"), "Vista previa");
+        crate::i18n::set("en");
     }
 }
