@@ -565,15 +565,13 @@ pub struct SourceRow {
 pub fn offline_text(last_seen: Option<i64>, reason: OfflineReason) -> String {
     let seen = when(last_seen);
     match reason {
-        OfflineReason::Unreachable => format!("offline (last seen {seen})"),
-        OfflineReason::RootMismatch => format!(
-            "offline (last seen {seen}): a different folder is at its root; \
-             right-click → Adopt new root to index it"
-        ),
-        OfflineReason::Empty => format!(
-            "offline (last seen {seen}): its root is empty (unmounted?); \
-             right-click → Adopt new root to index it anyway"
-        ),
+        OfflineReason::Unreachable => {
+            crate::i18n::tr("library.offline_unreachable").replace("{seen}", &seen)
+        }
+        OfflineReason::RootMismatch => {
+            crate::i18n::tr("library.offline_root_mismatch").replace("{seen}", &seen)
+        }
+        OfflineReason::Empty => crate::i18n::tr("library.offline_empty").replace("{seen}", &seen),
     }
 }
 
@@ -582,18 +580,23 @@ pub fn source_rows(sources: &[SourceSummary]) -> Vec<SourceRow> {
         .iter()
         .map(|s| {
             let (dot, detail) = match &s.status {
-                SourceStatus::Online { indexed_at: None } => {
-                    (Dot::Online, "not indexed yet".into())
-                }
-                SourceStatus::Online { indexed_at } => {
-                    (Dot::Online, format!("indexed {}", when(*indexed_at)))
-                }
-                SourceStatus::Indexing { done, total: 0 } => {
-                    (Dot::Indexing, format!("indexing {}", count(*done)))
-                }
+                SourceStatus::Online { indexed_at: None } => (
+                    Dot::Online,
+                    crate::i18n::tr("library.not_indexed_yet").to_owned(),
+                ),
+                SourceStatus::Online { indexed_at } => (
+                    Dot::Online,
+                    crate::i18n::tr("library.indexed").replace("{when}", &when(*indexed_at)),
+                ),
+                SourceStatus::Indexing { done, total: 0 } => (
+                    Dot::Indexing,
+                    crate::i18n::tr("library.indexing").replace("{n}", &count(*done)),
+                ),
                 SourceStatus::Indexing { done, total } => (
                     Dot::Indexing,
-                    format!("indexing {} / {}", count(*done), count(*total)),
+                    crate::i18n::tr("library.indexing_of")
+                        .replace("{done}", &count(*done))
+                        .replace("{total}", &count(*total)),
                 ),
                 SourceStatus::Offline { last_seen, reason } => {
                     (Dot::Offline, offline_text(*last_seen, *reason))
@@ -670,15 +673,12 @@ pub fn restore_offer(file: &std::path::Path) -> anyhow::Result<(String, String)>
     let here = (m.sources.iter())
         .filter(|s| keel_core::backup::reachable(&s.root))
         .count();
-    let about = format!(
-        "Library {} backed up {} by Keel {}: {}, {here} found on this machine (walked again; \
-         the others stay offline until their folder is back). It is restored as a new library \
-         beside the open one; Settings → Library switches to it.",
-        m.library,
-        when(Some(m.created)),
-        m.keel_version,
-        counted(m.sources.len() as u64, "source"),
-    );
+    let about = crate::i18n::tr("library.restore_offer")
+        .replace("{library}", &m.library)
+        .replace("{when}", &when(Some(m.created)))
+        .replace("{version}", &m.keel_version)
+        .replace("{sources}", &counted(m.sources.len() as u64, "source"))
+        .replace("{here}", &here.to_string());
     Ok((about, name))
 }
 
@@ -705,10 +705,9 @@ fn restore(
             (r.name, r.sources.len())
         }
     };
-    Ok(format!(
-        "Restored library {name} ({}): switch to it in Settings → Library",
-        counted(sources as u64, "source")
-    ))
+    Ok(crate::i18n::tr("library.restored")
+        .replace("{name}", &name)
+        .replace("{sources}", &counted(sources as u64, "source")))
 }
 
 /// The source whose root holds `p` (a real path), with `p` relative to it.
@@ -794,9 +793,9 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             ),
             path.name()
         ),
-        Warning::OfflineSource { label, .. } => format!(
-            "Source offline: {label} (previewed from its last index; it must be online to run)"
-        ),
+        Warning::OfflineSource { label, .. } => {
+            crate::i18n::tr("library.offline_source_warning").replace("{label}", label)
+        }
         Warning::NotIndexed { path } => {
             format!(
                 "{} is not indexed: previewed from the folder itself",
@@ -3208,8 +3207,7 @@ impl AppState {
                 self.set_tag(real, tag, on);
             }
             None => {
-                self.undo
-                    .refuse("tags and favorites (set or clear them again instead)");
+                self.undo.refuse(crate::i18n::tr("library.tag_refusal"));
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 let name = color.name().to_owned();
                 crate::tag_dots::write_through(&tx, &ctx, real.clone(), name.clone(), color, true);

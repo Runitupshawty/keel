@@ -199,12 +199,16 @@ mod tests {
                 // A command id (like "tab.new") is not a translation key, even when its
                 // prefix is also an en.toml table.
                 // RPC method names in devices.rs match the key pattern but are not translations.
+                // Library RPC method names and SQLite filenames do the same (library.rs).
                 let rpc = [
                     "devices.list",
                     "devices.forget",
                     "devices.pair_code",
                     "devices.pair_with",
                     "devices.settings_set",
+                    "library.db",
+                    "library.lock",
+                    "library.set_comment",
                 ];
                 if tables.contains(&c[1])
                     && &c[1] != "language"

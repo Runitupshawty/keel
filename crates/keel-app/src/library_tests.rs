@@ -1340,3 +1340,83 @@ fn collection_tabs_and_their_drops() {
     tab.library_search = false;
     assert_eq!(crate::pane::collection_drop(&drag, 0, &tab, None), None);
 }
+
+/// The source status text (rows and offline reasons), the offline-source
+/// warning, the tag refusal and the restore texts in Spanish.
+#[test]
+fn library_status_text_in_spanish() {
+    crate::i18n::set("es");
+    let seen = when(Some(1_700_000_000));
+    assert_eq!(
+        offline_text(Some(1_700_000_000), OfflineReason::Unreachable),
+        format!("sin conexión (último contacto: {seen})")
+    );
+    assert_eq!(
+        offline_text(Some(1_700_000_000), OfflineReason::RootMismatch),
+        format!(
+            "sin conexión (último contacto: {seen}): hay otra carpeta en su raíz; \
+             clic derecho → Adoptar la nueva raíz para indexarla"
+        )
+    );
+    assert_eq!(
+        offline_text(Some(1_700_000_000), OfflineReason::Empty),
+        format!(
+            "sin conexión (último contacto: {seen}): su raíz está vacía (¿desmontada?); \
+             clic derecho → Adoptar la nueva raíz para indexarla de todos modos"
+        )
+    );
+    let rows = source_rows(&[
+        summary("A", SourceStatus::Online { indexed_at: None }),
+        summary(
+            "B",
+            SourceStatus::Online {
+                indexed_at: Some(1_700_000_000),
+            },
+        ),
+        summary("C", SourceStatus::Indexing { done: 1, total: 0 }),
+        summary(
+            "D",
+            SourceStatus::Indexing {
+                done: 1_200,
+                total: 5_000,
+            },
+        ),
+    ]);
+    assert_eq!(rows[0].detail, "aún no indexado");
+    assert_eq!(rows[1].detail, format!("indexado {seen}"));
+    assert_eq!(rows[2].detail, "indexando 1");
+    assert_eq!(rows[3].detail, "indexando 1,200 / 5,000");
+    let w = Warning::OfflineSource {
+        source: SourceId("nas".into()),
+        label: "NAS".into(),
+    };
+    assert_eq!(
+        warning_text(&w, &[]),
+        "Origen sin conexión: NAS (vista previa desde su último índice; debe estar en línea para ejecutarlo)"
+    );
+    assert_eq!(
+        crate::i18n::tr("library.tag_refusal"),
+        "etiquetas y favoritos (asígnalos o quítalos de nuevo)"
+    );
+    assert_eq!(
+        crate::i18n::tr("library.restored")
+            .replace("{name}", "Docs")
+            .replace("{sources}", "1 source"),
+        "Biblioteca Docs restaurada (1 source): cámbiala en Ajustes → Biblioteca"
+    );
+    assert_eq!(
+        crate::i18n::tr("library.restore_offer")
+            .replace("{library}", "Docs")
+            .replace("{when}", &seen)
+            .replace("{version}", "0.1")
+            .replace("{sources}", "1 source")
+            .replace("{here}", "1"),
+        format!(
+            "La biblioteca Docs se respaldó el {seen} con Keel 0.1: 1 source, 1 \
+             encontrados en este equipo (se recorrió de nuevo; los demás siguen sin \
+             conexión hasta que su carpeta vuelva). Se restaura como una biblioteca nueva \
+             junto a la abierta; Ajustes → Biblioteca cambia a ella."
+        )
+    );
+    crate::i18n::set("en");
+}

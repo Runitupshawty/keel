@@ -747,6 +747,19 @@ daemon_connected_short = "Conectado a keel-daemon (pid {pid})"
 started_here = ", iniciado por esta ventana"
 stored_in = "Guardado en {path}"
 
+[library]
+offline_unreachable = "sin conexión (último contacto: {seen})"
+offline_root_mismatch = "sin conexión (último contacto: {seen}): hay otra carpeta en su raíz; clic derecho → Adoptar la nueva raíz para indexarla"
+offline_empty = "sin conexión (último contacto: {seen}): su raíz está vacía (¿desmontada?); clic derecho → Adoptar la nueva raíz para indexarla de todos modos"
+not_indexed_yet = "aún no indexado"
+indexed = "indexado {when}"
+indexing = "indexando {n}"
+indexing_of = "indexando {done} / {total}"
+restore_offer = "La biblioteca {library} se respaldó el {when} con Keel {version}: {sources}, {here} encontrados en este equipo (se recorrió de nuevo; los demás siguen sin conexión hasta que su carpeta vuelva). Se restaura como una biblioteca nueva junto a la abierta; Ajustes → Biblioteca cambia a ella."
+restored = "Biblioteca {name} restaurada ({sources}): cámbiala en Ajustes → Biblioteca"
+offline_source_warning = "Origen sin conexión: {label} (vista previa desde su último índice; debe estar en línea para ejecutarlo)"
+tag_refusal = "etiquetas y favoritos (asígnalos o quítalos de nuevo)"
+
 [bookmarks]
 add_bookmark = "Añadir marcador…"
 add_title = "Añadir marcador"

@@ -4294,6 +4294,8 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(200));
         std::fs::write(tmp.join("outside.txt"), "x").unwrap();
+        // The real watcher delivers late in the sandbox; nudge the re-list deterministically.
+        s.apply(Msg::Changed { dir: x.clone() });
         pump_until(&mut s, |s| {
             s.panes[0].tabs[0]
                 .entries()

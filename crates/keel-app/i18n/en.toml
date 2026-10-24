@@ -635,6 +635,19 @@ daemon_connected_short = "Connected to keel-daemon (pid {pid})"
 started_here = ", started by this window"
 stored_in = "Stored in {path}"
 
+[library]
+offline_unreachable = "offline (last seen {seen})"
+offline_root_mismatch = "offline (last seen {seen}): a different folder is at its root; right-click → Adopt new root to index it"
+offline_empty = "offline (last seen {seen}): its root is empty (unmounted?); right-click → Adopt new root to index it anyway"
+not_indexed_yet = "not indexed yet"
+indexed = "indexed {when}"
+indexing = "indexing {n}"
+indexing_of = "indexing {done} / {total}"
+restore_offer = "Library {library} backed up {when} by Keel {version}: {sources}, {here} found on this machine (walked again; the others stay offline until their folder is back). It is restored as a new library beside the open one; Settings → Library switches to it."
+restored = "Restored library {name} ({sources}): switch to it in Settings → Library"
+offline_source_warning = "Source offline: {label} (previewed from its last index; it must be online to run)"
+tag_refusal = "tags and favorites (set or clear them again instead)"
+
 [bookmarks]
 add_bookmark = "Add bookmark…"
 add_title = "Add bookmark"
