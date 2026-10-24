@@ -118,18 +118,19 @@ fn sync_times<'a>(pairs: impl Iterator<Item = (&'a str, Option<i64>)>) -> HashMa
 
 /// Settings → Devices' line under a device's sync switch, at unix time `now`.
 pub fn sync_note(on: bool, last: Option<i64>, now: i64) -> String {
+    let tr = crate::i18n::tr;
     let Some(t) = last.filter(|_| on) else {
         return match on {
-            true => "Not synced yet: turn it on on that device too".into(),
-            false => "Off".into(),
+            true => tr("devices.sync_not_yet").to_owned(),
+            false => tr("devices.sync_off").to_owned(),
         };
     };
     let ago = now.saturating_sub(t).max(0);
     match ago {
-        0..60 => "Last synced just now".into(),
-        60..3600 => format!("Last synced {} min ago", ago / 60),
-        3600..86_400 => format!("Last synced {} h ago", ago / 3600),
-        _ => format!("Last synced {}", crate::library::when(Some(t))),
+        0..60 => tr("devices.sync_just_now").to_owned(),
+        60..3600 => tr("devices.sync_min_ago").replace("{n}", &(ago / 60).to_string()),
+        3600..86_400 => tr("devices.sync_h_ago").replace("{n}", &(ago / 3600).to_string()),
+        _ => tr("devices.sync_when").replace("{when}", &crate::library::when(Some(t))),
     }
 }
 
@@ -1906,7 +1907,7 @@ fn offer_prompt(
 pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &Devices) {
     let ds = &mut s.devices;
     if ui
-        .checkbox(&mut ds.enabled, "Devices (pairing, shares, Spacedrop)")
+        .checkbox(&mut ds.enabled, crate::i18n::tr("devices.enabled"))
         .changed()
     {
         ds.explicit = true;
@@ -1916,7 +1917,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         .num_columns(2)
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
-            ui.label("This device");
+            ui.label(crate::i18n::tr("devices.this_device"));
             let current = match (&d.node, &d.remote_self) {
                 (Some(n), _) => n.label(),
                 (None, Some((_, label))) => label.clone(),
@@ -1928,9 +1929,9 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
                     .desired_width(240.0),
             );
             ui.end_row();
-            ui.label("Inbox");
+            ui.label(crate::i18n::tr("devices.inbox"));
             let default = match &d.remote_self {
-                Some(_) => "keel-daemon's (the inbox in its data folder)".to_owned(),
+                Some(_) => crate::i18n::tr("devices.daemon_inbox_hint").to_owned(),
                 None => DeviceSettings::default()
                     .inbox_dir()
                     .map(|p| p.display().to_string())
@@ -1945,26 +1946,26 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
             if ds.inbox.trim().is_empty() && downloads().is_none() && d.remote_self.is_none() {
                 ui.label("");
                 match ds.inbox_dir() {
-                    Some(dir) => ui.weak(format!(
-                        "No Downloads folder: drops go to {}",
-                        dir.display()
-                    )),
+                    Some(dir) => ui.weak(
+                        crate::i18n::tr("devices.no_downloads")
+                            .replace("{dir}", &dir.display().to_string()),
+                    ),
                     None => ui.colored_label(
                         ui.visuals().error_fg_color,
-                        "No inbox: drops are declined until you set one",
+                        crate::i18n::tr("devices.no_inbox"),
                     ),
                 };
                 ui.end_row();
             }
-            ui.label("Relays");
-            ui.checkbox(&mut ds.relay, "Use public relays when no direct path works")
-                .on_hover_text("Applies the next time devices start");
+            ui.label(crate::i18n::tr("devices.relays"));
+            ui.checkbox(&mut ds.relay, crate::i18n::tr("devices.use_relays"))
+                .on_hover_text(crate::i18n::tr("devices.use_relays_tip"));
             ui.end_row();
         });
     ui.add_space(6.0);
-    ui.strong("Always accept drops from");
+    ui.strong(crate::i18n::tr("devices.auto_accept"));
     if ds.auto_accept.is_empty() {
-        ui.weak("Nobody: every drop asks first.");
+        ui.weak(crate::i18n::tr("devices.nobody"));
     }
     let mut remove = None;
     for (i, id) in ds.auto_accept.iter().enumerate() {
@@ -1974,7 +1975,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
                 .map(|n| label_of(&d.peers, &PeerId(n)))
                 .unwrap_or_else(|_| id.clone());
             ui.label(label);
-            if ui.small_button("Remove").clicked() {
+            if ui.small_button(crate::i18n::tr("devices.remove")).clicked() {
                 remove = Some(i);
             }
         });
@@ -1983,9 +1984,9 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         ds.auto_accept.remove(i);
     }
     ui.add_space(6.0);
-    ui.strong("Sync tags and favorites");
+    ui.strong(crate::i18n::tr("devices.sync_title"));
     if d.peers.is_empty() {
-        ui.weak("No paired devices.");
+        ui.weak(crate::i18n::tr("devices.no_peers"));
     }
     let now = chrono::Utc::now().timestamp();
     for p in &d.peers {
@@ -1994,12 +1995,8 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         ui.horizontal(|ui| {
             ui.label(&p.label);
             let switch = ui
-                .checkbox(&mut on, "Sync library with this device")
-                .on_hover_text(
-                    "Tags, tag assignments, favorites and the content ids of tagged files \
-                     follow you between the two devices. Turn it on on both; turning it off \
-                     (or forgetting the device) keeps what already arrived.",
-                );
+                .checkbox(&mut on, crate::i18n::tr("devices.sync_with_device"))
+                .on_hover_text(crate::i18n::tr("devices.sync_tip"));
             if switch.changed() {
                 ds.sync.retain(|a| *a != id);
                 if on {
@@ -2011,13 +2008,10 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
     }
     if let Some(node) = &d.node {
         ui.add_space(6.0);
-        ui.weak(format!("Device id: {}", node.id()));
+        ui.weak(crate::i18n::tr("devices.device_id").replace("{id}", &node.id().to_string()));
     } else if let Some((id, _)) = &d.remote_self {
         ui.add_space(6.0);
-        ui.weak(format!(
-            "Device id: {id} (keel-daemon's: label, inbox and the always-accept list apply \
-             at once, relays when it starts again)"
-        ));
+        ui.weak(crate::i18n::tr("devices.device_id_daemon").replace("{id}", id));
     }
 }
 
@@ -2044,6 +2038,84 @@ mod tests {
         assert!(b.y1 - b.y0 < 30.0, "{b:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Settings → Devices in Spanish: the device list, pairing and sync labels.
+    #[test]
+    fn devices_page_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(
+            tr("devices.enabled"),
+            "Dispositivos (emparejamiento, compartidos, Spacedrop)"
+        );
+        assert_eq!(tr("devices.this_device"), "Este dispositivo");
+        assert_eq!(tr("devices.inbox"), "Bandeja de entrada");
+        assert_eq!(
+            tr("devices.daemon_inbox_hint"),
+            "la de keel-daemon (la bandeja de entrada en su carpeta de datos)"
+        );
+        assert_eq!(
+            tr("devices.no_downloads").replace("{dir}", "/tmp/in"),
+            "Sin carpeta Descargas: los archivos se guardan en /tmp/in"
+        );
+        assert_eq!(
+            tr("devices.no_inbox"),
+            "Sin bandeja de entrada: los archivos se rechazan hasta que configures una"
+        );
+        assert_eq!(tr("devices.relays"), "Relevos");
+        assert_eq!(
+            tr("devices.use_relays"),
+            "Usar relevos públicos cuando no hay ruta directa"
+        );
+        assert_eq!(
+            tr("devices.use_relays_tip"),
+            "Se aplica la próxima vez que se inician los dispositivos"
+        );
+        assert_eq!(tr("devices.auto_accept"), "Aceptar siempre archivos de");
+        assert_eq!(
+            tr("devices.nobody"),
+            "Nadie: cada archivo pide confirmación."
+        );
+        assert_eq!(tr("devices.remove"), "Quitar");
+        assert_eq!(
+            tr("devices.sync_title"),
+            "Sincronizar etiquetas y favoritos"
+        );
+        assert_eq!(tr("devices.no_peers"), "Sin dispositivos emparejados.");
+        assert_eq!(
+            tr("devices.sync_with_device"),
+            "Sincronizar biblioteca con este dispositivo"
+        );
+        assert_eq!(tr("devices.sync_tip"), "Las etiquetas, sus asignaciones, los favoritos y los ids de contenido de los archivos etiquetados se mueven entre los dos dispositivos. Actívalo en ambos; desactivarlo (o olvidar el dispositivo) conserva lo que ya llegó.");
+        assert_eq!(
+            tr("devices.device_id").replace("{id}", "abc123"),
+            "Id del dispositivo: abc123"
+        );
+        assert_eq!(
+            tr("devices.device_id_daemon").replace("{id}", "abc123"),
+            "Id del dispositivo: abc123 (keel-daemon: la etiqueta, la bandeja y la lista de aceptación inmediata se aplican al momento; los relevos al reiniciarse)"
+        );
+        assert_eq!(
+            tr("devices.sync_not_yet"),
+            "Aún no sincronizado: actívalo también en ese dispositivo"
+        );
+        assert_eq!(tr("devices.sync_off"), "Desactivado");
+        assert_eq!(tr("devices.sync_just_now"), "Sincronizado hace un momento");
+        assert_eq!(
+            tr("devices.sync_min_ago").replace("{n}", "5"),
+            "Sincronizado hace 5 min"
+        );
+        assert_eq!(
+            tr("devices.sync_h_ago").replace("{n}", "3"),
+            "Sincronizado hace 3 h"
+        );
+        assert_eq!(
+            tr("devices.sync_when").replace("{when}", "ayer"),
+            "Sincronizado ayer"
+        );
+        crate::i18n::set("en");
+    }
+
     use keel_core::{SourceId, SourceStatus};
     use keel_net::{NodeId, Storage};
 

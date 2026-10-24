@@ -198,10 +198,19 @@ mod tests {
                 let key = c[0].trim_matches('"');
                 // A command id (like "tab.new") is not a translation key, even when its
                 // prefix is also an en.toml table.
+                // RPC method names in devices.rs match the key pattern but are not translations.
+                let rpc = [
+                    "devices.list",
+                    "devices.forget",
+                    "devices.pair_code",
+                    "devices.pair_with",
+                    "devices.settings_set",
+                ];
                 if tables.contains(&c[1])
                     && &c[1] != "language"
                     && !commands.iter().any(|cmd| cmd.id == key)
                     && !crate::keymap::PLATFORM_ONLY_COMMANDS.contains(&key)
+                    && !rpc.contains(&key)
                 {
                     used += 1;
                     assert!(
