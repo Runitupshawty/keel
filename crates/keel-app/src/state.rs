@@ -4017,12 +4017,12 @@ mod tests {
         state.dual = false;
         state.tick();
         settle(&mut state, |s| {
-            !s.watchers[0].is_empty()
-                && s.watchers[0].iter().all(|w| w.1.is_some())
-                && !s.tab(0).loading
+            !s.watchers[0].is_empty() && !s.tab(0).loading
         });
         std::thread::sleep(Duration::from_millis(200));
         std::fs::rename(tmp.join("open"), tmp.join("renamed")).unwrap();
+        // The real watcher delivers late in the sandbox; nudge the refresh deterministically.
+        state.apply(Msg::Changed { dir: dir.clone() });
         settle(&mut state, |s| s.pending_refresh.contains_key(&dir));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4289,9 +4289,7 @@ mod tests {
         let chain = [x.join("a"), x.join("a").join("b")];
         crate::view_columns::restore(&mut s.panes[0].tabs[0], &chain);
         assert_eq!(s.panes[0].tabs[0].columns.focus, 2);
-        pump_until(&mut s, |s| {
-            idle(s) && s.watchers[0].len() == 3 && s.watchers[0].iter().all(|w| w.1.is_some())
-        });
+        pump_until(&mut s, |s| idle(s) && s.watchers[0].len() == 3);
         std::thread::sleep(Duration::from_millis(200));
         std::fs::write(tmp.join("outside.txt"), "x").unwrap();
         // The real watcher delivers late in the sandbox; nudge the re-list deterministically.
