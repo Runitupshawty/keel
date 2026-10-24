@@ -10,17 +10,29 @@ pub fn menu(on_item: bool) -> Vec<(String, &'static str, Action)> {
     let mut items = Vec::new();
     if on_item {
         items.push((restore_label().to_owned(), "", Action::RestoreTrash));
-        items.push(("Delete permanently".to_owned(), "Del", Action::Delete));
+        items.push((
+            crate::i18n::tr("trash_ui.delete_permanently").to_owned(),
+            "Del",
+            Action::Delete,
+        ));
         items.push((String::new(), "", Action::Refresh));
     }
     items.push((
-        format!("Empty {}", trashbin::label()),
+        crate::i18n::tr("trash_ui.empty").replace("{label}", trashbin::label()),
         "",
         Action::EmptyTrash,
     ));
     items.push((String::new(), "", Action::Refresh));
-    items.push(("Select all".to_owned(), "Ctrl+A", Action::SelectAll));
-    items.push(("Invert selection".to_owned(), "", Action::InvertSelection));
+    items.push((
+        crate::i18n::tr("trash_ui.select_all").to_owned(),
+        "Ctrl+A",
+        Action::SelectAll,
+    ));
+    items.push((
+        crate::i18n::tr("trash_ui.invert_selection").to_owned(),
+        "",
+        Action::InvertSelection,
+    ));
     items
 }
 
@@ -43,9 +55,9 @@ pub fn context_menu(ui: &mut egui::Ui, entry: Option<&Entry>, out: &mut Vec<Acti
 /// that, "Restore to…" asks for a folder.
 pub fn restore_label() -> &'static str {
     if trashbin::KNOWS_ORIGIN {
-        "Restore"
+        crate::i18n::tr("trash_ui.restore")
     } else {
-        "Restore to\u{2026}"
+        crate::i18n::tr("trash_ui.restore_to")
     }
 }
 
@@ -150,5 +162,30 @@ mod tests {
         assert!(delete_text(2).contains("2 items"));
         assert!(empty_text(1).contains("1 item "));
         assert!(empty_text(5).contains(trashbin::label()));
+    }
+
+    #[test]
+    fn trash_menu_in_spanish() {
+        crate::i18n::set("es");
+        let labels: Vec<String> = menu(true)
+            .into_iter()
+            .map(|(t, ..)| t)
+            .filter(|t| !t.is_empty())
+            .collect();
+        for expected in [
+            "Eliminar permanentemente",
+            "Seleccionar todo",
+            "Invertir selección",
+        ] {
+            assert!(
+                labels.iter().any(|l| l == expected),
+                "missing {expected}; {labels:?}"
+            );
+        }
+        assert!(
+            labels.iter().any(|l| l.starts_with("Vaciar ")),
+            "no Spanish empty label; {labels:?}"
+        );
+        crate::i18n::set("en");
     }
 }

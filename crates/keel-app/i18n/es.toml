@@ -1787,3 +1787,27 @@ cli_error = "No se pudo buscar actualizaciones: {error}"
 # La consola de PowerShell del instalador local (update.rs).
 console_failed = "La actualización falló. Presione Enter para iniciar Keel de nuevo"
 console_close = "Presione Enter para cerrar"
+
+[trash_ui]
+# La Papelera / basurera (trash_ui.rs).
+restore = "Restaurar"
+restore_to = "Restaurar en…"
+delete_permanently = "Eliminar permanentemente"
+empty = "Vaciar {label}"
+select_all = "Seleccionar todo"
+invert_selection = "Invertir selección"
+
+[dropzone]
+# La barra de guardado en la parte inferior (dropzone.rs).
+title = "Zona de recogida"
+hint = "Arrastra archivos aquí o pulsa Ctrl+Shift+S para guardar la selección"
+more = "+{n} más"
+paste = "Pegar aquí"
+paste_tip = "Copiar en la carpeta activa"
+move_here = "Mover aquí"
+move_here_tip = "Mover a la carpeta activa"
+clear = "Vaciar"
+clear_tip = "Vaciar la zona de recogida"
+hide_tip = "Ocultar (Ctrl+Shift+Z)"
+chip_gone = "{folder}\n(ya no existe: se omitió al pegar)"
+chip_remove_tip = "Quitar de la zona de recogida"

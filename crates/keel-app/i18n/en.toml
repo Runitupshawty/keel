@@ -1675,3 +1675,27 @@ cli_error = "Could not check for updates: {error}"
 # The local installer's PowerShell console (update.rs).
 console_failed = "The update failed. Press Enter to start Keel again"
 console_close = "Press Enter to close"
+
+[trash_ui]
+# The Recycle Bin / Trash tab (trash_ui.rs).
+restore = "Restore"
+restore_to = "Restore to…"
+delete_permanently = "Delete permanently"
+empty = "Empty {label}"
+select_all = "Select all"
+invert_selection = "Invert selection"
+
+[dropzone]
+# The stash strip at the bottom of the window (dropzone.rs).
+title = "Drop zone"
+hint = "Drag files here or press Ctrl+Shift+S to stash the selection"
+more = "+{n} more"
+paste = "Paste here"
+paste_tip = "Copy into the active folder"
+move_here = "Move here"
+move_here_tip = "Move into the active folder"
+clear = "Clear"
+clear_tip = "Empty the drop zone"
+hide_tip = "Hide (Ctrl+Shift+Z)"
+chip_gone = "{folder}\n(no longer exists: skipped on paste)"
+chip_remove_tip = "Remove from the drop zone"

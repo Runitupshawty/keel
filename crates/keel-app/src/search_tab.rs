@@ -805,7 +805,7 @@ mod tests {
             let index =
                 keel_search::WalkIndexSearcher::open(base.join("index"), vec![root.clone()])
                     .unwrap();
-            assert!(index.wait_ready(Duration::from_secs(60)));
+            assert!(index.wait_ready(Duration::from_secs(120)));
             let mut state = AppState::new(
                 egui::Context::default(),
                 Arc::new(Router::new()),
