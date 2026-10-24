@@ -104,19 +104,6 @@ impl Default for Sidebar {
     }
 }
 
-/// A place's name in the interface language.
-fn place_label(p: Place) -> &'static str {
-    tr(match p {
-        Place::Recents => "sidebar.recents",
-        Place::Applications if cfg!(windows) => "sidebar.programs",
-        Place::Applications => "sidebar.applications",
-        Place::Desktop => "sidebar.desktop",
-        Place::Documents => "sidebar.documents",
-        Place::Downloads => "sidebar.downloads",
-        Place::Home => "sidebar.home",
-    })
-}
-
 /// A section's title in the interface language.
 fn section_title(s: Section) -> &'static str {
     tr(match s {
@@ -256,7 +243,7 @@ impl Sidebar {
                 Favorite::Folder { .. } => Glyph::Folder,
             };
             let label = match fav {
-                Favorite::Place { place } => place_label(*place).to_owned(),
+                Favorite::Place { place } => place.label().to_owned(),
                 Favorite::Folder { .. } => fav.label(),
             };
             let selected = target.as_ref() == Some(current);
