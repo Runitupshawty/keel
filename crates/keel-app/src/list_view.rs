@@ -210,91 +210,96 @@ pub fn kind_text(e: &Entry) -> Cow<'static, str> {
     kind_of_ext(&ext)
 }
 
-/// The kind of a file with extension `ext` (lowercase, no dot).
+/// The kind of a file with extension `ext` (lowercase, no dot); the words come from
+/// `[list_view]` (`kind_*`), so they follow the UI language.
 pub fn kind_of_ext(ext: &str) -> Cow<'static, str> {
-    let word = match ext {
-        "" => "Document",
-        "pdf" => "PDF document",
-        "doc" | "docx" => "Word document",
-        "xls" | "xlsx" => "Excel spreadsheet",
-        "ppt" | "pptx" => "PowerPoint presentation",
-        "odt" => "OpenDocument text",
-        "ods" => "OpenDocument spreadsheet",
-        "odp" => "OpenDocument presentation",
-        "rtf" => "Rich text document",
-        "txt" | "text" | "log" => "Plain text",
-        "md" | "markdown" => "Markdown document",
-        "csv" | "tsv" => "CSV document",
-        "json" => "JSON document",
-        "xml" => "XML document",
-        "html" | "htm" => "HTML document",
-        "css" => "CSS style sheet",
-        "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" => "Configuration file",
-        "js" | "mjs" | "cjs" => "JavaScript source",
-        "ts" | "tsx" => "TypeScript source",
-        "rs" => "Rust source",
-        "py" => "Python script",
-        "c" => "C source",
-        "h" | "hpp" => "C header",
-        "cpp" | "cc" | "cxx" => "C++ source",
-        "cs" => "C# source",
-        "java" => "Java source",
-        "go" => "Go source",
-        "rb" => "Ruby script",
-        "php" => "PHP script",
-        "swift" => "Swift source",
-        "kt" => "Kotlin source",
-        "sh" | "bash" | "zsh" => "Shell script",
-        "ps1" => "PowerShell script",
-        "bat" | "cmd" => "Batch file",
-        "sql" => "SQL script",
-        "jpg" | "jpeg" => "JPEG image",
-        "png" => "PNG image",
-        "gif" => "GIF image",
-        "webp" => "WebP image",
-        "bmp" => "BMP image",
-        "svg" => "SVG image",
-        "tif" | "tiff" => "TIFF image",
-        "heic" | "heif" => "HEIF image",
-        "avif" => "AVIF image",
-        "ico" => "Icon",
-        "psd" => "Photoshop document",
-        "raw" | "cr2" | "cr3" | "nef" | "arw" | "dng" | "orf" | "rw2" => "Raw image",
-        "mp3" => "MP3 audio",
-        "flac" => "FLAC audio",
-        "wav" => "WAV audio",
-        "m4a" | "aac" => "AAC audio",
-        "ogg" | "opus" => "Ogg audio",
-        "wma" => "Windows Media audio",
-        "mp4" | "m4v" => "MPEG-4 movie",
-        "mov" => "QuickTime movie",
-        "mkv" => "Matroska video",
-        "avi" => "AVI video",
-        "webm" => "WebM video",
-        "wmv" => "Windows Media video",
-        "zip" => "ZIP archive",
-        "7z" => "7-Zip archive",
-        "rar" => "RAR archive",
-        "tar" => "Tar archive",
-        "gz" | "tgz" => "Gzip archive",
-        "bz2" | "tbz2" => "Bzip2 archive",
-        "xz" | "txz" => "XZ archive",
-        "zst" => "Zstandard archive",
-        "exe" | "app" | "com" => "Application",
-        "msi" => "Windows Installer package",
-        "dll" | "so" | "dylib" => "Library",
-        "dmg" | "iso" | "img" | "vhd" | "vhdx" => "Disk image",
-        "lnk" => "Shortcut",
-        "url" | "webloc" => "Internet shortcut",
-        "ttf" | "otf" | "woff" | "woff2" => "Font",
-        "eml" | "msg" => "Email message",
-        "ics" => "Calendar event",
-        "vcf" => "Contact card",
-        "epub" => "EPUB book",
-        "torrent" => "Torrent file",
-        other => return Cow::Owned(format!("{} file", other.to_uppercase())),
+    let key = match ext {
+        "" => "list_view.kind_document",
+        "pdf" => "list_view.kind_pdf",
+        "doc" | "docx" => "list_view.kind_word",
+        "xls" | "xlsx" => "list_view.kind_excel",
+        "ppt" | "pptx" => "list_view.kind_powerpoint",
+        "odt" => "list_view.kind_odt",
+        "ods" => "list_view.kind_ods",
+        "odp" => "list_view.kind_odp",
+        "rtf" => "list_view.kind_rtf",
+        "txt" | "text" | "log" => "list_view.kind_plain_text",
+        "md" | "markdown" => "list_view.kind_markdown",
+        "csv" | "tsv" => "list_view.kind_csv",
+        "json" => "list_view.kind_json",
+        "xml" => "list_view.kind_xml",
+        "html" | "htm" => "list_view.kind_html",
+        "css" => "list_view.kind_css",
+        "toml" | "yaml" | "yml" | "ini" | "cfg" | "conf" => "list_view.kind_config",
+        "js" | "mjs" | "cjs" => "list_view.kind_javascript",
+        "ts" | "tsx" => "list_view.kind_typescript",
+        "rs" => "list_view.kind_rust",
+        "py" => "list_view.kind_python",
+        "c" => "list_view.kind_c",
+        "h" | "hpp" => "list_view.kind_c_header",
+        "cpp" | "cc" | "cxx" => "list_view.kind_cpp",
+        "cs" => "list_view.kind_csharp",
+        "java" => "list_view.kind_java",
+        "go" => "list_view.kind_go",
+        "rb" => "list_view.kind_ruby",
+        "php" => "list_view.kind_php",
+        "swift" => "list_view.kind_swift",
+        "kt" => "list_view.kind_kotlin",
+        "sh" | "bash" | "zsh" => "list_view.kind_shell",
+        "ps1" => "list_view.kind_powershell",
+        "bat" | "cmd" => "list_view.kind_batch",
+        "sql" => "list_view.kind_sql",
+        "jpg" | "jpeg" => "list_view.kind_jpeg",
+        "png" => "list_view.kind_png",
+        "gif" => "list_view.kind_gif",
+        "webp" => "list_view.kind_webp",
+        "bmp" => "list_view.kind_bmp",
+        "svg" => "list_view.kind_svg",
+        "tif" | "tiff" => "list_view.kind_tiff",
+        "heic" | "heif" => "list_view.kind_heif",
+        "avif" => "list_view.kind_avif",
+        "ico" => "list_view.kind_icon",
+        "psd" => "list_view.kind_photoshop",
+        "raw" | "cr2" | "cr3" | "nef" | "arw" | "dng" | "orf" | "rw2" => "list_view.kind_raw",
+        "mp3" => "list_view.kind_mp3",
+        "flac" => "list_view.kind_flac",
+        "wav" => "list_view.kind_wav",
+        "m4a" | "aac" => "list_view.kind_aac",
+        "ogg" | "opus" => "list_view.kind_ogg",
+        "wma" => "list_view.kind_wma",
+        "mp4" | "m4v" => "list_view.kind_mpeg4",
+        "mov" => "list_view.kind_quicktime",
+        "mkv" => "list_view.kind_matroska",
+        "avi" => "list_view.kind_avi",
+        "webm" => "list_view.kind_webm",
+        "wmv" => "list_view.kind_wmv",
+        "zip" => "list_view.kind_zip",
+        "7z" => "list_view.kind_7zip",
+        "rar" => "list_view.kind_rar",
+        "tar" => "list_view.kind_tar",
+        "gz" | "tgz" => "list_view.kind_gzip",
+        "bz2" | "tbz2" => "list_view.kind_bzip2",
+        "xz" | "txz" => "list_view.kind_xz",
+        "zst" => "list_view.kind_zstandard",
+        "exe" | "app" | "com" => "list_view.kind_application",
+        "msi" => "list_view.kind_msi",
+        "dll" | "so" | "dylib" => "list_view.kind_library",
+        "dmg" | "iso" | "img" | "vhd" | "vhdx" => "list_view.kind_disk_image",
+        "lnk" => "list_view.kind_shortcut",
+        "url" | "webloc" => "list_view.kind_internet_shortcut",
+        "ttf" | "otf" | "woff" | "woff2" => "list_view.kind_font",
+        "eml" | "msg" => "list_view.kind_email",
+        "ics" => "list_view.kind_calendar",
+        "vcf" => "list_view.kind_contact",
+        "epub" => "list_view.kind_epub",
+        "torrent" => "list_view.kind_torrent",
+        other => {
+            return Cow::Owned(
+                crate::i18n::tr("list_view.kind_ext").replace("{ext}", &other.to_uppercase()),
+            )
+        }
     };
-    Cow::Borrowed(word)
+    Cow::Borrowed(crate::i18n::tr(key))
 }
 
 /// A date for the date columns: "2026-03-12 14:05", or with `relative` "Today at 14:05",
@@ -813,6 +818,24 @@ mod tests {
         assert_eq!(GroupBy::Size.label(), "Tamaño");
         assert_eq!(GroupBy::Tags.label(), "Etiquetas");
         assert_eq!(kind_text(&entry("data", Kind::Dir)), "Carpeta");
+        crate::i18n::set("en");
+    }
+
+    /// The Kind column's type names in Spanish.
+    #[test]
+    fn type_names_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(kind_of_ext("docx"), "Documento de Word");
+        assert_eq!(kind_of_ext("xlsx"), "Hoja de cálculo de Excel");
+        assert_eq!(kind_of_ext("txt"), "Texto plano");
+        assert_eq!(kind_of_ext("rs"), "Código fuente Rust");
+        assert_eq!(kind_of_ext("sh"), "Script de shell");
+        assert_eq!(kind_of_ext("png"), "Imagen PNG");
+        assert_eq!(kind_of_ext("mp4"), "Película MPEG-4");
+        assert_eq!(kind_of_ext("zip"), "Archivo ZIP");
+        assert_eq!(kind_of_ext("exe"), "Aplicación");
+        assert_eq!(kind_of_ext(""), "Documento");
+        assert_eq!(kind_of_ext("qqq"), "Archivo QQQ", "the extension fallback");
         crate::i18n::set("en");
     }
 
