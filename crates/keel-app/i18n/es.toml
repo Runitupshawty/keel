@@ -1263,3 +1263,41 @@ forget_question = "¿Olvidar {label}? Sus compartidos terminan ahora y sus carpe
 forget_button = "Olvidar"
 forget_cancel = "Cancelar"
 forget_menu = "Olvidar…"
+
+# El resto de la interfaz de dispositivos: notas de estado, avisos y errores.
+status_not_available = "No disponible: {e}"
+status_starting = "Iniciando…"
+status_off = "Desactivado (Ajustes → Dispositivos)"
+status_needs_library = "Necesita la biblioteca (Ajustes → Biblioteca)"
+status_asking = "Preguntando a keel-daemon…"
+off = "Desactivado"
+settings_applied_failed = "Ajustes → Dispositivos: {e}"
+daemon_off = "los dispositivos están desactivados allí (activa Ajustes → Dispositivos y reinicia keel-daemon)"
+daemon_error = "keel-daemon: {e}"
+spacedrop_failed = "Spacedrop: {e}"
+
+# El diálogo de compartidos.
+shares_title = "Compartidos con {label}"
+shares_none = "Nada compartido: este dispositivo no ve ninguno de tus orígenes."
+shares_whole = "(origen completo)"
+shares_removed = "(origen eliminado)"
+shares_need_source = "Añade primero un origen a la biblioteca."
+shares_subtree = "Carpeta dentro de él"
+shares_subtree_hint = "vacío: el origen completo"
+access_read = "Lectura"
+access_readwrite = "Lectura-escritura"
+revoke = "Revocar"
+share = "Compartir"
+
+# El selector de dispositivo «Enviar con Spacedrop».
+send_title = "Enviar con Spacedrop"
+send_to = "Enviar {n} elemento(s) a:"
+
+# Filas de la barra lateral: estado del enlace, menú contextual y almacenamiento.
+link_lan = "Conectado directamente"
+link_relay = "Conectado a través de un relevo"
+link_offline = "Sin conexión"
+browse = "Examinar"
+send_files = "Enviar archivos…"
+shares_menu = "Compartidos…"
+storage_used = "{used} usados de {total}"

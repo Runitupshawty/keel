@@ -1151,3 +1151,41 @@ forget_question = "Forget {label}? Its shares end now and its folders leave the 
 forget_button = "Forget"
 forget_cancel = "Cancel"
 forget_menu = "Forget…"
+
+# The rest of the devices UI: sidebar status notes, the toasts and the errors.
+status_not_available = "Not available: {e}"
+status_starting = "Starting…"
+status_off = "Off (Settings → Devices)"
+status_needs_library = "Needs the library (Settings → Library)"
+status_asking = "Asking keel-daemon…"
+off = "Off"
+settings_applied_failed = "Settings → Devices: {e}"
+daemon_off = "devices are off there (turn on Settings → Devices, then restart keel-daemon)"
+daemon_error = "keel-daemon: {e}"
+spacedrop_failed = "Spacedrop: {e}"
+
+# The shares dialog.
+shares_title = "Shares with {label}"
+shares_none = "Nothing shared: this device sees none of your sources."
+shares_whole = "(whole source)"
+shares_removed = "(removed source)"
+shares_need_source = "Add a source to the library first."
+shares_subtree = "Folder inside it"
+shares_subtree_hint = "empty: the whole source"
+access_read = "Read"
+access_readwrite = "Read-write"
+revoke = "Revoke"
+share = "Share"
+
+# The "Send with Spacedrop" device picker.
+send_title = "Send with Spacedrop"
+send_to = "Send {n} item(s) to:"
+
+# Sidebar rows: link tips, the context menu and the storage hover.
+link_lan = "Connected directly"
+link_relay = "Connected through a relay"
+link_offline = "Offline"
+browse = "Browse"
+send_files = "Send files…"
+shares_menu = "Shares…"
+storage_used = "{used} used of {total}"

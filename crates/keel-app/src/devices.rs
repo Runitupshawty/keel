@@ -453,10 +453,10 @@ pub fn share_rows(grants: &[Grant], sources: &[SourceSummary], peer: &PeerId) ->
         .filter(|g| g.peer == *peer)
         .map(|g| ShareRow {
             source: g.source.clone(),
-            label: sources
-                .iter()
-                .find(|s| s.id.0 == g.source)
-                .map_or_else(|| "(removed source)".into(), |s| s.label.clone()),
+            label: sources.iter().find(|s| s.id.0 == g.source).map_or_else(
+                || crate::i18n::tr("devices.shares_removed").to_owned(),
+                |s| s.label.clone(),
+            ),
             subtree: g.subtree.clone(),
             access: g.access,
         })
@@ -926,10 +926,14 @@ impl AppState {
             .map(|_| device_rows(&self.devices.peers));
         self.sidebar.devices_note = match (&self.devices.node, &self.devices.error) {
             (Some(_), _) => None,
-            (None, Some(e)) => Some(format!("Not available: {e}")),
-            _ if self.devices.opening => Some("Starting…".into()),
-            _ if !self.settings.devices.enabled => Some("Off (Settings → Devices)".into()),
-            _ => Some("Needs the library (Settings → Library)".into()),
+            (None, Some(e)) => {
+                Some(crate::i18n::tr("devices.status_not_available").replace("{e}", e))
+            }
+            _ if self.devices.opening => Some(crate::i18n::tr("devices.status_starting").into()),
+            _ if !self.settings.devices.enabled => {
+                Some(crate::i18n::tr("devices.status_off").into())
+            }
+            _ => Some(crate::i18n::tr("devices.status_needs_library").into()),
         };
     }
 
@@ -980,8 +984,8 @@ impl AppState {
         self.sidebar.devices = d.remote_self.as_ref().map(|_| device_rows(&d.peers));
         self.sidebar.devices_note = match (&d.remote_self, &d.error) {
             (Some(_), _) => None,
-            (None, Some(e)) => Some(format!("keel-daemon: {e}")),
-            (None, None) => Some("Asking keel-daemon…".into()),
+            (None, Some(e)) => Some(crate::i18n::tr("devices.daemon_error").replace("{e}", e)),
+            (None, None) => Some(crate::i18n::tr("devices.status_asking").into()),
         };
     }
 
@@ -1095,7 +1099,9 @@ impl AppState {
                         .info(crate::i18n::tr("devices.offer_relay_change"));
                 }
             }
-            DevMsg::Applied(Err(e)) => self.toasts.error(format!("Settings → Devices: {e}")),
+            DevMsg::Applied(Err(e)) => self
+                .toasts
+                .error(crate::i18n::tr("devices.settings_applied_failed").replace("{e}", &e)),
             DevMsg::SyncTimes(times) => d.last_sync = times,
             DevMsg::Remote(Ok(r)) => {
                 d.remote_self = Some((r.id, r.label));
@@ -1121,9 +1127,7 @@ impl AppState {
                 d.grants.clear();
                 d.remote_offers.clear();
                 d.error = Some(if e.contains("devices are off") {
-                    "devices are off there (turn on Settings → Devices, then restart \
-                     keel-daemon)"
-                        .into()
+                    crate::i18n::tr("devices.daemon_off").to_owned()
                 } else {
                     e
                 });
@@ -1314,7 +1318,9 @@ impl AppState {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-drop-pick", move || {
                     let picked =
-                        crate::platform::file_dialog("Send with Spacedrop", |d| d.pick_files());
+                        crate::platform::file_dialog(crate::i18n::tr("devices.send_title"), |d| {
+                            d.pick_files()
+                        });
                     if let Some(paths) = picked.filter(|p| !p.is_empty()) {
                         worker::send(&tx, &ctx, Msg::Devices(DevMsg::Picked { peer, paths }));
                     }
@@ -1409,7 +1415,7 @@ impl AppState {
         }
         if self.devices.remote_self.is_none() && !matches!(cmd, DevCmd::Answer { .. }) {
             return self.toasts.error(match &self.devices.error {
-                Some(e) => format!("keel-daemon: {e}"),
+                Some(e) => crate::i18n::tr("devices.daemon_error").replace("{e}", e),
                 None => crate::i18n::tr("devices.offer_still_asking").into(),
             });
         }
@@ -1441,7 +1447,11 @@ impl AppState {
                         .replace("{label}", &label_of(&self.devices.peers, &peer)),
                 );
                 let paths: Vec<String> = paths.iter().map(VPath::display).collect();
-                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let (tx, ctx, failed) = (
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                    crate::i18n::tr("devices.spacedrop_failed"),
+                );
                 worker::spawn("keel-drop-send", move || {
                     let sent = remote.apply(
                         "spacedrop.send",
@@ -1452,7 +1462,7 @@ impl AppState {
                             kind: "drop",
                             id: done.job,
                         }),
-                        Err(e) => Msg::Toast(format!("Spacedrop: {e:#}")),
+                        Err(e) => Msg::Toast(failed.replace("{e}", &format!("{e:#}"))),
                     };
                     worker::send(&tx, &ctx, msg);
                 });
@@ -1555,7 +1565,7 @@ pub fn sidebar(
     out: &mut Vec<Action>,
 ) {
     let Some(rows) = rows else {
-        ui.weak(note.unwrap_or("Off"));
+        ui.weak(note.unwrap_or_else(|| crate::i18n::tr("devices.off")));
         return;
     };
     for row in rows {
@@ -1573,9 +1583,9 @@ pub fn sidebar(
             })
             .inner;
         let tip = match row.link {
-            Link::Lan => "Connected directly",
-            Link::Relay => "Connected through a relay",
-            Link::Offline => "Offline",
+            Link::Lan => crate::i18n::tr("devices.link_lan"),
+            Link::Relay => crate::i18n::tr("devices.link_relay"),
+            Link::Offline => crate::i18n::tr("devices.link_offline"),
         };
         let r = r.on_hover_text(tip);
         if r.clicked() {
@@ -1591,9 +1601,15 @@ pub fn sidebar(
         }
         r.context_menu(|ui| {
             for (text, cmd) in [
-                ("Browse", DevCmd::Browse(row.id)),
-                ("Send files…", DevCmd::SendFiles(row.id)),
-                ("Shares…", DevCmd::Shares(row.id)),
+                (crate::i18n::tr("devices.browse"), DevCmd::Browse(row.id)),
+                (
+                    crate::i18n::tr("devices.send_files"),
+                    DevCmd::SendFiles(row.id),
+                ),
+                (
+                    crate::i18n::tr("devices.shares_menu"),
+                    DevCmd::Shares(row.id),
+                ),
                 (
                     crate::i18n::tr("devices.forget_menu"),
                     DevCmd::Forget(row.id),
@@ -1612,11 +1628,14 @@ pub fn sidebar(
                     .desired_height(4.0)
                     .fill(accent),
             )
-            .on_hover_text(format!(
-                "{} used of {}",
-                humansize::format_size(used, humansize::DECIMAL),
-                humansize::format_size(total, humansize::DECIMAL)
-            ));
+            .on_hover_text(
+                crate::i18n::tr("devices.storage_used")
+                    .replace("{used}", &humansize::format_size(used, humansize::DECIMAL))
+                    .replace(
+                        "{total}",
+                        &humansize::format_size(total, humansize::DECIMAL),
+                    ),
+            );
         }
     }
     if ui
@@ -1781,7 +1800,7 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let rows = share_rows(&s.devices.grants, &s.library.sources, &peer);
     let sources = shareable(&s.library.sources);
     let mut open = true;
-    let title = format!("Shares with {label}");
+    let title = crate::i18n::tr("devices.shares_title").replace("{label}", &label);
     crate::a11y::esc_closes(ctx, &title, &mut open);
     egui::Window::new(title)
         .id(egui::Id::new("keel-shares"))
@@ -1790,7 +1809,7 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         .resizable(false)
         .show(ctx, |ui| {
             if rows.is_empty() {
-                ui.weak("Nothing shared: this device sees none of your sources.");
+                ui.weak(crate::i18n::tr("devices.shares_none"));
             }
             egui::Grid::new("keel-shares-grid")
                 .num_columns(4)
@@ -1799,15 +1818,15 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     for row in &rows {
                         ui.label(&row.label);
                         ui.label(if row.subtree.is_empty() {
-                            "(whole source)"
+                            crate::i18n::tr("devices.shares_whole")
                         } else {
                             row.subtree.as_str()
                         });
                         ui.label(match row.access {
-                            Access::Read => "Read",
-                            Access::ReadWrite => "Read-write",
+                            Access::Read => crate::i18n::tr("devices.access_read"),
+                            Access::ReadWrite => crate::i18n::tr("devices.access_readwrite"),
                         });
-                        if ui.button("Revoke").clicked() {
+                        if ui.button(crate::i18n::tr("devices.revoke")).clicked() {
                             out.push(dev(DevCmd::Revoke {
                                 peer,
                                 source: row.source.clone(),
@@ -1818,9 +1837,9 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     }
                 });
             ui.separator();
-            ui.strong("Share");
+            ui.strong(crate::i18n::tr("devices.share"));
             if sources.is_empty() {
-                ui.weak("Add a source to the library first.");
+                ui.weak(crate::i18n::tr("devices.shares_need_source"));
                 return;
             }
             let shown = (d.source.as_ref())
@@ -1834,18 +1853,26 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     }
                 });
             ui.horizontal(|ui| {
-                ui.label("Folder inside it");
+                ui.label(crate::i18n::tr("devices.shares_subtree"));
                 ui.add(
                     egui::TextEdit::singleline(&mut d.subtree)
-                        .hint_text("empty: the whole source")
+                        .hint_text(crate::i18n::tr("devices.shares_subtree_hint"))
                         .desired_width(220.0),
                 );
             });
             ui.horizontal(|ui| {
-                ui.radio_value(&mut d.access, Access::Read, "Read");
-                ui.radio_value(&mut d.access, Access::ReadWrite, "Read-write");
+                ui.radio_value(
+                    &mut d.access,
+                    Access::Read,
+                    crate::i18n::tr("devices.access_read"),
+                );
+                ui.radio_value(
+                    &mut d.access,
+                    Access::ReadWrite,
+                    crate::i18n::tr("devices.access_readwrite"),
+                );
             });
-            if ui.button("Share").clicked() {
+            if ui.button(crate::i18n::tr("devices.share")).clicked() {
                 if let Some(source) = d.source.clone() {
                     out.push(dev(DevCmd::Grant {
                         peer,
@@ -1867,13 +1894,13 @@ fn pick_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     };
     let mut open = true;
     // Esc closes it (a11y).
-    crate::a11y::esc_closes(ctx, "Send with Spacedrop", &mut open);
-    egui::Window::new("Send with Spacedrop")
+    crate::a11y::esc_closes(ctx, crate::i18n::tr("devices.send_title"), &mut open);
+    egui::Window::new(crate::i18n::tr("devices.send_title"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label(format!("Send {} item(s) to:", paths.len()));
+            ui.label(crate::i18n::tr("devices.send_to").replace("{n}", &paths.len().to_string()));
             for row in device_rows(&s.devices.peers) {
                 if ui.button(&row.label).clicked() {
                     out.push(dev(DevCmd::Send {
@@ -2510,6 +2537,86 @@ mod tests {
         );
         assert!(text.contains("• a.txt"), "{text}");
         assert!(text.ends_with("…y 1 más"), "{text}");
+    }
+
+    /// The remaining device toasts, errors and dialogs in Spanish: the sidebar status
+    /// notes, the daemon and Spacedrop toasts, the shares dialog and the send picker.
+    #[test]
+    fn device_toasts_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(
+            tr("devices.status_not_available").replace("{e}", "sin red"),
+            "No disponible: sin red"
+        );
+        assert_eq!(tr("devices.status_starting"), "Iniciando…");
+        assert_eq!(
+            tr("devices.status_off"),
+            "Desactivado (Ajustes → Dispositivos)"
+        );
+        assert_eq!(
+            tr("devices.status_needs_library"),
+            "Necesita la biblioteca (Ajustes → Biblioteca)"
+        );
+        assert_eq!(tr("devices.status_asking"), "Preguntando a keel-daemon…");
+        assert_eq!(tr("devices.off"), "Desactivado");
+        assert_eq!(
+            tr("devices.settings_applied_failed").replace("{e}", "sin red"),
+            "Ajustes → Dispositivos: sin red"
+        );
+        assert_eq!(
+            tr("devices.daemon_off"),
+            "los dispositivos están desactivados allí (activa Ajustes → Dispositivos y reinicia keel-daemon)"
+        );
+        assert_eq!(
+            tr("devices.daemon_error").replace("{e}", "sin red"),
+            "keel-daemon: sin red"
+        );
+        assert_eq!(
+            tr("devices.spacedrop_failed").replace("{e}", "sin red"),
+            "Spacedrop: sin red"
+        );
+        assert_eq!(
+            tr("devices.shares_title").replace("{label}", "Escritorio"),
+            "Compartidos con Escritorio"
+        );
+        assert_eq!(
+            tr("devices.shares_none"),
+            "Nada compartido: este dispositivo no ve ninguno de tus orígenes."
+        );
+        assert_eq!(tr("devices.shares_whole"), "(origen completo)");
+        assert_eq!(tr("devices.shares_removed"), "(origen eliminado)");
+        assert_eq!(
+            tr("devices.shares_need_source"),
+            "Añade primero un origen a la biblioteca."
+        );
+        assert_eq!(tr("devices.shares_subtree"), "Carpeta dentro de él");
+        assert_eq!(
+            tr("devices.shares_subtree_hint"),
+            "vacío: el origen completo"
+        );
+        assert_eq!(tr("devices.access_read"), "Lectura");
+        assert_eq!(tr("devices.access_readwrite"), "Lectura-escritura");
+        assert_eq!(tr("devices.revoke"), "Revocar");
+        assert_eq!(tr("devices.share"), "Compartir");
+        assert_eq!(tr("devices.send_title"), "Enviar con Spacedrop");
+        assert_eq!(
+            tr("devices.send_to").replace("{n}", "3"),
+            "Enviar 3 elemento(s) a:"
+        );
+        assert_eq!(tr("devices.link_lan"), "Conectado directamente");
+        assert_eq!(tr("devices.link_relay"), "Conectado a través de un relevo");
+        assert_eq!(tr("devices.link_offline"), "Sin conexión");
+        assert_eq!(tr("devices.browse"), "Examinar");
+        assert_eq!(tr("devices.send_files"), "Enviar archivos…");
+        assert_eq!(tr("devices.shares_menu"), "Compartidos…");
+        assert_eq!(
+            tr("devices.storage_used")
+                .replace("{used}", "1 GB")
+                .replace("{total}", "4 GB"),
+            "1 GB usados de 4 GB"
+        );
+        crate::i18n::set("en");
     }
 
     #[test]
