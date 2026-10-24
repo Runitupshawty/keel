@@ -7,6 +7,7 @@
 //! remote copies and moves) are not recorded: the next Ctrl+Z says so once
 //! ([`Journal::refuse`]), the one after goes on to the entry before.
 
+use crate::i18n::tr;
 use crate::jobs::items;
 use anyhow::Context as _;
 use keel_vfs::ops::{Landed, Stamp};
@@ -139,12 +140,12 @@ impl Journal {
     /// operation cannot be undone, or that there is nothing to undo.
     pub fn next(&mut self) -> Result<u64, String> {
         if let Some(why) = self.refused.take() {
-            return Err(format!("Can't undo: {why}"));
+            return Err(tr("undo.refuse").replace("{why}", &why));
         }
         self.entries
             .back()
             .map(|e| e.id)
-            .ok_or_else(|| "Nothing to undo".to_owned())
+            .ok_or_else(|| tr("undo.none").to_owned())
     }
 
     pub fn get(&self, id: u64) -> Option<&Entry> {
@@ -175,9 +176,11 @@ impl Journal {
     /// operation is one that cannot be undone).
     pub fn label(&self) -> Option<String> {
         if self.refused.is_some() {
-            return Some("Undo".into());
+            return Some(tr("undo.action").to_owned());
         }
-        self.entries.back().map(|e| format!("Undo {}", e.noun()))
+        self.entries
+            .back()
+            .map(|e| tr("undo.label").replace("{noun}", e.noun()))
     }
 }
 
@@ -192,21 +195,21 @@ fn common_parent<'a>(mut paths: impl Iterator<Item = &'a VPath>) -> Option<VPath
 impl Entry {
     pub fn noun(&self) -> &'static str {
         match self.op {
-            Op::Rename(_) => "rename",
-            Op::Move => "move",
-            Op::Copy => "copy",
-            Op::Create(true) => "new folder",
-            Op::Create(false) => "new file",
-            Op::Trash => "delete",
+            Op::Rename(_) => tr("undo.rename"),
+            Op::Move => tr("undo.move"),
+            Op::Copy => tr("undo.copy"),
+            Op::Create(true) => tr("undo.new_folder"),
+            Op::Create(false) => tr("undo.new_file"),
+            Op::Trash => tr("undo.delete"),
             Op::Arrange { what, .. } => match what {
-                Arranged::Merge => "merge",
-                Arranged::Flatten => "flatten",
-                Arranged::Organize => "organize",
+                Arranged::Merge => tr("undo.merge"),
+                Arranged::Flatten => tr("undo.flatten"),
+                Arranged::Organize => tr("undo.organize"),
             },
-            Op::Attributes(_) => "attributes",
-            Op::Link => "link",
-            Op::Hardlink(_) => "hard links",
-            Op::FolderDates(_) => "folder dates",
+            Op::Attributes(_) => tr("undo.attributes"),
+            Op::Link => tr("undo.link"),
+            Op::Hardlink(_) => tr("undo.hard_links"),
+            Op::FolderDates(_) => tr("undo.folder_dates"),
         }
     }
 
@@ -230,96 +233,99 @@ impl Entry {
     /// The toast after the operation finished (with its Undo button).
     pub fn done_text(&self) -> String {
         let n = items(self.items.len());
-        match &self.op {
+        let text = match &self.op {
             Op::Rename(_) => match self.items.as_slice() {
-                [one] => format!(
-                    "Renamed {} to {}",
-                    one.was.as_ref().map_or("", |w| w.name()),
-                    one.now.name()
-                ),
-                _ => format!("Renamed {n}"),
+                [one] => tr("undo.renamed_one")
+                    .replace("{from}", one.was.as_ref().map_or("", |w| w.name()))
+                    .replace("{now}", one.now.name()),
+                _ => tr("undo.renamed").replace("{n}", &n),
             },
-            Op::Move => format!("Moved {n} {}", Self::place(self.nows(), "to", "")),
-            Op::Copy => format!("Copied {n} {}", Self::place(self.nows(), "to", "")),
-            Op::Create(_) => format!("Created {}", self.items[0].now.name()),
-            Op::Trash => format!("Moved {n} to the trash"),
+            Op::Move => tr("undo.moved")
+                .replace("{n}", &n)
+                .replace("{place}", &Self::place(self.nows(), tr("undo.prep_to"), "")),
+            Op::Copy => tr("undo.copied")
+                .replace("{n}", &n)
+                .replace("{place}", &Self::place(self.nows(), tr("undo.prep_to"), "")),
+            Op::Create(_) => tr("undo.created").replace("{name}", self.items[0].now.name()),
+            Op::Trash => tr("undo.trashed").replace("{n}", &n),
             Op::Arrange { what, merged, .. } => {
                 let done = match what {
-                    Arranged::Merge => {
-                        format!("Merged {n} {}", Self::place(self.nows(), "into", ""))
-                    }
-                    Arranged::Flatten => format!("Flattened: {n} moved up"),
-                    Arranged::Organize => format!("Organized {n} into folders"),
+                    Arranged::Merge => tr("undo.merged").replace("{n}", &n).replace(
+                        "{place}",
+                        &Self::place(self.nows(), tr("undo.prep_into"), ""),
+                    ),
+                    Arranged::Flatten => tr("undo.flattened").replace("{n}", &n),
+                    Arranged::Organize => tr("undo.organized").replace("{n}", &n),
                 };
                 match merged {
                     0 => done,
                     m => format!("{}; {}", done.trim_end(), Self::merged_note(*m)),
                 }
             }
-            Op::Attributes(_) => format!("Changed the attributes of {n}"),
-            Op::Link => format!("Made the link {}", self.items[0].now.name()),
-            Op::Hardlink(_) => format!("Replaced {n} with hard links"),
-            Op::FolderDates(_) => format!("Set the dates of {}", folders(self.items.len())),
-        }
-        .trim_end()
-        .to_owned()
+            Op::Attributes(_) => tr("undo.attributes_done").replace("{n}", &n),
+            Op::Link => tr("undo.link_done").replace("{name}", self.items[0].now.name()),
+            Op::Hardlink(_) => tr("undo.hardlink_done").replace("{n}", &n),
+            Op::FolderDates(_) => {
+                tr("undo.folder_dates_done").replace("{folders}", &folders(self.items.len()))
+            }
+        };
+        text.trim_end().to_owned()
     }
 
     /// Items that merged into a folder that was there: Undo cannot take them out alone.
     fn merged_note(merged: usize) -> String {
-        let (n, it) = match merged {
-            1 => ("1 item".to_owned(), "it"),
-            m => (format!("{m} items"), "them"),
-        };
-        format!("{n} merged into a folder already there, so Undo leaves {it}")
+        match merged {
+            1 => tr("undo.merged_note_one").to_owned(),
+            m => tr("undo.merged_note_many").replace("{n}", &m.to_string()),
+        }
     }
 
     /// The preview an undo that moves or deletes asks to confirm.
     pub fn preview(&self) -> String {
         let n = items(self.items.len());
         match &self.op {
-            Op::Rename(_) => "Undo rename".to_owned(),
-            Op::Move => format!(
-                "Undo move: {n} back {}?",
-                Self::place(self.wases(), "to", "to where they were")
+            Op::Rename(_) => tr("undo.preview_rename").to_owned(),
+            Op::Move => tr("undo.preview_move").replace("{n}", &n).replace(
+                "{place}",
+                &Self::place(self.wases(), tr("undo.prep_to"), tr("undo.place_many")),
             ),
-            Op::Copy => format!(
-                "Undo copy: move the {} {} to the trash?",
-                if self.items.len() == 1 {
-                    "copy".to_owned()
+            Op::Copy => {
+                let what = if self.items.len() == 1 {
+                    tr("undo.copy_one").to_owned()
                 } else {
-                    format!("{} copies", self.items.len())
-                },
-                Self::place(self.nows(), "in", "")
-            )
-            .replace("  ", " "),
-            Op::Create(_) => format!(
-                "Undo {}: move {} to the trash?",
-                self.noun(),
-                self.items[0].now.name()
-            ),
-            Op::Trash => format!(
-                "Undo delete: restore {n} {}?",
-                Self::place(self.wases(), "to", "to where they were")
+                    tr("undo.copy_many").replace("{n}", &self.items.len().to_string())
+                };
+                tr("undo.preview_copy")
+                    .replace("{what}", &what)
+                    .replace("{place}", &Self::place(self.nows(), tr("undo.prep_in"), ""))
+                    .replace("  ", " ")
+            }
+            Op::Create(_) => tr("undo.preview_create")
+                .replace("{noun}", self.noun())
+                .replace("{name}", self.items[0].now.name()),
+            Op::Trash => tr("undo.preview_delete").replace("{n}", &n).replace(
+                "{place}",
+                &Self::place(self.wases(), tr("undo.prep_to"), tr("undo.place_many")),
             ),
             Op::Arrange { merged, .. } => {
-                let back = format!(
-                    "Undo {}: move {n} back {}?",
-                    self.noun(),
-                    Self::place(self.wases(), "to", "to where they were")
-                );
+                let back = tr("undo.preview_arrange")
+                    .replace("{noun}", self.noun())
+                    .replace("{n}", &n)
+                    .replace(
+                        "{place}",
+                        &Self::place(self.wases(), tr("undo.prep_to"), tr("undo.place_many")),
+                    );
                 match merged {
                     0 => back,
                     m => format!("{back} ({})", Self::merged_note(*m)),
                 }
             }
-            Op::Attributes(_) => format!("Undo attributes: set {n} back as they were?"),
-            Op::Link => format!("Undo link: remove {}?", self.items[0].now.name()),
-            Op::Hardlink(_) => format!("Undo hard links: give {n} their own copy again?"),
-            Op::FolderDates(_) => format!(
-                "Undo folder dates: set {} back as they were?",
-                folders(self.items.len())
-            ),
+            Op::Attributes(_) => tr("undo.preview_attributes").replace("{n}", &n),
+            Op::Link => tr("undo.preview_link").replace("{name}", self.items[0].now.name()),
+            Op::Hardlink(_) => tr("undo.preview_hard_links").replace("{n}", &n),
+            Op::FolderDates(_) => {
+                tr("undo.preview_folder_dates").replace("{folders}", &folders(self.items.len()))
+            }
         }
     }
 
@@ -329,7 +335,7 @@ impl Entry {
     /// cannot be reached may pass (`transient`).
     pub fn check(&self, stat: impl Fn(&VPath) -> Option<Stamp>) -> Result<(), Refusal> {
         if self.items.is_empty() {
-            return Err(Refusal::lasting("nothing left to undo".into()));
+            return Err(Refusal::lasting(tr("undo.nothing_left").to_owned()));
         }
         let nows: HashSet<&VPath> = self.nows().collect();
         for it in &self.items {
@@ -340,22 +346,25 @@ impl Entry {
             };
             match stat(&it.now) {
                 None if self.op == Op::Trash => {
-                    return Err(Refusal::lasting(format!(
-                        "{shown} is no longer in the {}",
-                        keel_vfs::trashbin::label()
-                    )))
+                    return Err(Refusal::lasting(
+                        tr("undo.not_in_trash")
+                            .replace("{name}", shown)
+                            .replace("{bin}", keel_vfs::trashbin::label()),
+                    ))
                 }
                 None => {
                     // Its folder gone too: an unplugged drive or a share offline.
                     return Err(match it.now.parent().filter(|d| stat(d).is_none()) {
-                        Some(dir) => {
-                            Refusal::transient(format!("{} can't be reached", dir.display()))
-                        }
-                        None => Refusal::lasting(format!("{shown} is gone")),
+                        Some(dir) => Refusal::transient(
+                            tr("undo.unreachable").replace("{dir}", &dir.display().to_string()),
+                        ),
+                        None => Refusal::lasting(tr("undo.gone").replace("{name}", shown)),
                     });
                 }
                 Some(now) if it.stamp.is_some_and(|s| s != now) => {
-                    return Err(Refusal::lasting(format!("{shown} changed since")))
+                    return Err(Refusal::lasting(
+                        tr("undo.changed").replace("{name}", shown),
+                    ))
                 }
                 Some(_) => {}
             }
@@ -366,7 +375,9 @@ impl Entry {
                     && was.scheme == it.now.scheme
                     && was.path.eq_ignore_ascii_case(&it.now.path));
             if !vacated && stat(was).is_some() {
-                return Err(Refusal::transient(format!("{} is taken", was.display())));
+                return Err(Refusal::transient(
+                    tr("undo.taken").replace("{path}", &was.display().to_string()),
+                ));
             }
             // Into its old folder, which must still be there (the Recycle Bin makes it, an
             // undone merge or flatten makes again the folders it removed).
@@ -382,7 +393,9 @@ impl Entry {
             };
             if into_folder {
                 if let Some(dir) = was.parent().filter(|d| stat(d).is_none()) {
-                    return Err(Refusal::transient(format!("{} is gone", dir.display())));
+                    return Err(Refusal::transient(
+                        tr("undo.folder_gone").replace("{dir}", &dir.display().to_string()),
+                    ));
                 }
             }
         }
@@ -516,25 +529,27 @@ pub fn trashed(
             [(one, _)] => one.name().to_owned(),
             _ => items_of(deleted.len() - items.len(), deleted.len()),
         };
-        return Err(format!(
-            "couldn't find {what} in the {}",
-            keel_vfs::trashbin::label()
-        ));
+        return Err(tr("undo.not_found")
+            .replace("{what}", &what)
+            .replace("{bin}", keel_vfs::trashbin::label()));
     }
     Ok(items)
 }
 
 /// "1 folder", "3 folders".
 fn folders(n: usize) -> String {
-    match n {
-        1 => "1 folder".to_owned(),
-        n => format!("{n} folders"),
+    if n == 1 {
+        tr("undo.folder_one").to_owned()
+    } else {
+        tr("undo.folders").replace("{n}", &n.to_string())
     }
 }
 
 /// "2 of the 5 items".
 fn items_of(missing: usize, all: usize) -> String {
-    format!("{missing} of the {}", items(all))
+    tr("undo.items_of")
+        .replace("{missing}", &missing.to_string())
+        .replace("{all}", &items(all))
 }
 
 /// A library operation started from its preview, kept until its job ends.

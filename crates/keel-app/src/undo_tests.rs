@@ -32,6 +32,66 @@ fn disk(files: &[(&str, u64)]) -> impl Fn(&VPath) -> Option<Stamp> {
     move |x: &VPath| map.get(x).copied()
 }
 
+/// The palette's "Undo <what>" and the refused plain label in Spanish.
+#[test]
+fn undo_labels_in_spanish() {
+    crate::i18n::set("es");
+    let cases = [
+        (Op::Rename(Vec::new()), "Deshacer renombrar"),
+        (Op::Move, "Deshacer movimiento"),
+        (Op::Copy, "Deshacer copia"),
+        (Op::Create(true), "Deshacer nueva carpeta"),
+        (Op::Create(false), "Deshacer nuevo archivo"),
+        (Op::Trash, "Deshacer eliminación"),
+        (
+            Op::Arrange {
+                what: Arranged::Merge,
+                made: vec![],
+                removed: vec![],
+                merged: 0,
+            },
+            "Deshacer fusión",
+        ),
+        (
+            Op::Arrange {
+                what: Arranged::Flatten,
+                made: vec![],
+                removed: vec![],
+                merged: 0,
+            },
+            "Deshacer aplanar",
+        ),
+        (
+            Op::Arrange {
+                what: Arranged::Organize,
+                made: vec![],
+                removed: vec![],
+                merged: 0,
+            },
+            "Deshacer organizar",
+        ),
+        (Op::Attributes(Vec::new()), "Deshacer atributos"),
+        (Op::Link, "Deshacer enlace"),
+        (Op::Hardlink(Vec::new()), "Deshacer enlaces duros"),
+        (Op::FolderDates(Vec::new()), "Deshacer fechas de carpetas"),
+    ];
+    for (op, expected) in cases {
+        let mut j = Journal::default();
+        j.record(op, vec![item("a/x", Some("a/y"), 1)]);
+        assert_eq!(j.label().as_deref(), Some(expected));
+    }
+    let mut j = Journal::default();
+    j.refuse("deleted permanently");
+    assert_eq!(j.label().as_deref(), Some("Deshacer"));
+    assert_eq!(
+        j.next().unwrap_err(),
+        "No se puede deshacer: deleted permanently"
+    );
+    let mut empty = Journal::default();
+    assert_eq!(empty.next().unwrap_err(), "Nada que deshacer");
+    crate::i18n::set("en");
+}
+
 #[test]
 fn journal_keeps_twenty_and_says_a_refusal_once() {
     let mut j = Journal::default();
