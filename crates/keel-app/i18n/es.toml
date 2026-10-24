@@ -917,6 +917,17 @@ no_session = "No hay sesión \"{name}\""
 delete_session = "¿Eliminar la sesión \"{name}\"? Su archivo irá a la papelera."
 session_trashed = "La sesión \"{name}\" se ha movido a la papelera"
 
+[list_view]
+ext = "Extensión"
+kind = "Tipo"
+size = "Tamaño"
+modified = "Fecha de modificación"
+created = "Fecha de creación"
+opened = "Fecha de última apertura"
+group_none = "Ninguno"
+tags = "Etiquetas"
+folder = "Carpeta"
+
 [view_grid]
 arrange = "Organizar"
 arrange_tip = "Organiza los iconos: en el orden de clasificación, alineados a la cuadrícula o libremente; Limpiar"

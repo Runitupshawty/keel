@@ -805,6 +805,17 @@ no_session = "No session \"{name}\""
 delete_session = "Delete the session \"{name}\"? Its file goes to the trash."
 session_trashed = "Session \"{name}\" moved to the trash"
 
+[list_view]
+ext = "Extension"
+kind = "Kind"
+size = "Size"
+modified = "Date Modified"
+created = "Date Created"
+opened = "Date Last Opened"
+group_none = "None"
+tags = "Tags"
+folder = "Folder"
+
 [view_grid]
 arrange = "Arrange"
 arrange_tip = "Arrange icons: in the sort order, snapped to a grid or freely; Clean Up"

@@ -46,12 +46,12 @@ impl ListColumn {
     /// The name in the column menu and the View Options panel.
     pub fn label(self) -> &'static str {
         match self {
-            ListColumn::Ext => "Extension",
-            ListColumn::Kind => "Kind",
-            ListColumn::Size => "Size",
-            ListColumn::Modified => "Date Modified",
-            ListColumn::Created => "Date Created",
-            ListColumn::Opened => "Date Last Opened",
+            ListColumn::Ext => crate::i18n::tr("list_view.ext"),
+            ListColumn::Kind => crate::i18n::tr("list_view.kind"),
+            ListColumn::Size => crate::i18n::tr("list_view.size"),
+            ListColumn::Modified => crate::i18n::tr("list_view.modified"),
+            ListColumn::Created => crate::i18n::tr("list_view.created"),
+            ListColumn::Opened => crate::i18n::tr("list_view.opened"),
         }
     }
 }
@@ -82,12 +82,12 @@ impl GroupBy {
 
     pub fn label(self) -> &'static str {
         match self {
-            GroupBy::None => "None",
-            GroupBy::Kind => "Kind",
-            GroupBy::Modified => "Date Modified",
-            GroupBy::Created => "Date Created",
-            GroupBy::Size => "Size",
-            GroupBy::Tags => "Tags",
+            GroupBy::None => crate::i18n::tr("list_view.group_none"),
+            GroupBy::Kind => crate::i18n::tr("list_view.kind"),
+            GroupBy::Modified => crate::i18n::tr("list_view.modified"),
+            GroupBy::Created => crate::i18n::tr("list_view.created"),
+            GroupBy::Size => crate::i18n::tr("list_view.size"),
+            GroupBy::Tags => crate::i18n::tr("list_view.tags"),
         }
     }
 }
@@ -196,7 +196,7 @@ pub fn fit_middle<'a>(ui: &egui::Ui, text: &'a str, font: &egui::FontId, max: f3
 /// A file's kind in words, as the Kind column and Group by Kind show it.
 pub fn kind_text(e: &Entry) -> Cow<'static, str> {
     if e.kind == Kind::Dir {
-        return Cow::Borrowed("Folder");
+        return Cow::Borrowed(crate::i18n::tr("list_view.folder"));
     }
     let ext = if e.ext.is_empty() {
         // Search hits and library rows may come without `ext`.
@@ -794,6 +794,26 @@ mod tests {
         let mut e = entry("movie.mkv", Kind::File);
         e.ext.clear();
         assert_eq!(kind_text(&e), "Matroska video", "falls back to the name");
+    }
+
+    /// The column menu, the Group by choices and the Kind group headers in Spanish.
+    #[test]
+    fn column_and_group_labels_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(ListColumn::Ext.label(), "Extensión");
+        assert_eq!(ListColumn::Kind.label(), "Tipo");
+        assert_eq!(ListColumn::Size.label(), "Tamaño");
+        assert_eq!(ListColumn::Modified.label(), "Fecha de modificación");
+        assert_eq!(ListColumn::Created.label(), "Fecha de creación");
+        assert_eq!(ListColumn::Opened.label(), "Fecha de última apertura");
+        assert_eq!(GroupBy::None.label(), "Ninguno");
+        assert_eq!(GroupBy::Kind.label(), "Tipo");
+        assert_eq!(GroupBy::Modified.label(), "Fecha de modificación");
+        assert_eq!(GroupBy::Created.label(), "Fecha de creación");
+        assert_eq!(GroupBy::Size.label(), "Tamaño");
+        assert_eq!(GroupBy::Tags.label(), "Etiquetas");
+        assert_eq!(kind_text(&entry("data", Kind::Dir)), "Carpeta");
+        crate::i18n::set("en");
     }
 
     #[test]
