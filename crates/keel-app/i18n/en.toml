@@ -1614,3 +1614,27 @@ not_found = "couldn't find {what} in the {bin}"
 items_of = "{missing} of the {all}"
 folder_one = "1 folder"
 folders = "{n} folders"
+
+[update]
+# The first-start question toast (app.rs) and its confirmation (state.rs).
+ask = "Check for Keel updates once a day? Only the Keel version is sent, to GitHub."
+ask_turn_on = "Turn on"
+ask_not_now = "Not now"
+enabled = "Keel checks for updates once a day (Settings → General)"
+# The banner (update.rs).
+banner_available = "Keel {version} is available"
+whats_new = "What's new"
+install = "Install"
+install_tip = "Download and install it the way the README describes"
+skip_version = "Skip this version"
+hide_tip = "Hide until the next start"
+run_in_terminal = "To install, run in a terminal:"
+copy = "Copy"
+# `keel --check-update` (update.rs).
+cli_available = "Keel {version} is available (this is {current}): {page}"
+cli_install = "Install: {command}"
+cli_up_to_date = "Keel {version} is up to date"
+cli_error = "Could not check for updates: {error}"
+# The local installer's PowerShell console (update.rs).
+console_failed = "The update failed. Press Enter to start Keel again"
+console_close = "Press Enter to close"

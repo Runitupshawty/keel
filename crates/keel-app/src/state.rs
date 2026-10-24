@@ -2338,8 +2338,7 @@ impl AppState {
             }
             Action::EnableUpdateCheck => {
                 self.settings.updates.check = true;
-                self.toasts
-                    .info("Keel checks for updates once a day (Settings → General)");
+                self.toasts.info(crate::i18n::tr("update.enabled"));
             }
             Action::Undo => match self.undo.next() {
                 Ok(id) => self.run(p, Action::UndoEntry(id)),

@@ -1726,3 +1726,27 @@ not_found = "no se encontró {what} en la {bin}"
 items_of = "{missing} de los {all}"
 folder_one = "1 carpeta"
 folders = "{n} carpetas"
+
+[update]
+# La pregunta del primer arranque (app.rs) y su confirmación (state.rs).
+ask = "¿Revisar actualizaciones de Keel una vez al día? Solo se envía la versión de Keel, a GitHub."
+ask_turn_on = "Activar"
+ask_not_now = "Ahora no"
+enabled = "Keel busca actualizaciones una vez al día (Ajustes → General)"
+# El banner (update.rs).
+banner_available = "Keel {version} está disponible"
+whats_new = "Novedades"
+install = "Instalar"
+install_tip = "Descargar e instalarlo como lo describe el README"
+skip_version = "Omitir esta versión"
+hide_tip = "Ocultar hasta el próximo arranque"
+run_in_terminal = "Para instalarlo, ejecuta esto en una terminal:"
+copy = "Copiar"
+# `keel --check-update` (update.rs).
+cli_available = "Keel {version} está disponible (esta es la {current}): {page}"
+cli_install = "Instalar: {command}"
+cli_up_to_date = "Keel {version} está al día"
+cli_error = "No se pudo buscar actualizaciones: {error}"
+# La consola de PowerShell del instalador local (update.rs).
+console_failed = "La actualización falló. Presione Enter para iniciar Keel de nuevo"
+console_close = "Presione Enter para cerrar"

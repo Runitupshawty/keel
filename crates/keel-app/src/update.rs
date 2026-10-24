@@ -6,6 +6,7 @@
 //! Offline, rate limited (HTTP 403) or an unexpected answer: nothing is shown and the
 //! check runs again a day later. `keel --check-update` checks once on the command line.
 
+use crate::i18n::tr;
 use crossbeam_channel::{Receiver, TryRecvError};
 use std::path::{Path, PathBuf};
 
@@ -121,18 +122,30 @@ pub fn cli() -> i32 {
         Ok(Some(r)) => {
             let _ = writeln!(
                 out,
-                "Keel {} is available (this is {VERSION}): {}",
-                r.version, r.page
+                "{}",
+                tr("update.cli_available")
+                    .replace("{version}", &r.version)
+                    .replace("{current}", VERSION)
+                    .replace("{page}", &r.page)
             );
-            let _ = writeln!(out, "Install: {ONE_LINER}");
+            let _ = writeln!(
+                out,
+                "{}",
+                tr("update.cli_install").replace("{command}", ONE_LINER)
+            );
             0
         }
         Ok(None) => {
-            let _ = writeln!(out, "Keel {VERSION} is up to date");
+            let _ = writeln!(
+                out,
+                "{}",
+                tr("update.cli_up_to_date").replace("{version}", VERSION)
+            );
             0
         }
         Err(e) => {
-            eprintln!("Could not check for updates: {e:#}");
+            let err = format!("{e:#}");
+            eprintln!("{}", tr("update.cli_error").replace("{error}", &err));
             1
         }
     }
@@ -235,12 +248,14 @@ pub fn install_args(script: &Path, dir: &Path, reg: &Registration) -> Vec<String
     };
     let command = format!(
         "try {{ & {} -InstallDir {} {reg} }} catch {{ Write-Host $_ -ForegroundColor Red; \
-         Read-Host 'The update failed. Press Enter to start Keel again' | Out-Null }}; \
+         Read-Host '{}' | Out-Null }}; \
          try {{ Start-Process -FilePath {} }} catch {{ Write-Host $_ -ForegroundColor Red; \
-         Read-Host 'Press Enter to close' | Out-Null }}",
+         Read-Host '{}' | Out-Null }}",
         path(script),
         path(dir),
+        tr("update.console_failed"),
         path(&dir.join("keel.exe")),
+        tr("update.console_close"),
     );
     [
         "-NoProfile",
@@ -311,24 +326,24 @@ impl Updates {
         };
         egui::TopBottomPanel::top("keel-update").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("Keel {} is available", r.version));
-                if ui.button("What's new").clicked() {
+                ui.strong(tr("update.banner_available").replace("{version}", &r.version));
+                if ui.button(tr("update.whats_new")).clicked() {
                     open_page(&r.page);
                 }
                 if ui
-                    .button("Install")
-                    .on_hover_text("Download and install it the way the README describes")
+                    .button(tr("update.install"))
+                    .on_hover_text(tr("update.install_tip"))
                     .clicked()
                 {
                     self.install(ctx, &r);
                 }
-                if ui.button("Skip this version").clicked() {
+                if ui.button(tr("update.skip_version")).clicked() {
                     s.skip = r.version.clone();
                     self.banner = None;
                 }
                 if ui
                     .small_button("×")
-                    .on_hover_text("Hide until the next start")
+                    .on_hover_text(tr("update.hide_tip"))
                     .clicked()
                 {
                     self.banner = None;
@@ -336,9 +351,9 @@ impl Updates {
             });
             if self.hint {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("To install, run in a terminal:");
+                    ui.label(tr("update.run_in_terminal"));
                     ui.code(ONE_LINER);
-                    if ui.small_button("Copy").clicked() {
+                    if ui.small_button(tr("update.copy")).clicked() {
                         ui.ctx().copy_text(ONE_LINER.to_owned());
                     }
                 });
@@ -422,6 +437,76 @@ mod tests {
         let found = check(&url, current, "");
         server.join().unwrap();
         found
+    }
+
+    /// The update-check and download prompts in Spanish (the `[update]` table).
+    #[test]
+    fn update_prompts_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(
+            tr("update.ask"),
+            "¿Revisar actualizaciones de Keel una vez al día? Solo se envía la versión de Keel, a GitHub."
+        );
+        assert_eq!(tr("update.ask_turn_on"), "Activar");
+        assert_eq!(tr("update.ask_not_now"), "Ahora no");
+        assert_eq!(
+            tr("update.enabled"),
+            "Keel busca actualizaciones una vez al día (Ajustes → General)"
+        );
+        assert_eq!(
+            tr("update.banner_available").replace("{version}", "0.17.0"),
+            "Keel 0.17.0 está disponible"
+        );
+        assert_eq!(tr("update.whats_new"), "Novedades");
+        assert_eq!(tr("update.install"), "Instalar");
+        assert_eq!(
+            tr("update.install_tip"),
+            "Descargar e instalarlo como lo describe el README"
+        );
+        assert_eq!(tr("update.skip_version"), "Omitir esta versión");
+        assert_eq!(tr("update.hide_tip"), "Ocultar hasta el próximo arranque");
+        assert_eq!(
+            tr("update.run_in_terminal"),
+            "Para instalarlo, ejecuta esto en una terminal:"
+        );
+        assert_eq!(tr("update.copy"), "Copiar");
+        assert_eq!(
+            tr("update.cli_available")
+                .replace("{version}", "0.17.0")
+                .replace("{current}", "0.16.0")
+                .replace("{page}", "https://github.com/Runitupshawty/keel/releases/tag/v0.17.0"),
+            "Keel 0.17.0 está disponible (esta es la 0.16.0): https://github.com/Runitupshawty/keel/releases/tag/v0.17.0"
+        );
+        assert_eq!(
+            tr("update.cli_install").replace("{command}", ONE_LINER),
+            format!("Instalar: {ONE_LINER}")
+        );
+        assert_eq!(
+            tr("update.cli_up_to_date").replace("{version}", "0.16.0"),
+            "Keel 0.16.0 está al día"
+        );
+        assert_eq!(
+            tr("update.cli_error").replace("{error}", "timeout"),
+            "No se pudo buscar actualizaciones: timeout"
+        );
+        // The installer's console prompts are embedded in the PowerShell command.
+        let dir = Path::new(r"C:\Apps\Keel");
+        let args = install_args(
+            &dir.join("install.ps1"),
+            dir,
+            &Registration::Entry("Keel".into()),
+        );
+        let command = &args[4];
+        assert!(
+            command.contains(
+                "Read-Host 'La actualización falló. Presione Enter para iniciar Keel de nuevo'"
+            ),
+            "{command}"
+        );
+        assert!(
+            command.contains("Read-Host 'Presione Enter para cerrar'"),
+            "{command}"
+        );
     }
 
     #[test]
