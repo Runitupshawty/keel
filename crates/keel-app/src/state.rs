@@ -28,8 +28,6 @@ use std::time::{Duration, Instant};
 
 /// Watcher events for a folder are coalesced for this long before relisting.
 pub const REFRESH_COALESCE: Duration = Duration::from_millis(200);
-/// Toast for Compress / Add to inside an archive (they work on files on this computer).
-pub const READ_ONLY: &str = "Compress and Add to work on files outside archives";
 
 /// Why nothing can be written in `dir` when it is inside an archive that cannot be
 /// changed (7z, tar, RAR, an archive inside an archive or on another provider); None
@@ -1194,7 +1192,7 @@ impl AppState {
             _ if filelist.is_some() => filelist,
             _ if tab.library_search && library.is_none() => {
                 tab.loading = false;
-                tab.error = Some("The library is not open".into());
+                tab.error = Some(crate::i18n::tr("state.library_not_open").to_string());
                 *due = None;
                 return;
             }
@@ -1277,7 +1275,7 @@ impl AppState {
         };
         self.jump.indexing = true;
         if self.jump.indexed_at.is_none() {
-            self.toasts.info("Indexing folders…");
+            self.toasts.info(crate::i18n::tr("state.indexing_folders"));
         }
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         // The walk (no search backend) covers the home folder: `home`, which tests set to
@@ -1423,7 +1421,8 @@ impl AppState {
         let tab = self.panes[p].tab();
         if tab.is_search() || tab.is_trash() || tab.kind != TabKind::Dir {
             if fresh {
-                self.toasts.info("Calculate sizes works in a folder");
+                self.toasts
+                    .info(crate::i18n::tr("state.calculate_sizes_folder"));
             }
             return;
         }
@@ -2074,14 +2073,18 @@ impl AppState {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 // The OS dialog blocks: never on the UI thread.
                 worker::spawn("keel-pick", move || {
-                    let picked = platform::file_dialog("Open with", |mut dialog| {
-                        if cfg!(windows) {
-                            dialog = dialog.add_filter("Programs", &["exe", "bat", "cmd", "com"]);
-                        } else if cfg!(target_os = "macos") {
-                            dialog = dialog.set_directory("/Applications");
-                        }
-                        dialog.pick_file()
-                    });
+                    let picked = platform::file_dialog(
+                        crate::i18n::tr("state.dialog_open_with"),
+                        |mut dialog| {
+                            if cfg!(windows) {
+                                dialog =
+                                    dialog.add_filter("Programs", &["exe", "bat", "cmd", "com"]);
+                            } else if cfg!(target_os = "macos") {
+                                dialog = dialog.set_directory("/Applications");
+                            }
+                            dialog.pick_file()
+                        },
+                    );
                     if let Some(app) = picked {
                         let app = app.to_string_lossy().into_owned();
                         let msg = Msg::OpenWithChosen {
@@ -2435,12 +2438,15 @@ impl AppState {
                     let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                     let home = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf());
                     worker::spawn("keel-pick", move || {
-                        let picked = platform::file_dialog("Restore to", |mut dialog| {
-                            if let Some(home) = &home {
-                                dialog = dialog.set_directory(home);
-                            }
-                            dialog.pick_folder()
-                        });
+                        let picked = platform::file_dialog(
+                            crate::i18n::tr("state.dialog_restore_to"),
+                            |mut dialog| {
+                                if let Some(home) = &home {
+                                    dialog = dialog.set_directory(home);
+                                }
+                                dialog.pick_folder()
+                            },
+                        );
                         if let Some(dst) = picked {
                             worker::send(&tx, &ctx, Msg::RestoreTrashTo(paths, dst));
                         }
@@ -2538,7 +2544,7 @@ impl AppState {
                     .error("Open a folder first (search results have no folder)");
             }
             Action::Paste if self.paste_pending => {
-                self.toasts.info("Paste already in progress");
+                self.toasts.info(crate::i18n::tr("state.paste_in_progress"));
             }
             Action::Paste => {
                 if self.clipboard.changed_outside() {
@@ -2815,7 +2821,7 @@ impl AppState {
             }
             Action::AddToZip | Action::CompressToZip => {
                 let Some(dir) = self.tab(p).dir.to_local_path() else {
-                    return self.toasts.error("Zips can only be made in local folders");
+                    return self.toasts.error(crate::i18n::tr("state.zip_local_only"));
                 };
                 let Some(src) = self
                     .target_paths(p)
@@ -2943,9 +2949,9 @@ impl AppState {
             Action::BulkRenameApply { renames } => renames
                 .iter()
                 .any(|(f, _)| inside(f))
-                .then(|| "Bulk rename does not work inside archives: rename one at a time".into()),
+                .then(|| crate::i18n::tr("state.bulk_rename_archive").to_string()),
             Action::AddToZip | Action::AddToArchive | Action::CompressToZip => {
-                inside(here).then(|| READ_ONLY.into())
+                inside(here).then(|| crate::i18n::tr("state.read_only").to_string())
             }
             Action::Rename
             | Action::Delete
@@ -2976,20 +2982,22 @@ impl AppState {
             .map(|e| e.path.clone())
             .collect();
         if archives.is_empty() {
-            return self.toasts.error("Select an archive to extract");
+            return self
+                .toasts
+                .error(crate::i18n::tr("state.select_archive_extract"));
         }
         if action == Action::ExtractToOther {
             let other = 1 - p;
             if !self.dual || self.tab(other).is_search() || self.tab(other).is_trash() {
                 return self
                     .toasts
-                    .error("Open the folder to extract into in the other pane (Ctrl+Shift+D)");
+                    .error(crate::i18n::tr("state.extract_other_pane"));
             }
             let dst = self.tab(other).dir.clone();
             if dst.split_archive().is_some() {
                 return self
                     .toasts
-                    .error("Extract into a folder outside archives (paste copies into a zip)");
+                    .error(crate::i18n::tr("state.extract_folder_outside"));
             }
             for archive in archives {
                 self.plan_extract(ArchiveSrc::whole(archive), dst.clone());
@@ -3002,9 +3010,9 @@ impl AppState {
             .map(|a| a.parent().filter(|d| d.split_archive().is_none()))
             .collect::<Option<Vec<_>>>()
         else {
-            return self.toasts.error(
-                "Extract here works for archives outside archives: use Extract to…, or copy the archive out first",
-            );
+            return self
+                .toasts
+                .error(crate::i18n::tr("state.extract_here_outside"));
         };
         if action == Action::ExtractTo {
             let (tx, ctx, router) = (self.tx.clone(), self.ctx.clone(), self.router.clone());
@@ -3013,12 +3021,15 @@ impl AppState {
                 .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()));
             // The OS dialog blocks: never on the UI thread.
             worker::spawn("keel-pick", move || {
-                let picked = platform::file_dialog("Extract to", |mut dialog| {
-                    if let Some(start) = &start {
-                        dialog = dialog.set_directory(start);
-                    }
-                    dialog.pick_folder()
-                });
+                let picked = platform::file_dialog(
+                    crate::i18n::tr("state.dialog_extract_to"),
+                    |mut dialog| {
+                        if let Some(start) = &start {
+                            dialog = dialog.set_directory(start);
+                        }
+                        dialog.pick_folder()
+                    },
+                );
                 let Some(dst) = picked else {
                     return;
                 };
@@ -3523,7 +3534,7 @@ mod tests {
             state.toasts.list.clear();
             state.run(0, action.clone());
             let texts: Vec<&str> = state.toasts.list.iter().map(|t| t.text.as_str()).collect();
-            assert_eq!(texts, [READ_ONLY], "{action:?}");
+            assert_eq!(texts, [crate::i18n::tr("state.read_only")], "{action:?}");
         }
         assert!(state.dialog.is_none());
         state.run(0, Action::Delete);
@@ -4481,6 +4492,52 @@ mod tests {
             Some(Dialog::Confirm { yes, .. }) => assert_eq!(yes, "Eliminar"),
             _ => panic!("no archive delete confirm"),
         }
+
+        crate::i18n::set("en");
+    }
+
+    #[test]
+    fn archive_refusals_in_spanish() {
+        crate::i18n::set("es");
+        let new =
+            |dir: VPath| AppState::new(egui::Context::default(), Arc::new(Router::new()), dir);
+        let local = VPath::local(std::env::temp_dir());
+        let remote = VPath::parse("mem://t/").unwrap();
+
+        // Compress / Add to refuse inside an archive.
+        let zip_root = VPath::join_archive(&VPath::parse("mem://t/x.zip").unwrap(), "");
+        let mut s = new(remote.clone());
+        s.tab_mut(0).dir = zip_root;
+        s.toasts.list.clear();
+        s.run(0, Action::AddToZip);
+        assert_eq!(
+            s.toasts.list[0].text,
+            "Comprimir y Añadir a funcionan con archivos fuera de los archivos"
+        );
+
+        // Bulk rename refuses when a target sits inside an archive.
+        let inner = VPath::join_archive(&VPath::parse("mem://t/x.zip").unwrap(), "a.txt");
+        let mut s = new(remote.clone());
+        s.toasts.list.clear();
+        s.run(
+            0,
+            Action::BulkRenameApply {
+                renames: vec![(inner, "b.txt".into())],
+            },
+        );
+        assert_eq!(
+            s.toasts.list[0].text,
+            "El renombrado masivo no funciona dentro de los archivos: renombra uno a uno"
+        );
+
+        // ExtractHere with no archive selected.
+        let mut s = new(local.clone());
+        s.tab_mut(0)
+            .set_entries(vec![test_entry(&local, "note.txt", Kind::File, 1)]);
+        s.tab_mut(0).cursor = Some("note.txt".into());
+        s.toasts.list.clear();
+        s.run(0, Action::ExtractHere);
+        assert_eq!(s.toasts.list[0].text, "Selecciona un archivo para extraer");
 
         crate::i18n::set("en");
     }
