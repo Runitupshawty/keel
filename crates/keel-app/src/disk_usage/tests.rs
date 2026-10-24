@@ -542,3 +542,121 @@ fn the_chart_follows_the_tree_lists_selection() {
         ["bin".to_owned()].as_slice()
     );
 }
+
+/// The disk usage window's text is translated (en/es key parity is checked in i18n::tests).
+#[test]
+fn disk_usage_window_strings_in_spanish() {
+    crate::i18n::set("es");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.select_drives"),
+        "Elegir unidades…"
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.rescan"), "Reanalizar");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.rescan_tip"),
+        "Analizar de nuevo las mismas unidades y carpetas"
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.stop"), "Detener");
+    assert_eq!(crate::i18n::tr("disk_usage.pause"), "Pausar");
+    assert_eq!(crate::i18n::tr("disk_usage.resume"), "Reanudar");
+    assert_eq!(crate::i18n::tr("disk_usage.paused"), "En pausa");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.empty_prompt"),
+        "Analiza unidades o carpetas para ver qué ocupa su espacio."
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.on_disk"), "en disco");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.nothing_selected"),
+        "Nada seleccionado"
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.columns"), "Columnas");
+    assert_eq!(crate::i18n::tr("disk_usage.options"), "Opciones");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.grid_lines"),
+        "Líneas de cuadrícula"
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.striped_rows"), "Filas rayadas");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.seconds_in_times"),
+        "Segundos en las horas"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.default_columns"),
+        "Columnas predeterminadas"
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.col_extension"), "Extensión");
+    assert_eq!(crate::i18n::tr("disk_usage.col_files"), "Archivos");
+    assert_eq!(crate::i18n::tr("disk_usage.collapse"), "Contraer");
+    assert_eq!(crate::i18n::tr("disk_usage.expand"), "Expandir");
+    assert_eq!(crate::i18n::tr("disk_usage.dismiss"), "Descartar");
+    assert_eq!(
+        crate::i18n::tr("disk_usage.type_menu_show_only"),
+        "Mostrar solo estos archivos en el árbol"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.menu_show_in_keel"),
+        "Mostrar en Keel"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.menu_open_tab"),
+        "Abrir en una nueva pestaña"
+    );
+    assert_eq!(crate::i18n::tr("disk_usage.menu_copy_path"), "Copiar ruta");
+    // Template keys interpolate their placeholders (a mismatch would leave a "{x}").
+    assert_eq!(
+        crate::i18n::tr("disk_usage.scanning")
+            .replace("{what}", "un dispositivo portátil")
+            .replace("{files}", "42")
+            .replace("{bytes}", "1.0 MB")
+            .replace("{rate}", "7")
+            .replace("{elapsed}", "0:12"),
+        "Analizando un dispositivo portátil: 42 archivos, 1.0 MB (7 archivos/s), 0:12"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.selection_many")
+            .replace("{n}", "3")
+            .replace("{bytes}", "12 KB")
+            .replace("{what}", "en disco"),
+        "3 elementos seleccionados: 12 KB en disco"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.scanned_in").replace("{time}", "0:05"),
+        "Analizado en 0:05"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.unreadable_folders").replace("{n}", "2"),
+        ", 2 carpetas no se pudieron leer"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.showing_only").replace("{list}", ".mp4 .mkv"),
+        "Mostrando solo .mp4 .mkv"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.type_menu_search").replace("{label}", ".bin"),
+        "Buscar .bin en una nueva pestaña"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.menu_search_ext").replace("{ext}", "log"),
+        "Buscar .log en una nueva pestaña"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.sorted_ascending").replace("{label}", "Tamaño"),
+        "Tamaño, orden ascendente"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.row_hover_parent")
+            .replace("{pct}", "12.5")
+            .replace("{name}", "nested")
+            .replace("{bytes}", "234 B"),
+        "\n12.5 % de nested (234 B)"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.row_hover_drive").replace("{pct}", "99.0"),
+        ", 99.0 % de la unidad"
+    );
+    assert_eq!(
+        crate::i18n::tr("disk_usage.rescan_note").replace("{d}", "Copia terminada"),
+        "Copia terminada. Vuelve a analizar para ver el cambio."
+    );
+    crate::i18n::set("en");
+}

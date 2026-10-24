@@ -83,7 +83,7 @@ pub fn window(
     if let Some(f) = &mut du.fallback {
         if let Some(done) = f.ui(ctx) {
             du.fallback = None;
-            du.note = done.map(|d| format!("{d}. Rescan to see the change."));
+            du.note = done.map(|d| crate::i18n::tr("disk_usage.rescan_note").replace("{d}", &d));
         }
     }
     if let Some(p) = &mut du.picker {
@@ -150,24 +150,33 @@ fn body(
         let mut cancel = false;
         ui.horizontal(|ui| {
             if p.paused {
-                ui.weak("Paused");
+                ui.weak(crate::i18n::tr("disk_usage.paused"));
             } else {
                 crate::anim::spinner(ui);
             }
-            ui.label(format!(
-                "Scanning {what}: {} files, {} ({:.0} files/s), {}",
-                p.files,
-                size_text(p.bytes),
-                p.files_per_sec,
-                elapsed_text(p.elapsed)
-            ));
-            let label = if p.paused { "Resume" } else { "Pause" };
+            let files = p.files.to_string();
+            let bytes = size_text(p.bytes);
+            let rate = format!("{:.0}", p.files_per_sec);
+            let elapsed = elapsed_text(p.elapsed);
+            ui.label(
+                crate::i18n::tr("disk_usage.scanning")
+                    .replace("{what}", &what)
+                    .replace("{files}", &files)
+                    .replace("{bytes}", &bytes)
+                    .replace("{rate}", &rate)
+                    .replace("{elapsed}", &elapsed),
+            );
+            let label = if p.paused {
+                crate::i18n::tr("disk_usage.resume")
+            } else {
+                crate::i18n::tr("disk_usage.pause")
+            };
             if ui.button(label).clicked() {
                 pause = Some(!p.paused);
             }
             if ui
-                .button("Stop")
-                .on_hover_text("Stop scanning and show what was found")
+                .button(crate::i18n::tr("disk_usage.stop"))
+                .on_hover_text(crate::i18n::tr("disk_usage.stop_tip"))
                 .clicked()
             {
                 cancel = true;
@@ -191,8 +200,11 @@ fn body(
         if du.scanning().is_none() {
             ui.add_space(24.0);
             ui.vertical_centered(|ui| {
-                ui.label("Scan drives or folders to see what takes their space.");
-                if ui.button("Select drives…").clicked() {
+                ui.label(crate::i18n::tr("disk_usage.empty_prompt"));
+                if ui
+                    .button(crate::i18n::tr("disk_usage.select_drives"))
+                    .clicked()
+                {
                     du.picker = Some(super::picker::Picker::new(drives));
                 }
             });
@@ -257,9 +269,9 @@ fn remember(setting: &mut f32, now: f32) {
 fn roots_text(roots: &[Root]) -> String {
     let names: Vec<String> = (roots.iter())
         .map(|r| match r {
-            Root::AllLocalDrives => "all local drives".to_owned(),
+            Root::AllLocalDrives => crate::i18n::tr("disk_usage.roots_all_local").to_owned(),
             Root::Path(p) => p.display().to_string(),
-            Root::Mtp { .. } => "a portable device".to_owned(),
+            Root::Mtp { .. } => crate::i18n::tr("disk_usage.roots_portable").to_owned(),
         })
         .collect();
     names.join(", ")
@@ -281,23 +293,33 @@ fn toolbar(
     drives: &[crate::sidebar::Drive],
 ) {
     ui.horizontal(|ui| {
-        if ui.button("Select drives…").clicked() {
+        if ui
+            .button(crate::i18n::tr("disk_usage.select_drives"))
+            .clicked()
+        {
             du.picker = Some(super::picker::Picker::new(drives));
         }
         let can_rescan = !du.roots.is_empty() && du.scanning().is_none();
         if ui
-            .add_enabled(can_rescan, egui::Button::new("Rescan"))
-            .on_hover_text("Scan the same drives and folders again")
+            .add_enabled(
+                can_rescan,
+                egui::Button::new(crate::i18n::tr("disk_usage.rescan")),
+            )
+            .on_hover_text(crate::i18n::tr("disk_usage.rescan_tip"))
             .clicked()
         {
             du.rescan();
         }
         ui.separator();
         let mut physical = settings.physical;
-        ui.selectable_value(&mut physical, false, "Size")
-            .on_hover_text("Sizes are the files' lengths");
-        ui.selectable_value(&mut physical, true, "Size on disk")
-            .on_hover_text("Sizes are the space the files take on the drive");
+        ui.selectable_value(&mut physical, false, crate::i18n::tr("disk_usage.size"))
+            .on_hover_text(crate::i18n::tr("disk_usage.size_tip"));
+        ui.selectable_value(
+            &mut physical,
+            true,
+            crate::i18n::tr("disk_usage.size_on_disk"),
+        )
+        .on_hover_text(crate::i18n::tr("disk_usage.size_on_disk_tip"));
         if physical != settings.physical {
             settings.physical = physical;
             if let Some(m) = &mut du.model {
@@ -313,12 +335,22 @@ fn toolbar(
                 }
             })
             .response
-            .named("Layout");
-        ui.menu_button("Columns", |ui| column_chooser(ui, settings));
-        ui.menu_button("Options", |ui| {
+            .named(crate::i18n::tr("disk_usage.layout"));
+        ui.menu_button(crate::i18n::tr("disk_usage.columns"), |ui| {
+            column_chooser(ui, settings)
+        });
+        ui.menu_button(crate::i18n::tr("disk_usage.options"), |ui| {
             let mut relative = settings.relative;
-            ui.radio_value(&mut relative, false, "Percentage of the whole scan");
-            ui.radio_value(&mut relative, true, "Percentage of the parent folder");
+            ui.radio_value(
+                &mut relative,
+                false,
+                crate::i18n::tr("disk_usage.percentage_whole"),
+            );
+            ui.radio_value(
+                &mut relative,
+                true,
+                crate::i18n::tr("disk_usage.percentage_parent"),
+            );
             if relative != settings.relative {
                 settings.relative = relative;
                 if let Some(m) = &mut du.model {
@@ -328,12 +360,18 @@ fn toolbar(
             ui.separator();
             ui.checkbox(
                 &mut settings.group_unregistered,
-                "Group unregistered extensions",
+                crate::i18n::tr("disk_usage.group_unregistered"),
             )
-            .on_hover_text("One row for every extension this system has no file type for");
-            ui.checkbox(&mut settings.grid, "Grid lines");
-            ui.checkbox(&mut settings.stripes, "Striped rows");
-            ui.checkbox(&mut settings.seconds, "Seconds in times");
+            .on_hover_text(crate::i18n::tr("disk_usage.group_unregistered_tip"));
+            ui.checkbox(&mut settings.grid, crate::i18n::tr("disk_usage.grid_lines"));
+            ui.checkbox(
+                &mut settings.stripes,
+                crate::i18n::tr("disk_usage.striped_rows"),
+            );
+            ui.checkbox(
+                &mut settings.seconds,
+                crate::i18n::tr("disk_usage.seconds_in_times"),
+            );
         });
     });
 }
@@ -347,7 +385,10 @@ fn column_chooser(ui: &mut Ui, settings: &mut DuSettings) {
             settings.toggle_column(c);
         }
     }
-    if ui.button("Default columns").clicked() {
+    if ui
+        .button(crate::i18n::tr("disk_usage.default_columns"))
+        .clicked()
+    {
         settings.columns = Column::DEFAULT.to_vec();
         ui.close_menu();
     }
@@ -356,29 +397,43 @@ fn column_chooser(ui: &mut Ui, settings: &mut DuSettings) {
 fn status(ui: &mut Ui, du: &DiskUsage) {
     let Some(m) = &du.model else { return };
     ui.horizontal(|ui| {
-        let what = if m.physical { "on disk" } else { "" };
+        let what = if m.physical {
+            crate::i18n::tr("disk_usage.on_disk").to_owned()
+        } else {
+            String::new()
+        };
         match m.selected.len() {
-            0 => ui.label("Nothing selected"),
-            1 => ui.label(format!("{} {what}", size_text(m.selection_bytes()))),
-            n => ui.label(format!(
-                "{n} items selected: {} {what}",
-                size_text(m.selection_bytes())
-            )),
+            0 => ui.label(crate::i18n::tr("disk_usage.nothing_selected")),
+            1 => ui.label(
+                crate::i18n::tr("disk_usage.selection_one")
+                    .replace("{bytes}", &size_text(m.selection_bytes()))
+                    .replace("{what}", &what),
+            ),
+            n => ui.label(
+                crate::i18n::tr("disk_usage.selection_many")
+                    .replace("{n}", &n.to_string())
+                    .replace("{bytes}", &size_text(m.selection_bytes()))
+                    .replace("{what}", &what),
+            ),
         };
         ui.separator();
         let info = &m.tree.info;
-        let mut text = format!("Scanned in {}", elapsed_text(info.elapsed));
+        let mut text =
+            crate::i18n::tr("disk_usage.scanned_in").replace("{time}", &elapsed_text(info.elapsed));
         if !info.complete {
-            text.push_str(" (stopped: incomplete)");
+            text.push_str(crate::i18n::tr("disk_usage.stopped_incomplete"));
         }
         if info.unreadable > 0 {
-            text.push_str(&format!(", {} folders could not be read", info.unreadable));
+            text.push_str(
+                &crate::i18n::tr("disk_usage.unreadable_folders")
+                    .replace("{n}", &info.unreadable.to_string()),
+            );
         }
         ui.weak(text);
         if let Some(f) = &m.filter {
             ui.separator();
             let list: Vec<String> = f.iter().map(|e| format!(".{e}")).collect();
-            ui.label(format!("Showing only {}", list.join(" ")));
+            ui.label(crate::i18n::tr("disk_usage.showing_only").replace("{list}", &list.join(" ")));
         }
     });
 }
@@ -440,7 +495,14 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
     }
     table
         .header(ROW_H, |mut h| {
-            for label in ["", "Extension", "Description", "Bytes", "%", "Files"] {
+            for label in [
+                "",
+                crate::i18n::tr("disk_usage.col_extension"),
+                crate::i18n::tr("disk_usage.col_description"),
+                crate::i18n::tr("disk_usage.col_bytes"),
+                crate::i18n::tr("disk_usage.col_percent"),
+                crate::i18n::tr("disk_usage.col_files"),
+            ] {
                 h.col(|ui| {
                     ui.strong(label);
                 });
@@ -483,21 +545,31 @@ fn types_area(ui: &mut Ui, du: &mut DiskUsage, group: bool, out: &mut Vec<Action
                     ui.label(type_hover(t));
                 })
                 .context_menu(|ui| {
-                    if ui.button("Show only these files in the tree").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("disk_usage.type_menu_show_only"))
+                        .clicked()
+                    {
                         event = Some(TypeEvent::Filter(exts.clone()));
                         ui.close_menu();
                     }
                     let single = exts.len() == 1 && exts.iter().all(|e| !e.is_empty());
                     if single
                         && ui
-                            .button(format!("Search for {label} in a new tab"))
+                            .button(
+                                crate::i18n::tr("disk_usage.type_menu_search")
+                                    .replace("{label}", &label),
+                            )
                             .clicked()
                     {
                         let ext = exts.iter().next().cloned().unwrap_or_default();
                         out.push(Action::SearchFor(format!("*.{ext}")));
                         ui.close_menu();
                     }
-                    if single && ui.button("List these files in the Search tab").clicked() {
+                    if single
+                        && ui
+                            .button(crate::i18n::tr("disk_usage.type_menu_list"))
+                            .clicked()
+                    {
                         event = Some(TypeEvent::SearchTab(
                             exts.iter().next().cloned().unwrap_or_default(),
                         ));
@@ -535,12 +607,17 @@ fn type_hover(t: &FileType) -> String {
             .collect();
         let more = if t.extensions.len() > 40 { " …" } else { "" };
         format!(
-            "{}\n{}{more}\nDouble-click to list only these files",
+            "{}\n{}{more}\n{}",
             t.description,
-            list.join(" ")
+            list.join(" "),
+            crate::i18n::tr("disk_usage.type_hover_double_click")
         )
     } else {
-        format!("{}\nDouble-click to list only these files", t.description)
+        format!(
+            "{}\n{}",
+            t.description,
+            crate::i18n::tr("disk_usage.type_hover_double_click")
+        )
     }
 }
 
@@ -572,8 +649,8 @@ fn main_area(
             ui.label(status);
             if !du.steps.queue.is_empty()
                 && ui
-                    .button("Stop after this step")
-                    .on_hover_text("The steps after this one are not run")
+                    .button(crate::i18n::tr("disk_usage.steps_stop"))
+                    .on_hover_text(crate::i18n::tr("disk_usage.steps_stop_tip"))
                     .clicked()
             {
                 du.steps.queue.clear();
@@ -584,7 +661,10 @@ fn main_area(
     if let Some(note) = &du.note {
         ui.horizontal(|ui| {
             ui.label(note);
-            dismiss = ui.small_button("×").named("Dismiss").clicked();
+            dismiss = ui
+                .small_button("×")
+                .named(crate::i18n::tr("disk_usage.dismiss"))
+                .clicked();
         });
     }
     if dismiss {
@@ -718,10 +798,12 @@ fn tree_area(
                     let text = egui::RichText::new(format!("{}{arrow}", c.label())).strong();
                     let r = ui
                         .add(egui::Button::new(text).frame(false))
-                        .on_hover_text("Click to sort, right-click to choose the columns");
+                        .on_hover_text(crate::i18n::tr("disk_usage.sort_tip"));
                     let name = match model.sort {
-                        (k, true) if k == c => format!("{}, sorted ascending", c.label()),
-                        (k, false) if k == c => format!("{}, sorted descending", c.label()),
+                        (k, true) if k == c => crate::i18n::tr("disk_usage.sorted_ascending")
+                            .replace("{label}", c.label()),
+                        (k, false) if k == c => crate::i18n::tr("disk_usage.sorted_descending")
+                            .replace("{label}", c.label()),
                         _ => c.label().to_owned(),
                     };
                     let r = r.named(&name);
@@ -776,7 +858,11 @@ fn tree_area(
                                                 .frame(false)
                                                 .small(),
                                         )
-                                        .named(if open { "Collapse" } else { "Expand" });
+                                        .named(if open {
+                                            crate::i18n::tr("disk_usage.collapse")
+                                        } else {
+                                            crate::i18n::tr("disk_usage.expand")
+                                        });
                                     if r.clicked() {
                                         events.push(TreeEvent::Toggle(id));
                                     }
@@ -977,34 +1063,37 @@ fn row_hover(model: &Model, id: NodeId) -> String {
     };
     text.push_str(&format!("\n{}", size_text(bytes)));
     if n.is_pseudo() {
-        text.push_str(&format!(
-            ", {:.1} % of the drive",
-            100.0 * model.fraction(id, true)
-        ));
+        let pct = format!("{:.1}", 100.0 * model.fraction(id, true));
+        text.push_str(&crate::i18n::tr("disk_usage.row_hover_drive").replace("{pct}", &pct));
         return text;
     }
     let parent = n.parent;
     if parent != keel_vfs::du::TOP && parent != keel_vfs::du::NONE {
-        text.push_str(&format!(
-            "\n{:.1} % of {} ({})",
-            100.0 * model.fraction(id, true),
-            model.tree.node(parent).name,
-            size_text(model.bytes(parent))
-        ));
+        let pct = format!("{:.1}", 100.0 * model.fraction(id, true));
+        let name = model.tree.node(parent).name.to_string();
+        let bytes = size_text(model.bytes(parent));
+        text.push_str(
+            &crate::i18n::tr("disk_usage.row_hover_parent")
+                .replace("{pct}", &pct)
+                .replace("{name}", &name)
+                .replace("{bytes}", &bytes),
+        );
     }
-    text.push_str(&format!(
-        "\n{:.1} % of everything scanned ({})",
-        100.0 * model.fraction(id, false),
-        size_text(model.bytes(keel_vfs::du::TOP))
-    ));
+    let pct = format!("{:.1}", 100.0 * model.fraction(id, false));
+    let bytes = size_text(model.bytes(keel_vfs::du::TOP));
+    text.push_str(
+        &crate::i18n::tr("disk_usage.row_hover_total")
+            .replace("{pct}", &pct)
+            .replace("{bytes}", &bytes),
+    );
     if n.has(keel_vfs::du::flag::HARDLINK_DUP) {
-        text.push_str("\nAnother name of a file counted elsewhere (hard link)");
+        text.push_str(crate::i18n::tr("disk_usage.row_hover_hardlink"));
     }
     if n.has(keel_vfs::du::flag::UNREADABLE) {
-        text.push_str("\nCould not be read");
+        text.push_str(crate::i18n::tr("disk_usage.row_hover_unreadable"));
     }
     if n.has(keel_vfs::du::flag::CLOUD) {
-        text.push_str("\nCloud placeholder: not downloaded");
+        text.push_str(crate::i18n::tr("disk_usage.row_hover_cloud"));
     }
     text
 }
@@ -1021,25 +1110,39 @@ fn row_menu(
     let container = model.tree.node(id).is_container();
     r.context_menu(|ui| {
         let Some(path) = &path else {
-            ui.weak("Free and unknown space have no files");
+            ui.weak(crate::i18n::tr("disk_usage.menu_free_unknown"));
             return;
         };
-        if ui.button("Show in Keel").clicked() {
+        if ui
+            .button(crate::i18n::tr("disk_usage.menu_show_in_keel"))
+            .clicked()
+        {
             out.push(Action::OpenPath(VPath::local(path)));
             ui.close_menu();
         }
-        if container && ui.button("Open in a new tab").clicked() {
+        if container
+            && ui
+                .button(crate::i18n::tr("disk_usage.menu_open_tab"))
+                .clicked()
+        {
             out.push(Action::NewTabAt(VPath::local(path)));
             ui.close_menu();
         }
-        if ui.button("Copy path").clicked() {
+        if ui
+            .button(crate::i18n::tr("disk_usage.menu_copy_path"))
+            .clicked()
+        {
             ui.ctx().copy_text(path.display().to_string());
             ui.close_menu();
         }
         if container && model.expandable(id) && model.filter.is_none() {
             let open = model.expanded.contains(&id);
             if ui
-                .button(if open { "Collapse" } else { "Expand" })
+                .button(if open {
+                    crate::i18n::tr("disk_usage.collapse")
+                } else {
+                    crate::i18n::tr("disk_usage.expand")
+                })
                 .clicked()
             {
                 events.push(TreeEvent::Toggle(id));
@@ -1048,7 +1151,7 @@ fn row_menu(
         }
         if let Some(ext) = ext.filter(|e| !e.is_empty()) {
             if ui
-                .button(format!("Search for .{ext} in a new tab"))
+                .button(crate::i18n::tr("disk_usage.menu_search_ext").replace("{ext}", ext))
                 .clicked()
             {
                 out.push(Action::SearchFor(format!("*.{ext}")));
