@@ -54,17 +54,17 @@ impl JumpFilter {
 
     pub fn label(self) -> &'static str {
         match self {
-            JumpFilter::Folders => "Folders",
-            JumpFilter::Files => "Files",
-            JumpFilter::Both => "Both",
+            JumpFilter::Folders => crate::i18n::tr("jump.folders"),
+            JumpFilter::Files => crate::i18n::tr("jump.files"),
+            JumpFilter::Both => crate::i18n::tr("jump.both"),
         }
     }
 
     fn hint(self) -> &'static str {
         match self {
-            JumpFilter::Folders => "Jump to folder",
-            JumpFilter::Files => "Find a file",
-            JumpFilter::Both => "Find a folder or file",
+            JumpFilter::Folders => crate::i18n::tr("jump.hint_folders"),
+            JumpFilter::Files => crate::i18n::tr("jump.hint_files"),
+            JumpFilter::Both => crate::i18n::tr("jump.hint_both"),
         }
     }
 
@@ -648,6 +648,26 @@ pub fn walk_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Ctrl+P filter and the Go to Folder strings, in Spanish.
+    #[test]
+    fn goto_and_jump_labels_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(JumpFilter::Folders.label(), "Carpetas");
+        assert_eq!(JumpFilter::Files.label(), "Archivos");
+        assert_eq!(JumpFilter::Both.label(), "Ambos");
+        assert_eq!(JumpFilter::Folders.hint(), "Ir a carpeta");
+        assert_eq!(JumpFilter::Files.hint(), "Buscar un archivo");
+        assert_eq!(JumpFilter::Both.hint(), "Buscar una carpeta o archivo");
+        assert_eq!(crate::i18n::tr("goto.title"), "Ir a carpeta");
+        assert_eq!(crate::i18n::tr("goto.path_name"), "Ruta de la carpeta");
+        assert_eq!(crate::i18n::tr("goto.more").replace("{n}", "3"), "3 más");
+        assert_eq!(
+            crate::i18n::tr("goto.help"),
+            "Tab completa · Enter va · Esc cierra"
+        );
+        crate::i18n::set("en");
+    }
 
     /// QA walkthrough 2026-10-10: without a search backend Ctrl+P walked the real home
     /// folder, also in tests; it walks the app's home (a test's fixture) now.

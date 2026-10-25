@@ -1699,3 +1699,44 @@ clear_tip = "Empty the drop zone"
 hide_tip = "Hide (Ctrl+Shift+Z)"
 chip_gone = "{folder}\n(no longer exists: skipped on paste)"
 chip_remove_tip = "Remove from the drop zone"
+
+[jump]
+# Ctrl+P: the list filter and its hint (jump.rs).
+folders = "Folders"
+files = "Files"
+both = "Both"
+hint_folders = "Jump to folder"
+hint_files = "Find a file"
+hint_both = "Find a folder or file"
+
+[goto]
+# Go to Folder (goto.rs).
+title = "Go to Folder"
+hint_windows = "C:\\Users or ~\\Documents"
+hint_unix = "/usr/local or ~/Documents"
+path_name = "Folder path"
+more = "{n} more"
+help = "Tab completes · Enter goes · Esc closes"
+
+[quicklook]
+# Quick Look window (quicklook.rs).
+title = "Quick Look"
+close = "Close"
+close_tip = "Close (Space or Esc)"
+fullscreen = "Full Screen"
+fullscreen_tip = "Fill the screen"
+exit_fullscreen = "Exit Full Screen"
+exit_fullscreen_tip = "Back to a floating window"
+open_with = "Open With…"
+open_with_tip = "Open with another app"
+play = "▶ Play"
+pause = "Pause"
+play_tip = "Play or pause the video"
+index_sheet = "Index Sheet"
+index_sheet_tip = "All selected items"
+next_tip = "Next selected item (Right)"
+prev_tip = "Previous selected item (Left)"
+item_of = "{name}  ({i} of {n})"
+nothing_selected = "Nothing selected"
+starting = "Starting…"
+playback_failed = "Playback failed: {error}"

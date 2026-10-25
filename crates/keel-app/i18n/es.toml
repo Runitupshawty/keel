@@ -1811,3 +1811,44 @@ clear_tip = "Vaciar la zona de recogida"
 hide_tip = "Ocultar (Ctrl+Shift+Z)"
 chip_gone = "{folder}\n(ya no existe: se omitió al pegar)"
 chip_remove_tip = "Quitar de la zona de recogida"
+
+[jump]
+# Ctrl+P: el filtro de la lista y su pista (jump.rs).
+folders = "Carpetas"
+files = "Archivos"
+both = "Ambos"
+hint_folders = "Ir a carpeta"
+hint_files = "Buscar un archivo"
+hint_both = "Buscar una carpeta o archivo"
+
+[goto]
+# Ir a carpeta (goto.rs).
+title = "Ir a carpeta"
+hint_windows = "C:\\Users o ~\\Documents"
+hint_unix = "/usr/local o ~/Documents"
+path_name = "Ruta de la carpeta"
+more = "{n} más"
+help = "Tab completa · Enter va · Esc cierra"
+
+[quicklook]
+# Ventana de Vista previa (quicklook.rs).
+title = "Vista previa"
+close = "Cerrar"
+close_tip = "Cerrar (Space o Esc)"
+fullscreen = "Pantalla completa"
+fullscreen_tip = "Llenar la pantalla"
+exit_fullscreen = "Salir de pantalla completa"
+exit_fullscreen_tip = "Volver a una ventana flotante"
+open_with = "Abrir con…"
+open_with_tip = "Abrir con otra aplicación"
+play = "▶ Reproducir"
+pause = "Pausa"
+play_tip = "Reproducir o pausar el vídeo"
+index_sheet = "Hoja de índice"
+index_sheet_tip = "Todos los elementos seleccionados"
+next_tip = "Elemento seleccionado siguiente (Derecha)"
+prev_tip = "Elemento seleccionado anterior (Izquierda)"
+item_of = "{name}  ({i} de {n})"
+nothing_selected = "Nada seleccionado"
+starting = "Iniciando…"
+playback_failed = "Error de reproducción: {error}"
