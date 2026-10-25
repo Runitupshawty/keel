@@ -1248,6 +1248,57 @@ fn library_searcher_passes_within() {
 }
 
 #[test]
+fn within_respects_boundaries_and_literal_wildcards() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("root");
+    // A plain folder beside a same-prefix sibling, and a %/_ folder beside a lookalike a
+    // raw (unescaped) LIKE would also admit.
+    write(&root.join("docs/report.pdf"), "pdf");
+    write(&root.join("docs-old/report.pdf"), "pdf");
+    write(&root.join("a%b_c/report.pdf"), "pdf");
+    write(&root.join("axbxc/report.pdf"), "pdf");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "s").unwrap();
+    let src = lib
+        .source(&lib.add_source(folder("A", &root)).unwrap())
+        .unwrap();
+    walk(&src, &lib.router()).unwrap();
+
+    let paths = |q: LibraryQuery| {
+        let mut out: Vec<VPath> = lib
+            .search(&q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.path)
+            .collect();
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    };
+
+    // No boundary: all four match the text.
+    let all = paths(LibraryQuery::parse("report", 0).unwrap());
+    assert_eq!(all.len(), 4);
+
+    // `docs` keeps only its own file: the `docs-old` sibling stays out.
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(root.join("docs")));
+    assert_eq!(paths(q), vec![src.absolute("docs/report.pdf")]);
+
+    // `a%b_c` keeps its file, not the `axbxc` lookalike an unescaped %/_ LIKE would admit.
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(root.join("a%b_c")));
+    assert_eq!(paths(q), vec![src.absolute("a%b_c/report.pdf")]);
+
+    // Selecting the source root, or an ancestor of it, includes every descendant.
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(root.clone()));
+    assert_eq!(paths(q).len(), 4);
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(files.path()));
+    assert_eq!(paths(q).len(), 4);
+}
+
+#[test]
 fn common_word_filter_respects_word_starts() {
     use crate::index::tests::{fake, library_with};
     use crate::SourceKind;

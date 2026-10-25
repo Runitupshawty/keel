@@ -204,3 +204,30 @@ worker/search. Not verified in this sandbox: live backends
 Main-repo `.remember/remember.md` path unwritable in this sandbox; appended
 here instead.
 Ready to commit: `fix(search): page past a nonmatching first page when a post-cap filter is active`.
+
+## 06:38 | auto-loop — K07
+Verified scoped-search folder boundaries; behavior was already correct, so no code
+change. The path filter (`crates/keel-core/src/search.rs` `filters()`) is
+`r.path = ? OR r.path LIKE like_escape(rel) + "/%" ESCAPE '\'`, and `like_escape`
+escapes `\`/`%`/`_`; `search()` maps `within` to the whole source when the source
+root is at/under the selected folder (and skips a root neither under nor above it).
+
+Added 1 regression test `within_respects_boundaries_and_literal_wildcards`
+(`crates/keel-core/src/search_tests.rs`) covering all three requested cases in one
+fixture (4 files named `report.pdf` under `docs/`, `docs-old/`, `a%b_c/`,
+`axbxc/`), searched with `report`:
+- same-prefix sibling: `within=docs` → only `docs/report.pdf`, `docs-old` excluded
+  (the `/` in `like_escape(rel)+"/%"` is what stops `docs-old`).
+- literal wildcards: `within=a%b_c` → only `a%b_c/report.pdf`, the `axbxc`
+  lookalike excluded (an unescaped `%`/`_` LIKE would have admitted it).
+- source roots: `within=<source root>` and `within=<ancestor of root>` → all 4.
+
+Test passes (behavior already correct). fmt idempotent; clippy `-D warnings`
+clean; `cargo test -p keel-core` 303 passed / 3 failed / 17 ignored vs baseline
+302/3 (+1 = new test). The 3 failures are the pre-existing FSEvents/timing set
+(index watch ×2 "timed out", plan timing ×1), none in search. Not verified in this
+sandbox: live backends (EFU/FTS5/Everything/Spotlight) and the running GUI.
+
+Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here
+instead.
+Ready to commit: `test(search): cover within folder boundaries and literal %/_ names`.
