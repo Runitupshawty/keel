@@ -3463,6 +3463,79 @@ mod tests {
         assert!(state.tab(0).is_search());
     }
 
+    /// K09: a delayed reply for an older query (A) must not overwrite the results,
+    /// count, or error of the newer query (B) the tab has moved on to.
+    #[test]
+    fn a_stale_search_reply_never_overwrites_the_newer_query() {
+        let dir = VPath::local(std::env::temp_dir());
+        let mut state = AppState::new(
+            egui::Context::default(),
+            Arc::new(Router::new()),
+            dir.clone(),
+        );
+        state.run(0, Action::Search);
+        let hit = |name: &str| keel_search::Hit {
+            path: dir.join(name),
+            is_dir: false,
+            size: 1,
+            modified: None,
+            snippet: None,
+        };
+        let set_req = |s: &mut AppState, id: u64| {
+            if let TabKind::Search { req, .. } = &mut s.tab_mut(0).kind {
+                *req = id;
+            }
+        };
+        // The tab's newest query is B (req 10); its reply shows B's two hits.
+        let b_hits = vec![hit("b1.txt"), hit("b2.txt")];
+        let a_hits: Vec<_> = (0..5).map(|i| hit(&format!("a{i}.txt"))).collect();
+        set_req(&mut state, 10);
+        state.apply(Msg::Search {
+            id: 10,
+            result: Ok(b_hits),
+        });
+        assert_eq!(
+            state.tab_mut(0).visible(false).len(),
+            2,
+            "newest query B is shown"
+        );
+        assert!(state.tab(0).error.is_none());
+
+        // A's delayed reply (the older id) must not replace B's results or count.
+        state.apply(Msg::Search {
+            id: 9,
+            result: Ok(a_hits.clone()),
+        });
+        let tab = state.tab_mut(0);
+        assert_eq!(tab.visible(false).len(), 2, "stale reply keeps B's count");
+        assert!(
+            tab.entries()
+                .iter()
+                .all(|e| !e.path.name().starts_with('a')),
+            "stale hits leaked into the newer results"
+        );
+        assert!(tab.error.is_none());
+
+        // A newer failed query (C, req 11); a stale success must not clear its error.
+        set_req(&mut state, 11);
+        state.apply(Msg::Search {
+            id: 11,
+            result: Err(anyhow::anyhow!("query C failed")),
+        });
+        assert!(
+            state.tab(0).error.is_some(),
+            "newer query C's error is shown"
+        );
+        state.apply(Msg::Search {
+            id: 9,
+            result: Ok(a_hits),
+        });
+        assert!(
+            state.tab(0).error.is_some(),
+            "stale success kept the newer error"
+        );
+    }
+
     /// `<tmp>/demo.zip` holding `a.txt` and `dir/b.txt`.
     pub(crate) fn demo_zip(tmp: &std::path::Path) -> std::path::PathBuf {
         use std::io::Write;

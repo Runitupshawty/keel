@@ -267,3 +267,41 @@ Live backends (EFU/FTS5/Everything) and GUI remain untested here.
 
 Main-repo `.remember/remember.md` unwritable in this sandbox; appended here instead.
 Ready to commit: `fix(search): keep match options consistent across plain and library routes`.
+
+---
+
+## K09 — Discard stale search replies (verify)
+
+Conclusion: behavior already correct — no production change needed. Added one regression
+test.
+
+How stale replies are already discarded (all reuse the current request mechanism):
+- Global monotonic `next_req: u64` (State, starts 0; first real id is 1). Each new search
+  does `next_req += 1; req = mem::replace(tab.req, next_req)` so the tab's `req` is always
+  its newest id.
+- UI guard: `State::searched(id, result)` (state.rs) finds the tab by
+  `TabKind::Search { req, .. } if req == id`; a reply whose id != the tab's current `req`
+  is dropped before touching results/count/error. This is the real protection — it covers
+  a delayed reply even when the worker already sent it.
+- Worker guard: `SearchWorker.live` HashSet drops unrun superseded jobs (and cancels
+  paging via K06). Remote path: `remotes::search_gen` AtomicU64 cancels an in-flight scan.
+- `search_worker_skips_superseded_queries` proves a running-but-superseded query's reply is
+  still SENT (id 1 answered), so the UI `req == id` guard is what actually protects display.
+
+Gap found: no UI-side test that a stale `Msg::Search` (older id) is dropped. Folder listings
+have the parallel test ("An older answer (A -> B -> A) never replaces it"), search did not.
+
+Added: `state::tests::a_stale_search_reply_never_overwrites_the_newer_query` (state.rs, in
+mod tests after `search_tab_is_never_filled...`). Covers results, count, AND error: newer B
+shown, stale A (id 9 < req 10) does not replace B's hits/count; newer failed C (req 11) keeps
+its error when a stale success (id 9) arrives. Mutation check: relaxing the guard to `if true`
+fails the test (count 5 vs 2), proving it is not vacuous; restored.
+
+Verified: `cargo fmt --all -- --check` clean; `cargo clippy -p keel-app --all-targets -- -D
+warnings` clean; full `cargo test -p keel-app` = 757 passed / 22 failed / 35 ignored (baseline
+756/22/35; my test is the +1, the 22 are the unchanged pre-existing sandbox env failures:
+backend/single_instance/update/profiles/settings/mount_ui socket-bind). Only keel-app touched;
+other crates' suites not run. Live backends (EFU/FTS5/Everything) and GUI remain untested here.
+
+Main-repo `.remember/remember.md` unwritable in this sandbox; appended here instead.
+Ready to commit: `test(search): stale reply never overwrites the newer query`.
