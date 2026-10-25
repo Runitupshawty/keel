@@ -1,7 +1,7 @@
 use super::*;
 use crate::index::tests::{id_of, walk, write};
 use crate::library::tests::folder;
-use crate::library::Source;
+use crate::library::{OfflineReason, Source, SourceStatus};
 use std::sync::Arc;
 
 fn fixture() -> (tempfile::TempDir, tempfile::TempDir, Library, Arc<Source>) {
@@ -164,4 +164,47 @@ fn a_renamed_member_keeps_its_record_and_a_replacement_is_not_it() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].record, member);
     assert!(items[0].path.path.ends_with("sub/a2.txt"));
+}
+
+#[test]
+fn an_offline_source_keeps_its_members_until_they_are_removed() {
+    let (files, data, lib, src) = fixture();
+    let id = lib.create_collection("Picks").unwrap();
+    let (a, b) = (r(&src, "a.txt"), r(&src, "b.txt"));
+    lib.add_to_collection(id, &[a.clone(), b.clone()]).unwrap();
+    assert_eq!(names(&lib, id), ["a.txt", "b.txt"]);
+
+    // The root goes away (an unplugged drive): the walk stops, the source is offline,
+    // and its store keeps the last generation.
+    std::fs::rename(files.path(), data.path().join("unplugged")).unwrap();
+    walk(&src, &lib.router()).unwrap_err();
+    assert!(matches!(
+        *src.status.read(),
+        SourceStatus::Offline {
+            reason: OfflineReason::Unreachable,
+            ..
+        }
+    ));
+
+    // Reading the collection does not drop the offline source's membership.
+    assert_eq!(names(&lib, id), ["a.txt", "b.txt"]);
+    assert_eq!(
+        lib.collections().unwrap()[0].items,
+        2,
+        "reading does not delete membership"
+    );
+
+    // Explicit removal still works while the source is offline.
+    assert_eq!(
+        lib.remove_from_collection(id, std::slice::from_ref(&a))
+            .unwrap(),
+        1
+    );
+    assert_eq!(names(&lib, id), ["b.txt"]);
+
+    // Reconnected: the walk succeeds and the remaining member resolves again.
+    std::fs::rename(data.path().join("unplugged"), files.path()).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    assert!(matches!(*src.status.read(), SourceStatus::Online { .. }));
+    assert_eq!(names(&lib, id), ["b.txt"]);
 }
