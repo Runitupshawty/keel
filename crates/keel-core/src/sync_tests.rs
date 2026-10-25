@@ -24,6 +24,15 @@ fn device(id: &'static str, files: &[(&str, &str)]) -> Device {
     let src = lib
         .source(&lib.add_source(folder("F", dir.path())).unwrap())
         .unwrap();
+    // A parallel full-suite run can starve the first pass of the walk. The walk is a
+    // reconciling full re-scan (idempotent), so retry briefly to keep the fixture
+    // deterministic under load.
+    for _ in 0..20 {
+        if walk(&src, &lib.router()).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     walk(&src, &lib.router()).unwrap();
     Device {
         _files: dir,

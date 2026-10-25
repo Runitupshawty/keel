@@ -122,3 +122,46 @@ fn gone_records_leave_the_collection_and_the_rest_survive_reopening() {
     lib.delete_collection(id).unwrap();
     assert!(files.path().join("b.txt").exists());
 }
+
+#[test]
+fn a_renamed_member_keeps_its_record_and_a_replacement_is_not_it() {
+    let (files, _data, lib, src) = fixture();
+    let id = lib.create_collection("Picks").unwrap();
+    let member = r(&src, "a.txt");
+    lib.add_to_collection(id, std::slice::from_ref(&member))
+        .unwrap();
+
+    // Renamed within the source: the record keeps its id and the member follows it.
+    std::fs::rename(files.path().join("a.txt"), files.path().join("a2.txt")).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(
+        id_of(&src, "a2.txt"),
+        Some(member.id),
+        "rename keeps identity"
+    );
+    let items = lib.collection_items(id).unwrap();
+    assert_eq!(items.len(), 1, "still one member");
+    assert_eq!(items[0].record, member);
+    assert_eq!(names(&lib, id), ["a2.txt"]);
+
+    // An unrelated file takes the old path: a new record, not the member.
+    write(&files.path().join("a.txt"), "replacement");
+    walk(&src, &lib.router()).unwrap();
+    assert_ne!(
+        id_of(&src, "a.txt"),
+        Some(member.id),
+        "replacement is a new record"
+    );
+    let items = lib.collection_items(id).unwrap();
+    assert_eq!(items.len(), 1, "the replacement did not join");
+    assert_eq!(items[0].record, member);
+    assert_eq!(names(&lib, id), ["a2.txt"]);
+
+    // Moved into a subfolder: the member follows, still once.
+    std::fs::rename(files.path().join("a2.txt"), files.path().join("sub/a2.txt")).unwrap();
+    walk(&src, &lib.router()).unwrap();
+    let items = lib.collection_items(id).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].record, member);
+    assert!(items[0].path.path.ends_with("sub/a2.txt"));
+}
