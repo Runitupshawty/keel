@@ -30,6 +30,10 @@ impl Searcher for Spotlight {
             command.arg("kMDItemContentTypeTree == \"public.folder\"");
         } else if query.folders_only {
             command.arg("-name").arg(&text);
+        } else if text.is_empty() {
+            // An empty backend text (an operator-only search) is the whole page: mdfind
+            // needs a query, and `!= ""` matches every indexed item.
+            command.arg("kMDItemPath != \"\"");
         } else {
             command.arg(&text);
         }

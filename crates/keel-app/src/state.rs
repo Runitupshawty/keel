@@ -1227,7 +1227,9 @@ impl AppState {
             target,
             crate::search_tab::match_toggles(*toggles),
         );
-        if applied.text.is_empty() && tab.filelist.is_none() {
+        // An empty backend text still searches when a refine re-evaluates it (an
+        // operator-only query: the backend's all-candidates page, not a cleared box).
+        if applied.text.is_empty() && applied.refine.is_none() && tab.filelist.is_none() {
             tab.set_listing(Listing::new(Vec::new()));
             tab.loading = false;
             tab.highlight = None;

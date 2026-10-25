@@ -37,3 +37,35 @@ backend narrowing keeps every hit the full query matches). fmt + clippy clean;
 known sandbox failures (single_instance socket-bind, update network GET,
 backend daemon, profiles/settings config dir), unchanged from the 747/22/35
 baseline. Ready to commit: `test(search): pin quoted phrases in backend terms`.
+
+## 2026-10-25 — K02: operator-only searches use the all-candidates route (branch: auto-loop)
+Fixed: `ext:pdf` / `size:>1mb` (operators only, no plain backend term) were sent to the
+System backend as a literal string — a silent revert to literal search. `split_full_language`
+in `crates/keel-app/src/search_filters.rs` drops the `!terms.is_empty()` guard, so an
+operator-only query now routes like one that also has a name term: the backend's
+all-candidates page (empty backend text) re-evaluated with the full query (`refine`),
+mirroring the Library backend (`library.rs` already sends `backend_terms` — possibly empty —
+then refines). Prerequisite fixed in `crates/keel-app/src/state.rs`: the empty-text
+short-circuit now also requires `applied.refine.is_none()`, so the all-candidates route is
+not swallowed as a cleared search box. The local Plain backends now return a real
+all-candidates page for empty text: `spotlight.rs` uses `kMDItemPath != ""` (mdfind needs a
+query) and `locate.rs` uses `--regex .*` (an empty pattern matches nothing). Cancellation and
+caps are preserved: the route reuses the same `Searcher::query` + worker `refine`, so the
+`live` request set and the `q.max` page cap apply unchanged.
+Added regression test `search_filters::tests::operator_only_uses_all_candidates_and_refine`
+(operator-only on KeelIndex and Plain → empty backend text + `refine = Some(full)`, never the
+literal operator text; regex mode and the Everything target unchanged) and updated the now-
+stale `full_language_on_keel_index_splits_into_backend_terms_and_refine` assertion.
+fmt + clippy clean (keel-app, keel-search). `cargo test -p keel-app` 749 passed / 22 failed /
+35 ignored — the 22 are the known sandbox socket/network failures (backend daemon,
+single_instance socket-bind, update network GET, profiles/settings config dir, mount_ui),
+unchanged from the 748/22/35 baseline; the +1 is the new test. `cargo test -p keel-search`
+117 passed / 5 failed / 1 ignored — the 5 are walkindex FSEvents timing failures, reproduced
+on clean HEAD (temporarily reverted spotlight/locate and re-ran them).
+Not verified in this sandbox: the mdfind/locate match-all against a live fully-indexed
+Spotlight/locate DB (sandbox Spotlight index is slow/sparse; locate DB is empty), and the
+running GUI. Known limitation: remote (Plain) operator-only queries return the capped
+all-candidates page without applying `refine` — a pre-existing gap (remote never refines, even
+for queries that also have a name term; remotes.rs not touched, out of scope here).
+Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here instead.
+Ready to commit: `fix(search): route operator-only queries through the all-candidates path`.

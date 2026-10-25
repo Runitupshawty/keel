@@ -247,8 +247,8 @@ pub fn apply(
 }
 
 /// `KeelIndex` and `Plain` (without regex mode): when `text` needs the full query
-/// language and still has plain terms, send only the terms and refine with all of
-/// `text`; anything else is unchanged.
+/// language, send the plain terms (none, when operator-only: the backend's
+/// all-candidates page) and refine with all of `text`; anything else is unchanged.
 fn split_full_language(
     target: Target,
     matching: MatchToggles,
@@ -258,10 +258,10 @@ fn split_full_language(
         && !matching.regex
         && crate::query_filter::needs_full_language(text)
     {
-        let terms = crate::query_filter::backend_terms(text);
-        if !terms.is_empty() {
-            return (terms, Some(text.to_owned()));
-        }
+        return (
+            crate::query_filter::backend_terms(text),
+            Some(text.to_owned()),
+        );
     }
     (text.to_owned(), None)
 }
@@ -390,14 +390,11 @@ mod tests {
         assert_eq!(p.text, "report");
         assert_eq!(p.refine.as_deref(), Some("report ext:pdf"));
 
-        // Unchanged: plain words, regex mode, or no plain terms left (functions only).
+        // Unchanged: plain words and regex mode. (Operator-only now uses the all-candidates
+        // route; see operator_only_uses_all_candidates_and_refine.)
         assert_eq!(
             apply("report", "Everything", &[], Target::KeelIndex, none()),
             "report".into()
-        );
-        assert_eq!(
-            apply("ext:pdf", "Everything", &[], Target::KeelIndex, none()),
-            "ext:pdf".into()
         );
         let rx = apply(
             "^rep",
@@ -421,6 +418,58 @@ mod tests {
         let l = apply("report ext:pdf", "Audio", &[], Target::Library, none());
         assert_eq!(l.refine, None);
         assert!(l.text.starts_with("report ext:pdf kind:audio"));
+    }
+
+    #[test]
+    fn operator_only_uses_all_candidates_and_refine() {
+        // Regression: a query with no plain backend term (operators only) must not be
+        // searched literally. Route it like a query that also has a name term: the
+        // backend's all-candidates page (empty text), re-evaluated with the full query.
+        for target in [Target::KeelIndex, Target::Plain] {
+            for q in ["ext:pdf", "size:>1mb"] {
+                let a = apply(q, "Everything", &[], target, none());
+                assert_eq!(
+                    a.text, "",
+                    "{q} on {target:?}: empty backend text (all candidates)"
+                );
+                assert_eq!(
+                    a.refine.as_deref(),
+                    Some(q),
+                    "{q} on {target:?}: re-evaluate the full query"
+                );
+                assert_ne!(
+                    a.text, q,
+                    "{q} on {target:?}: never the literal operator text"
+                );
+            }
+        }
+
+        // Same route as a query that also has a name term: refine is the full query.
+        let op = apply("ext:pdf", "Everything", &[], Target::KeelIndex, none());
+        let named = apply(
+            "report ext:pdf",
+            "Everything",
+            &[],
+            Target::KeelIndex,
+            none(),
+        );
+        assert_eq!(op.refine.as_deref(), Some("ext:pdf"));
+        assert_eq!(named.refine.as_deref(), Some("report ext:pdf"));
+
+        // Regex mode and the Everything target are unchanged (Everything reads `ext:`).
+        let rx = apply(
+            "ext:pdf",
+            "Everything",
+            &[],
+            Target::KeelIndex,
+            MatchToggles {
+                regex: true,
+                ..none()
+            },
+        );
+        assert_eq!((rx.text.as_str(), rx.refine), ("ext:pdf", None));
+        let e = apply("ext:pdf", "Everything", &[], Target::Everything, none());
+        assert_eq!((e.text.as_str(), e.refine), ("ext:pdf", None));
     }
 
     #[test]
