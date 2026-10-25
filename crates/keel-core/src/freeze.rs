@@ -5,7 +5,7 @@
 use crate::library::{Library, SourceId};
 use crate::LibraryHit;
 use anyhow::{Context, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
@@ -133,14 +133,16 @@ impl Library {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Name or path search inside freeze `id` (`query` a case-insensitive substring):
-    /// only the `AT` rows, so it returns the names as the freeze holds them. At most
-    /// `max` hits, folders first, by name.
+    /// Name or path search inside freeze `id` (`query` a case-insensitive substring),
+    /// scoped to `folder` (a source-relative path like `list_frozen`'s `rel`; empty is
+    /// the whole source): only the `AT` rows, so it returns the names as the freeze
+    /// holds them. At most `max` hits, folders first, by name, then path.
     pub fn search_frozen(
         &self,
         source: &SourceId,
         id: i64,
         query: &str,
+        folder: &str,
         max: usize,
     ) -> Result<Vec<LibraryHit>> {
         let src = self
@@ -155,14 +157,28 @@ impl Library {
             return Ok(Vec::new());
         }
         let pattern = format!("%{}%", crate::search::like_escape(query));
+        // `AT` binds ?1, so the outer placeholders number from ?2 (positional args).
+        let (scope, limit_n) = if folder.is_empty() {
+            ("", 3)
+        } else {
+            // The folder itself and its contents; escaped so a `_` or `%` in the name is
+            // literal, and the trailing slash keeps same-prefix siblings (docs2) out.
+            (" AND (r.path = ?3 OR r.path LIKE ?4 ESCAPE '\\')", 5)
+        };
+        let mut args: Vec<Value> = vec![Value::Integer(id), Value::Text(pattern)];
+        if !folder.is_empty() {
+            args.push(Value::Text(folder.to_string()));
+            args.push(Value::Text(crate::search::like_escape(folder) + "/%"));
+        }
+        args.push(Value::Integer(max as i64));
         let mut stmt = c.prepare(&format!(
             "SELECT {} FROM {AT} r
-             WHERE r.name LIKE ?2 ESCAPE '\\' OR r.path LIKE ?2 ESCAPE '\\'
-             ORDER BY r.kind = 1 DESC, r.name COLLATE NOCASE
-             LIMIT ?3",
+             WHERE (r.name LIKE ?2 OR r.path LIKE ?2 ESCAPE '\\'){scope}
+             ORDER BY r.kind = 1 DESC, r.name COLLATE NOCASE, r.path COLLATE NOCASE
+             LIMIT ?{limit_n}",
             crate::search::HIT_COLUMNS
         ))?;
-        let rows = stmt.query_map(params![id, pattern, max as i64], |r| {
+        let rows = stmt.query_map(params_from_iter(args), |r| {
             crate::search::hit_of(&src, r, 0.0)
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -238,7 +254,7 @@ mod tests {
         assert!(lib.list_frozen(&id, one.id, "nope").is_err());
         assert!(lib.list_frozen(&id, 99, "").is_err());
 
-        let find = |f: i64, q: &str| names(lib.search_frozen(&id, f, q, 100).unwrap());
+        let find = |f: i64, q: &str| names(lib.search_frozen(&id, f, q, "", 100).unwrap());
         assert_eq!(
             find(one.id, "f0"),
             ["f0.txt"],
@@ -258,12 +274,12 @@ mod tests {
             "empty query: no hits"
         );
         assert_eq!(
-            lib.search_frozen(&id, two.id, "f", 2).unwrap().len(),
+            lib.search_frozen(&id, two.id, "f", "", 2).unwrap().len(),
             2,
             "max bounds the hits"
         );
         assert!(
-            lib.search_frozen(&id, 99, "a", 1).is_err(),
+            lib.search_frozen(&id, 99, "a", "", 1).is_err(),
             "unknown freeze id errors"
         );
 
@@ -283,5 +299,76 @@ mod tests {
         );
         assert!(lib.delete_freeze(&id, one.id).is_err());
         assert_eq!(frozen(two.id, ""), ["docs", "a.txt", "new.txt"]);
+    }
+
+    /// A scoped freeze search stays inside `folder`: same-prefix siblings and `_`/`%`
+    /// in the folder name stay out, the folder itself is in, and a deep match is found
+    /// past unrelated rows (scope before limit, ties ordered by path).
+    #[test]
+    fn search_frozen_scopes_to_a_folder() {
+        let data = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let root = files.path().join("drive");
+        for dir in [
+            "docs", "docs/a", "docs/b", "docs/sub", "docs2", "my_docs", "myXdocs", "100%", "100x",
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for p in [
+            "docs/notes.txt",
+            "docs/a/notes.txt",
+            "docs/b/notes.txt",
+            "docs/sub/deep.txt",
+            "docs2/notes.txt",
+            "my_docs/notes.txt",
+            "myXdocs/notes.txt",
+            "100%/notes.txt",
+            "100x/notes.txt",
+        ] {
+            fs::write(root.join(p), "x").unwrap();
+        }
+        for i in 0..5 {
+            fs::write(root.join(format!("zz{i}.txt")), "x").unwrap();
+        }
+        let lib = Library::open(data.path(), "f").unwrap();
+        let id = lib.add_source(folder("d", &root)).unwrap();
+        let src = lib.source(&id).unwrap();
+        crate::index::tests::walk(&src, &lib.router()).unwrap();
+        let freeze = lib.freeze(&id).unwrap();
+        let root_path = src.def.root.path.clone();
+        let find = |q: &str, scope: &str, max: usize| {
+            lib.search_frozen(&id, freeze.id, q, scope, max)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.path.path.strip_prefix(&root_path).unwrap()[1..].to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            find("notes", "docs", 100),
+            ["docs/a/notes.txt", "docs/b/notes.txt", "docs/notes.txt"],
+            "same-prefix sibling docs2 stays out; name ties order by path"
+        );
+        assert_eq!(
+            find("notes", "my_docs", 100),
+            ["my_docs/notes.txt"],
+            "_ in the folder name is literal, not a wildcard"
+        );
+        assert_eq!(
+            find("notes", "100%", 100),
+            ["100%/notes.txt"],
+            "% in the folder name is literal, not a wildcard"
+        );
+        assert_eq!(
+            find("deep", "docs", 1),
+            ["docs/sub/deep.txt"],
+            "a matching descendant is found past unrelated rows, scope before limit"
+        );
+        assert_eq!(find("zz", "docs", 100), Vec::<String>::new());
+        assert_eq!(find("notes", "nope", 100), Vec::<String>::new());
+        assert_eq!(
+            find("my_docs", "my_docs", 100),
+            ["my_docs", "my_docs/notes.txt"],
+            "the scope includes the folder itself, folders first"
+        );
     }
 }
