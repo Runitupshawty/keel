@@ -76,6 +76,8 @@ pub struct FiltersEditor {
 pub struct Published {
     /// Every filter name for the combo.
     pub filters: Vec<String>,
+    /// The profile's filters (name → search), for the search box's macro validation.
+    pub filter_defs: Vec<CustomFilter>,
     /// Earlier searches in the chosen order.
     pub history: Vec<String>,
     /// Always show suggestions.
@@ -252,6 +254,7 @@ impl Find {
         let order = settings.search_history.order;
         let fresh = Published {
             filters: crate::search_filters::names(&settings.filters),
+            filter_defs: settings.filters.clone(),
             history: (self.history.history.ordered(order).into_iter())
                 .map(|e| e.text.clone())
                 .collect(),

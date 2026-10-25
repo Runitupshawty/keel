@@ -1653,7 +1653,10 @@ pub(crate) fn entry_of(h: LibraryHit) -> Entry {
 
 /// The search tab's Library backend: `LibrarySearcher` (or the daemon's `search`), plus
 /// the sidebar's Favorites and Recents queries.
-pub struct LibSearch(pub LibraryBackend);
+pub struct LibSearch(
+    pub LibraryBackend,
+    pub Vec<crate::search_filters::CustomFilter>,
+);
 
 impl Searcher for LibSearch {
     /// A pane's folder (`within`) keeps the hits under it. The plain library search
@@ -1666,9 +1669,12 @@ impl Searcher for LibSearch {
         // the library narrows by the plain words, then every hit is re-checked against the
         // full query.
         let text = q.text.trim();
-        let backend = (crate::query_filter::needs_full_language(text)
+        // The profile's filter macros, so a filter name typed as a query macro
+        // (`docs:`) routes and refines like its expanded text.
+        let opts = crate::query_check::options_with_macros(&crate::query_check::macro_map(&self.1));
+        let backend = (crate::query_filter::needs_full_language(text, &opts)
             && !crate::query_filter::library_only(text))
-        .then(|| crate::query_filter::backend_terms(text));
+        .then(|| crate::query_filter::backend_terms(text, &opts));
         let mut hits = if let Some(backend) = &backend {
             let mut narrowed = q.clone();
             narrowed.text = backend.clone();
@@ -1677,7 +1683,7 @@ impl Searcher for LibSearch {
             self.search(q)?
         };
         if backend.is_some() {
-            hits = crate::query_filter::refine(hits, text, &keel_query::Options::default())
+            hits = crate::query_filter::refine(hits, text, &opts)
                 .map_err(|e| anyhow::anyhow!(e.message))?;
         }
         Ok(hits)

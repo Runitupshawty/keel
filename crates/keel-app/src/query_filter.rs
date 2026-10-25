@@ -81,9 +81,8 @@ pub fn refine(
 /// `true` when `text` needs the full query engine rather than the simple
 /// word/glob matcher: `Or` or `Not`, a comparison operator, or any function
 /// other than `regex`, `folder` or `in`. Parse errors are `false`.
-#[allow(dead_code)] // pending search-box wiring
-pub fn needs_full_language(text: &str) -> bool {
-    match keel_query::parse_ast(text, &keel_query::Options::default()) {
+pub fn needs_full_language(text: &str, opts: &keel_query::Options) -> bool {
+    match keel_query::parse_ast(text, opts) {
         Ok(ast) => expr_needs_full(&ast.expr),
         Err(_) => false,
     }
@@ -106,9 +105,8 @@ fn expr_needs_full(expr: &Expr) -> bool {
 /// The plain top-level words a backend can still use to narrow by name: the
 /// top-level `And`/`Term` items with no function and no comparison operator,
 /// joined by spaces. Parse errors give an empty string.
-#[allow(dead_code)] // pending search-box wiring
-pub fn backend_terms(text: &str) -> String {
-    match keel_query::parse_ast(text, &keel_query::Options::default()) {
+pub fn backend_terms(text: &str, opts: &keel_query::Options) -> String {
+    match keel_query::parse_ast(text, opts) {
         Ok(ast) => {
             let mut out = Vec::new();
             top_level_terms(&ast.expr, &mut out);
@@ -226,37 +224,48 @@ mod tests {
 
     #[test]
     fn plain_words_and_globs_stay_simple() {
-        assert!(!needs_full_language("report"));
-        assert!(!needs_full_language("report.pdf"));
-        assert!(!needs_full_language("*.pdf"));
-        assert!(!needs_full_language("photo_2024*"));
-        assert!(!needs_full_language("in:Documents"));
-        assert!(!needs_full_language("regex:^photo"));
-        assert!(!needs_full_language("folder:"));
-        assert!(!needs_full_language("zzz:nope"));
+        let d = &keel_query::Options::default();
+        assert!(!needs_full_language("report", d));
+        assert!(!needs_full_language("report.pdf", d));
+        assert!(!needs_full_language("*.pdf", d));
+        assert!(!needs_full_language("photo_2024*", d));
+        assert!(!needs_full_language("in:Documents", d));
+        assert!(!needs_full_language("regex:^photo", d));
+        assert!(!needs_full_language("folder:", d));
+        assert!(!needs_full_language("zzz:nope", d));
     }
 
     #[test]
     fn ext_size_not_and_or_need_full_language() {
-        assert!(needs_full_language("ext:pdf"));
-        assert!(needs_full_language("size:>=1mb"));
-        assert!(needs_full_language("name:report"));
-        assert!(needs_full_language("!pdf"));
-        assert!(needs_full_language("pdf | jpg"));
+        let d = &keel_query::Options::default();
+        assert!(needs_full_language("ext:pdf", d));
+        assert!(needs_full_language("size:>=1mb", d));
+        assert!(needs_full_language("name:report", d));
+        assert!(needs_full_language("!pdf", d));
+        assert!(needs_full_language("pdf | jpg", d));
     }
 
     #[test]
     fn backend_terms_drop_functions_and_operators() {
-        assert_eq!(backend_terms("report ext:pdf size:>1mb"), "report");
+        assert_eq!(
+            backend_terms("report ext:pdf size:>1mb", &keel_query::Options::default()),
+            "report"
+        );
     }
 
     #[test]
     fn backend_terms_keeps_quoted_phrases_contiguous() {
         // A quoted phrase stays one contiguous phrase in the backend text, never a
         // mangled bag of words: the backend narrowing must keep every phrase hit.
-        assert_eq!(backend_terms("\"two word\""), "two word");
         assert_eq!(
-            backend_terms("report \"two word\" ext:pdf"),
+            backend_terms("\"two word\"", &keel_query::Options::default()),
+            "two word"
+        );
+        assert_eq!(
+            backend_terms(
+                "report \"two word\" ext:pdf",
+                &keel_query::Options::default(),
+            ),
             "report two word"
         );
 
@@ -270,7 +279,7 @@ mod tests {
         let text = "\"two word\" ext:pdf";
         let narrowed = refine(
             hits.clone(),
-            &backend_terms(text),
+            &backend_terms(text, &keel_query::Options::default()),
             &keel_query::Options::default(),
         )
         .unwrap();
@@ -334,7 +343,7 @@ mod tests {
         ];
 
         for (text, pushed, valid) in cases {
-            let got = backend_terms(text);
+            let got = backend_terms(text, &keel_query::Options::default());
             assert_eq!(&got, pushed, "{text}: backend pushed only guaranteed terms");
 
             let full = refine(hits.clone(), text, &keel_query::Options::default()).unwrap();
@@ -356,6 +365,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A custom filter's name as a query macro (`docs:`) routes and refines like its
+    /// expanded text; the macro name matches case-insensitively, and without the macro
+    /// options the name is unknown.
+    #[test]
+    fn custom_macro_routes_and_refines_case_insensitively() {
+        let macros = crate::query_check::macro_map(&[crate::search_filters::CustomFilter {
+            name: "Docs".into(),
+            search: "ext:pdf".into(),
+            matching: Default::default(),
+        }]);
+        let opts = crate::query_check::options_with_macros(&macros);
+        // Routing: the expanded text needs the full language; the plain terms go to the
+        // backend. Mixed-case names behave identically.
+        assert!(needs_full_language("docs:report", &opts));
+        assert_eq!(backend_terms("docs:report", &opts), "report");
+        assert_eq!(backend_terms("Docs:report", &opts), "report");
+        assert!(!needs_full_language("nope:report", &opts));
+
+        // Refine: the macro expands to its filter's search, in either case.
+        let hits = vec![
+            file_hit("/a/report.pdf", 1_000, 1_700_000_000),
+            file_hit("/b/report.docx", 1_000, 1_700_000_000),
+        ];
+        for text in ["docs:report", "Docs:report"] {
+            let kept = refine(hits.clone(), text, &opts).unwrap();
+            assert_eq!(
+                kept.iter().map(|h| h.path.name()).collect::<Vec<_>>(),
+                ["report.pdf"],
+                "{text}: the macro expands to its filter's search"
+            );
+        }
+        // Without the macro options the name is an unknown function: refine errors.
+        assert!(refine(hits.clone(), "docs:report", &keel_query::Options::default()).is_err());
     }
 
     #[test]

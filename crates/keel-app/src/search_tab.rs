@@ -497,17 +497,22 @@ pub fn bar(
         if !query.is_empty() && checks_syntax(name, tab.library_search, list.is_some()) {
             let cache_id = id.with("query_problem");
             let problem = ui.ctx().data_mut(|d| {
-                let cache =
-                    d.get_temp_mut_or_default::<(String, Toggles, Option<String>)>(cache_id);
-                if cache.0 != *query || cache.1 != *toggles {
+                let cache = d.get_temp_mut_or_default::<(
+                    String,
+                    Toggles,
+                    Vec<crate::search_filters::CustomFilter>,
+                    Option<String>,
+                )>(cache_id);
+                if cache.0 != *query || cache.1 != *toggles || cache.2 != shared.filter_defs {
                     cache.0 = query.clone();
                     cache.1 = *toggles;
-                    cache.2 = crate::query_check::problem_with(
+                    cache.2 = shared.filter_defs.clone();
+                    cache.3 = crate::query_check::problem_with(
                         query,
-                        &crate::query_check::options(*toggles),
+                        &crate::query_check::options_with_filters(*toggles, &shared.filter_defs),
                     );
                 }
-                cache.2.clone()
+                cache.3.clone()
             });
             if let Some(p) = problem {
                 ui.colored_label(ui.visuals().warn_fg_color, &p)

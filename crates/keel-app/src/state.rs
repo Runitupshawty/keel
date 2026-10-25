@@ -1189,7 +1189,10 @@ impl AppState {
         let library = (tab.library_search)
             .then(|| self.library.backend.clone())
             .flatten()
-            .map(|b| Arc::new(crate::library::LibSearch(b)) as Arc<dyn Searcher>);
+            .map(|b| {
+                Arc::new(crate::library::LibSearch(b, self.settings.filters.clone()))
+                    as Arc<dyn Searcher>
+            });
         // Task 77: a file list tab searches the list's entries (an empty query lists them all).
         let filelist = (tab.filelist.clone()).map(|s| s as Arc<dyn Searcher>);
         let searcher = match self.searcher.clone() {

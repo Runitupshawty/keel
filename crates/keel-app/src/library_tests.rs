@@ -92,7 +92,7 @@ fn summary(label: &str, status: SourceStatus) -> SourceSummary {
 fn library_search_keeps_to_a_pane_folder() {
     let (tmp, lib, _) = fixture("within", false);
     let search = |within: Option<PathBuf>| {
-        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
             .query(&Query {
                 text: "ext:txt".into(),
                 within,
@@ -134,7 +134,7 @@ fn lib_search_finds_hits_deep_in_a_folder() {
     let job = lib.index(&id).unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
 
-    let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+    let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
         .query(&Query {
             text: "ext:txt".into(),
             max: 3,
@@ -152,7 +152,7 @@ fn lib_search_finds_hits_deep_in_a_folder() {
 fn library_search_refines_operator_queries() {
     let (_tmp, lib, _) = fixture("refine", false);
     let search = |text: &str| {
-        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
             .query(&Query {
                 text: text.into(),
                 ..Query::default()
@@ -358,7 +358,7 @@ fn tags_and_favorites_round_trip_through_the_ui_model() {
     // Ctrl+D toggles the favorite star; Favorites lists it.
     s.run(0, Action::Library(LibCmd::ToggleFavorite));
     settle(&mut s, "favorite", true, FAVORITES);
-    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()))
+    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
         .query(&Query {
             text: FAVORITES_QUERY.into(),
             max: 10,

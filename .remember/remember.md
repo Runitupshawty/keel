@@ -94,3 +94,39 @@ the new test.
 Not verified in this sandbox: live EFU/FTS5/Everything and the running GUI (unchanged from K01/K02).
 Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here instead.
 Ready to commit: `test(search): pin OR/NOT/grouped terms keep all valid hits`.
+
+## 2026-10-25 — keel-app K04: custom filter macros end to end (branch: auto-loop)
+Traced `options_with_filters` through syntax validation, backend selection, and
+refinement; it was dead code — every parse used macro-free options, so a custom filter's
+name typed as a query macro (`docs:`) was an "unknown function" error in the box, never
+split for backend selection, and never expanded in `refine`.
+Fix: `query_check::macro_map` (lowercased name → search) + `options_with_macros` (default
+options, macros only — refinement keeps its existing toggle-free options).
+- Validation: `search_tab::bar` now checks with `options_with_filters(*toggles,
+  &shared.filter_defs)`; `bookmarks::Published` carries `filter_defs` and the problem
+  cache key includes them.
+- Backend selection: `needs_full_language`/`backend_terms` take `&Options`;
+  `split_full_language` builds them via `options_with_filters(toggles_of(matching), custom)`,
+  so `docs:report` routes like `ext:pdf doc:all report` (plain terms to the backend, full
+  query as refine).
+- Refinement: `Applied.refine_macros` travels to the worker (`refine` uses
+  `options_with_macros(&applied.refine_macros)`); `LibSearch` gains the profile filters
+  (constructor + `state.rs` + 4 test sites) and its narrow/refine path uses the same
+  options.
+- Mixed-case: the parser already matches `name:` case-insensitively
+  (`parse.rs` `eq_ignore_ascii_case`); names are stored lowercased, so `Docs:x` ≡ `docs:x`.
+- Unknown macro (`nope:x`): parse error → `problem_with` reports it; no split (unchanged
+  route).
+Tests: `search_filters::tests::custom_filter_name_as_query_macro_routes_with_macros`
+(split + refine_macros, mixed-case, unknown), `query_filter::tests::custom_macro_routes_and_refines_case_insensitively`
+(routing + refine expansion + error without macros), mixed-case assertion added to
+`query_check::tests::custom_filters_are_query_macros`.
+fmt + clippy clean (keel-app); `cargo test -p keel-app` 752 passed / 22 failed / 35 ignored —
+the 22 are the known sandbox socket/network failures (backend daemon, single_instance
+socket-bind, update network GET, profiles/settings config dir, mount_ui), unchanged from the
+750/22/35 baseline; the +2 are the new tests. One transient worker-timing flake
+(`search_worker_skips_superseded_queries`) in the first full run passed on rerun and in
+isolation (test uses `Default::default()` applied, refine=None — unaffected by this change).
+Not verified in this sandbox: live EFU/FTS5/Everything, mdfind/locate, running GUI.
+Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here instead.
+Ready to commit: `fix(search): carry custom filter macros into validation, routing and refine`.

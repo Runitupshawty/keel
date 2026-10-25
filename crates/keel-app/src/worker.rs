@@ -305,7 +305,7 @@ impl SearchWorker {
                         Some(text) => crate::query_filter::refine(
                             hits,
                             &text,
-                            &keel_query::Options::default(),
+                            &crate::query_check::options_with_macros(&applied.refine_macros),
                         )
                         .map_err(|e| anyhow::anyhow!(e.message)),
                         None => Ok(hits),

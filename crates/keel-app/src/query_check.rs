@@ -12,7 +12,17 @@ pub fn options(t: crate::search_tab::Toggles) -> keel_query::Options {
     }
 }
 
-#[allow(dead_code)] // pub API for the search box; not yet called outside tests
+/// Macro name → search text for the profile's filters (names lowercased; the parser
+/// matches `name:` case-insensitively, so mixed-case queries hit them).
+pub fn macro_map(
+    filters: &[crate::search_filters::CustomFilter],
+) -> std::collections::BTreeMap<String, String> {
+    filters
+        .iter()
+        .map(|f| (f.name.to_lowercase(), f.search.clone()))
+        .collect()
+}
+
 /// Map toggles and custom filters onto keel-query options, filling `macros`
 /// from each filter's lowercased name → search.
 pub fn options_with_filters(
@@ -20,11 +30,19 @@ pub fn options_with_filters(
     filters: &[crate::search_filters::CustomFilter],
 ) -> keel_query::Options {
     let mut o = options(t);
-    o.macros = filters
-        .iter()
-        .map(|f| (f.name.to_lowercase(), f.search.clone()))
-        .collect();
+    o.macros = macro_map(filters);
     o
+}
+
+/// Default options with only `macros` filled: backend selection and refinement keep
+/// their existing (toggle-free) options and gain the profile's filter macros.
+pub fn options_with_macros(
+    macros: &std::collections::BTreeMap<String, String>,
+) -> keel_query::Options {
+    keel_query::Options {
+        macros: macros.clone(),
+        ..keel_query::Options::default()
+    }
 }
 
 /// The problem with `text` as a search query, if the parser rejects it.
@@ -128,6 +146,8 @@ mod tests {
         };
         let with = options_with_filters(t, std::slice::from_ref(&filter));
         assert!(problem_with("docs:x", &with).is_none());
+        // Mixed-case names validate identically (the parser matches `name:` case-insensitively).
+        assert!(problem_with("Docs:x", &with).is_none());
 
         let without = options(t);
         let err = keel_query::parse("docs:x", &without).unwrap_err();

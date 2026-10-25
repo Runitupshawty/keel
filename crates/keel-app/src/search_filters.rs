@@ -152,6 +152,8 @@ pub struct Applied {
     pub keep: Option<Vec<String>>,
     /// A second Keel query re-evaluated over the kept hits; None leaves them as found.
     pub refine: Option<String>,
+    /// The profile's filter macros `refine` is evaluated under (name → search).
+    pub refine_macros: std::collections::BTreeMap<String, String>,
 }
 
 /// Tests: a plain search with no filter.
@@ -193,7 +195,10 @@ pub fn apply(
     let text = text.trim();
     // The Keel index and plain backends cannot read the full query language: send only
     // the plain terms and re-evaluate the full query over the kept hits.
-    let (text, refine) = split_full_language(target, matching, text);
+    let (text, refine) = split_full_language(target, matching, text, custom);
+    // The profile's filter macros, so a name typed as a query macro (`docs:`) is
+    // expanded for backend selection and by the refine evaluation.
+    let refine_macros = crate::query_check::macro_map(custom);
     let join = |a: &str, b: &str| match (a.trim(), b.trim()) {
         ("", b) => b.to_owned(),
         (a, "") => a.to_owned(),
@@ -204,6 +209,7 @@ pub fn apply(
             text: join(&c.search, &text),
             matching: matching.or(c.matching),
             refine,
+            refine_macros,
             ..Applied::default()
         };
     }
@@ -212,6 +218,7 @@ pub fn apply(
             text,
             matching,
             refine,
+            refine_macros,
             ..Applied::default()
         };
     };
@@ -219,6 +226,8 @@ pub fn apply(
         return Applied {
             text: join(&text, &b.library_term()),
             matching,
+            refine,
+            refine_macros,
             ..Applied::default()
         };
     }
@@ -243,6 +252,7 @@ pub fn apply(
         matching,
         keep: Some(exts.iter().map(|e| (*e).to_owned()).collect()),
         refine,
+        refine_macros,
     }
 }
 
@@ -253,13 +263,18 @@ fn split_full_language(
     target: Target,
     matching: MatchToggles,
     text: &str,
+    custom: &[CustomFilter],
 ) -> (String, Option<String>) {
+    // The same macro options the search box validates with, so a filter name typed
+    // as a query macro routes like its expanded text.
+    let opts =
+        crate::query_check::options_with_filters(crate::search_tab::toggles_of(matching), custom);
     if (target == Target::KeelIndex || target == Target::Plain)
         && !matching.regex
-        && crate::query_filter::needs_full_language(text)
+        && crate::query_filter::needs_full_language(text, &opts)
     {
         return (
-            crate::query_filter::backend_terms(text),
+            crate::query_filter::backend_terms(text, &opts),
             Some(text.to_owned()),
         );
     }
@@ -530,6 +545,43 @@ mod tests {
             ..mine
         };
         assert!(check(&f, &[]).is_err());
+    }
+
+    /// A custom filter's name typed as a query macro (`docs:`) routes through the same
+    /// macro options end to end: the backend gets only the plain terms, refine keeps the
+    /// full query, and `refine_macros` carries the expansion; mixed-case names behave
+    /// identically.
+    #[test]
+    fn custom_filter_name_as_query_macro_routes_with_macros() {
+        let docs = CustomFilter {
+            name: "docs".into(),
+            search: "ext:pdf doc:all".into(),
+            matching: Default::default(),
+        };
+        for (q, target) in [
+            ("docs:report", Target::KeelIndex),
+            ("Docs:report", Target::Plain),
+        ] {
+            let a = apply(q, "", std::slice::from_ref(&docs), target, none());
+            assert_eq!(a.text, "report", "{q} on {target:?}: plain terms only");
+            assert_eq!(a.refine.as_deref(), Some(q), "{q} on {target:?}");
+            assert_eq!(
+                a.refine_macros.get("docs").map(String::as_str),
+                Some("ext:pdf doc:all"),
+                "{q}: refine carries the filter macro"
+            );
+        }
+        // An unknown macro is not a filter: no split, no expansion for it.
+        let bare = apply(
+            "nope:report",
+            "",
+            std::slice::from_ref(&docs),
+            Target::KeelIndex,
+            none(),
+        );
+        assert_eq!(bare.text, "nope:report");
+        assert_eq!(bare.refine, None);
+        assert!(!bare.refine_macros.contains_key("nope"));
     }
 
     /// The built-ins' combo names and selection show in Spanish; the stored names stay
