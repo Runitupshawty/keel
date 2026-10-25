@@ -1246,3 +1246,59 @@ fn library_searcher_passes_within() {
         ]
     );
 }
+
+#[test]
+fn common_word_filter_respects_word_starts() {
+    use crate::index::tests::{fake, library_with};
+    use crate::SourceKind;
+    use keel_vfs::VPath;
+    // A word is checked in candidates' paths (not the index) once it matches more than
+    // RANK_CAP (50,000) records. Group A: 5,001 files with `client` at a word start and
+    // `rareword`; group B: 200 with `client` only inside `subclient` (plus `rareword`);
+    // group C: 45,000 with `client` and no `rareword`. So `client` is common (50,001
+    // matches), `rareword` rare (5,201), and their AND (5,001) takes the bm25 path that
+    // re-checks the common word in the paths of the `rareword` candidates. The short B
+    // names rank above the padded A names, so before the fix they land in the top hits.
+    let fill = (0..12)
+        .map(|k| format!("f{k}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let router = keel_vfs::Router::new();
+    router.register(Arc::new(fake(move |path: &str| {
+        if path != "/" {
+            return Ok(Vec::new());
+        }
+        let mut entries = Vec::with_capacity(50_201);
+        for i in 0..5_001u32 {
+            entries.push((format!("client rareword {fill} a{i:05}.pdf"), false, 100));
+        }
+        for i in 0..200u32 {
+            entries.push((format!("subclient rareword b{i:03}.pdf"), false, 100));
+        }
+        for i in 0..45_000u32 {
+            entries.push((format!("client fill c{i:04}.pdf"), false, 100));
+        }
+        Ok(entries)
+    })));
+    let (_data, lib, src) = library_with(SourceDef {
+        label: "commonword".into(),
+        root: VPath::parse("fake://commonword/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+        hash_shares: false,
+    });
+    walk(&src, &router).unwrap();
+    let hits = lib
+        .search(&LibraryQuery::parse("client rareword", 0).unwrap())
+        .unwrap();
+    assert!(
+        !hits.is_empty(),
+        "the word-start `client` files must be found"
+    );
+    assert!(
+        hits.iter().all(|h| !h.name.contains("subclient")),
+        "a common word must not match inside `subclient`"
+    );
+}

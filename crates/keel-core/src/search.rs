@@ -848,14 +848,16 @@ fn run(
     }
     args.extend(cand_args);
     args.extend(filter_args);
-    // Words left out of the candidate query: substrings of the path.
+    // Words left out of the candidate query: word starts in the path (the path's start or
+    // a previous char that is not alphanumeric), so `client` does not pass `subclient`.
     let mut filters = filters;
     for word in also {
-        filters.push_str(" AND lower(r.path) LIKE ? ESCAPE '\\'");
-        args.push(Value::Text(format!(
-            "%{}%",
-            like_escape(&word.to_lowercase())
-        )));
+        filters.push_str(
+            " AND (lower(r.path) LIKE ? ESCAPE '\\' OR lower(r.path) LIKE ? ESCAPE '\\')",
+        );
+        let esc = like_escape(&word.to_lowercase());
+        args.push(Value::Text(format!("{esc}%")));
+        args.push(Value::Text(format!("%[^a-z0-9]{esc}%")));
     }
     args.push(Value::Integer(q.max as i64));
     let sql = format!(
@@ -1199,8 +1201,8 @@ fn search_text(
     }
     // bm25 reads every posting of each word to weigh it, and a word in most records weighs
     // nothing: rank by the rarer words and check the common ones in the candidates' paths
-    // (ponytail: as substrings, so `client` also passes `subclient`; a word that common
-    // matches nearly everything anyway).
+    // (ponytail: at word starts only, so `client` does not pass `subclient`; a word that
+    // common matches nearly everything anyway).
     let words = q.text_words();
     let (mut rare, mut common, mut common_words) = (Vec::new(), Vec::new(), Vec::new());
     for (part, word) in parts.into_iter().zip(words) {
