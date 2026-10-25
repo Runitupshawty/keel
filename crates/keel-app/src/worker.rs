@@ -378,7 +378,10 @@ fn filter_page(
         Some(text) => crate::query_filter::refine(
             hits,
             text,
-            &crate::query_check::options_with_macros(&applied.refine_macros),
+            &crate::query_check::options_with_macros(
+                crate::search_tab::toggles_of(applied.matching),
+                &applied.refine_macros,
+            ),
         )
         .map_err(|e| anyhow::anyhow!(e.message)),
         None => Ok(hits),

@@ -375,7 +375,8 @@ mod tests {
             search: "ext:pdf".into(),
             matching: Default::default(),
         }]);
-        let opts = crate::query_check::options_with_macros(&macros);
+        let opts =
+            crate::query_check::options_with_macros(crate::search_tab::Toggles::default(), &macros);
         // Routing: the expanded text needs the full language; the plain terms go to the
         // backend. Mixed-case names behave identically.
         assert!(needs_full_language("docs:report", &opts));

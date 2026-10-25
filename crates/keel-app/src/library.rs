@@ -1665,13 +1665,24 @@ impl Searcher for LibSearch {
     // collections branches don't take the folder, so `search` filters their pages after
     // the cap (`under`) and a deep folder can show fewer hits than it has there.
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        // FTS5 has no regex: an honest error, not a silent literal-pattern search.
+        if q.regex {
+            return Err(anyhow::anyhow!("the library index does not support regex"));
+        }
         // Operator queries (keel-query language, not the library's own `name:`/`in:`/...):
         // the library narrows by the plain words, then every hit is re-checked against the
-        // full query.
+        // full query, under the tab's toggles (the plain route refines the same way).
         let text = q.text.trim();
-        // The profile's filter macros, so a filter name typed as a query macro
-        // (`docs:`) routes and refines like its expanded text.
-        let opts = crate::query_check::options_with_macros(&crate::query_check::macro_map(&self.1));
+        let opts = crate::query_check::options_with_macros(
+            crate::search_tab::Toggles {
+                match_case: q.match_case,
+                whole_word: q.whole_word,
+                match_path: q.match_path,
+                match_diacritics: q.match_diacritics,
+                regex: q.regex,
+            },
+            &crate::query_check::macro_map(&self.1),
+        );
         let backend = (crate::query_filter::needs_full_language(text, &opts)
             && !crate::query_filter::library_only(text))
         .then(|| crate::query_filter::backend_terms(text, &opts));

@@ -34,15 +34,16 @@ pub fn options_with_filters(
     o
 }
 
-/// Default options with only `macros` filled: backend selection and refinement keep
-/// their existing (toggle-free) options and gain the profile's filter macros.
+/// Options with the tab's toggles and the profile's filter macros (`macros` filled):
+/// backend selection and refinement evaluate a full-language query the same way the
+/// search box validates it, so the match toggles reach the refine step.
 pub fn options_with_macros(
+    t: crate::search_tab::Toggles,
     macros: &std::collections::BTreeMap<String, String>,
 ) -> keel_query::Options {
-    keel_query::Options {
-        macros: macros.clone(),
-        ..keel_query::Options::default()
-    }
+    let mut o = options(t);
+    o.macros = macros.clone();
+    o
 }
 
 /// The problem with `text` as a search query, if the parser rejects it.

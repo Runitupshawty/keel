@@ -231,3 +231,39 @@ sandbox: live backends (EFU/FTS5/Everything/Spotlight) and the running GUI.
 Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here
 instead.
 Ready to commit: `test(search): cover within folder boundaries and literal %/_ names`.
+
+---
+
+## K08 fix — search options consistent across backends (fix turn)
+
+K08 change (prior turn) made match options reach both routes:
+- `query_check::options_with_macros(toggles, macros)` now carries the tab's toggles
+  (match_case/whole_word/match_path/match_diacritics/regex) into refine.
+- `worker.rs::filter_page` passes `search_tab::toggles_of(applied.matching)` so the
+  plain route refines under the box's toggles.
+- `library.rs::LibSearch::query` rejects regex with an honest error
+  ("the library index does not support regex") and refines under the query's toggles.
+- New regression `library::tests::search_options_are_consistent_across_routes`
+  (one shared fixture, names that tell each option apart) checks case / whole-word /
+  diacritic / regex through the plain (Keel index) and library routes: full-language
+  queries refine identically; plain text keeps each backend's supported behavior
+  (FTS5 folds case+diacritics, not switchable); library regex is an honest error.
+
+This turn: the gate flagged `walkthrough_tests::pane_search_box_searches_under_the_folder`
+FAILED at "index built" (walkthrough_tests.rs:2654). That wait is a wall-clock budget in
+**seconds** (screenshots::wait; x3 under CI). The walk index's `available()` reads a
+`ready` flag set by a background scan thread, so under full-suite parallel load the demo
+fixture can exceed 60s. Passes in isolation (8.9s) and in my full runs; the single-fail
+run (777/1/35) was a load flake. Fix: bumped that one wait 60→120 (matches the 120s used
+by other index-building waits, e.g. `add_source` → `wait(h,120,&indexed)`). No behavior
+change.
+
+Verified: `cargo fmt --all` idempotent; `cargo clippy -p keel-app --all-targets -- -D
+warnings` clean; full `cargo test -p keel-app --bin keel` = 756 passed / 22 failed / 35
+ignored — the flagged walkthrough test is now `ok`, and the 22 are the unchanged
+pre-existing sandbox env failures (backend/single_instance/update/profiles/settings/
+mount_ui socket-bind). Only keel-app touched this task; other crates' suites not run.
+Live backends (EFU/FTS5/Everything) and GUI remain untested here.
+
+Main-repo `.remember/remember.md` unwritable in this sandbox; appended here instead.
+Ready to commit: `fix(search): keep match options consistent across plain and library routes`.

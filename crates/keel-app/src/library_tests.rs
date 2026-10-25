@@ -171,6 +171,241 @@ fn library_search_refines_operator_queries() {
     assert_eq!(search("c size:>=5"), ["c.txt"]);
 }
 
+/// K08: the match options reach both routes. One shared fixture (names that tell each
+/// option apart) is searched through the plain (Keel index) route and the library route:
+/// a full-language query refines under the tab's toggles on both routes (same results);
+/// plain text keeps each backend's explicitly supported behavior (the library's FTS5
+/// folds case and diacritics and cannot be switched); and regex on the library route is
+/// an honest error, not a silent literal-pattern search.
+#[test]
+fn search_options_are_consistent_across_routes() {
+    use keel_search::WalkIndexSearcher;
+    let tmp = temp("options");
+    let docs = tmp.join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    // The case pair lives in separate folders: a case-insensitive volume keeps only
+    // one of two same-folder names that differ in case.
+    std::fs::create_dir_all(docs.join("upper")).unwrap();
+    std::fs::create_dir_all(docs.join("lower")).unwrap();
+    std::fs::write(docs.join("upper/Report.txt"), "x").unwrap();
+    std::fs::write(docs.join("lower/report.txt"), "x").unwrap();
+    for name in [
+        "reports.txt",
+        "myreport.txt",
+        "cafe.txt",
+        "caf\u{e9}.txt",
+        "rep0rt.txt",
+    ] {
+        std::fs::write(docs.join(name), "x").unwrap();
+    }
+    let lib = Library::open(&tmp.join("data"), "test").unwrap();
+    lib.set_hash_after_walk(false);
+    let id = lib
+        .add_source(SourceDef {
+            label: "Docs".into(),
+            root: VPath::local(&docs),
+            kind: SourceKind::Folder,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        })
+        .unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    let lib = Arc::new(lib);
+    let walk = WalkIndexSearcher::open(tmp.join("walk"), vec![docs.clone()]).unwrap();
+    assert!(walk.wait_ready(Duration::from_secs(30)), "the index builds");
+    let mut s = state_with(&lib, &tmp);
+    s.searcher = Some(Arc::new(walk));
+    s.run(0, Action::Search);
+
+    // Runs `text` on one route with `toggles`; the sorted hit names and the tab's
+    // error (when any).
+    let run = |s: &mut AppState,
+               library: bool,
+               t: crate::search_tab::Toggles,
+               text: &str|
+     -> (Vec<String>, Option<String>) {
+        let tab = s.tab_mut(0);
+        tab.library_search = library;
+        if let TabKind::Search {
+            query,
+            due,
+            toggles,
+            ..
+        } = &mut tab.kind
+        {
+            *query = text.into();
+            *toggles = t;
+            *due = Some(Instant::now());
+        }
+        s.tick();
+        pump_until(s, "searched", |s| !s.tab(0).loading);
+        let t = s.tab(0);
+        let mut names: Vec<String> = t
+            .entries()
+            .iter()
+            // Files only: the plain route also yields folders, which are not part of the
+            // option-consistency comparison.
+            .filter(|e| e.kind == keel_vfs::Kind::File)
+            .map(|e| e.path.name().to_owned())
+            .collect();
+        names.sort();
+        (names, t.error.clone())
+    };
+    let t = |case: bool, whole: bool, diac: bool, regex: bool| crate::search_tab::Toggles {
+        match_case: case,
+        whole_word: whole,
+        match_path: false,
+        match_diacritics: diac,
+        regex,
+    };
+    // Both routes: same hits as `want`, no error.
+    let expect_both = |s: &mut AppState,
+                       label: &str,
+                       toggles: crate::search_tab::Toggles,
+                       text: &str,
+                       want: &[&str]| {
+        let (n, e) = run(s, false, toggles, text);
+        assert_eq!(
+            n,
+            want.iter().map(|w| (*w).to_string()).collect::<Vec<_>>(),
+            "{label}: the plain route"
+        );
+        assert_eq!(e, None, "{label}: the plain route errored");
+        let (n2, e2) = run(s, true, toggles, text);
+        assert_eq!(n2, n, "{label}: the library route disagrees");
+        assert_eq!(e2, None, "{label}: the library route errored");
+    };
+
+    // Match Case: no plain words, so both backends answer with every candidate and the
+    // refine keeps the rest under the box's toggles.
+    expect_both(
+        &mut s,
+        "case off",
+        t(false, false, false, false),
+        "!Report",
+        &["cafe.txt", "caf\u{e9}.txt", "rep0rt.txt"],
+    );
+    expect_both(
+        &mut s,
+        "case on",
+        t(true, false, false, false),
+        "!Report",
+        &[
+            "cafe.txt",
+            "caf\u{e9}.txt",
+            "myreport.txt",
+            "rep0rt.txt",
+            "report.txt",
+            "reports.txt",
+        ],
+    );
+    // Match Whole Words: `report` inside `reports`/`myreport` is not a whole word.
+    expect_both(
+        &mut s,
+        "whole words off",
+        t(false, false, false, false),
+        "!report",
+        &["cafe.txt", "caf\u{e9}.txt", "rep0rt.txt"],
+    );
+    expect_both(
+        &mut s,
+        "whole words on",
+        t(false, true, false, false),
+        "!report",
+        &[
+            "cafe.txt",
+            "caf\u{e9}.txt",
+            "myreport.txt",
+            "rep0rt.txt",
+            "reports.txt",
+        ],
+    );
+    // Match Diacritics: off (the default) folds `cafe` onto `café` on both routes.
+    expect_both(
+        &mut s,
+        "diacritics off",
+        t(false, false, false, false),
+        "!cafe",
+        &[
+            "Report.txt",
+            "myreport.txt",
+            "rep0rt.txt",
+            "report.txt",
+            "reports.txt",
+        ],
+    );
+    expect_both(
+        &mut s,
+        "diacritics on",
+        t(false, false, true, false),
+        "!cafe",
+        &[
+            "Report.txt",
+            "caf\u{e9}.txt",
+            "myreport.txt",
+            "rep0rt.txt",
+            "report.txt",
+            "reports.txt",
+        ],
+    );
+
+    // Regex: as literal text nothing matches; the pattern matches on the plain route…
+    let (n, e) = run(&mut s, false, t(false, false, false, false), "rep.o*rt");
+    assert_eq!(n, Vec::<String>::new(), "the pattern is literal text");
+    assert_eq!(e, None);
+    // …the library route says so instead of searching the pattern as text (a failed
+    // search leaves the previous listing in place, so the box is empty here).
+    let (n, e) = run(&mut s, true, t(false, false, false, true), "rep.o*rt");
+    assert_eq!(n, Vec::<String>::new());
+    assert_eq!(
+        e.as_deref(),
+        Some("the library index does not support regex")
+    );
+    let (n, e) = run(&mut s, false, t(false, false, false, true), "rep.o*rt");
+    assert_eq!(
+        n,
+        vec![
+            "Report.txt".to_string(),
+            "myreport.txt".to_string(),
+            "rep0rt.txt".to_string(),
+            "report.txt".to_string(),
+            "reports.txt".to_string()
+        ],
+        "the plain route runs the pattern"
+    );
+    assert_eq!(e, None);
+    // Plain text keeps each backend's explicitly supported behavior: the index honors
+    // Match Case; the library's FTS5 folds case and diacritics and cannot be switched.
+    let (n, _) = run(&mut s, false, t(true, false, false, false), "report");
+    assert_eq!(
+        n,
+        vec![
+            "myreport.txt".to_string(),
+            "report.txt".to_string(),
+            "reports.txt".to_string()
+        ]
+    );
+    let (n2, _) = run(&mut s, true, t(true, false, false, false), "report");
+    assert_eq!(
+        n2,
+        vec![
+            "Report.txt".to_string(),
+            "report.txt".to_string(),
+            "reports.txt".to_string()
+        ],
+        "the library stays case-insensitive"
+    );
+    let (n3, _) = run(&mut s, false, t(false, false, false, false), "cafe");
+    assert_eq!(
+        n3,
+        vec!["cafe.txt".to_string(), "caf\u{e9}.txt".to_string()]
+    );
+    let (n4, _) = run(&mut s, true, t(false, false, false, false), "cafe");
+    assert_eq!(n4, n3, "the library folds diacritics by default too");
+}
 #[test]
 fn sidebar_rows_follow_source_status_and_stats() {
     let rows = source_rows(&[
