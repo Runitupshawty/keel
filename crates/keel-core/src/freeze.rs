@@ -20,10 +20,61 @@ pub struct Freeze {
     pub bytes: u64,
 }
 
+/// Size/type/modified filters for `search_frozen`, with the same comparison semantics
+/// as a library search (`search::LibraryQuery`): inclusive size bounds that only files
+/// match, `kind` (`KindFilter::Folder` → folders, any other kind → files), and
+/// `modified_from <= mtime < modified_before` in Unix seconds. Compared against the
+/// fields the freeze holds, never live metadata.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrozenFilters {
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+    pub kind: Option<crate::search::KindFilter>,
+    /// Unix seconds.
+    pub modified_from: Option<i64>,
+    /// Unix seconds, exclusive.
+    pub modified_before: Option<i64>,
+}
+
 /// The records of freeze `?1`: rows unchanged since it, and the rows copied for it.
 const AT: &str = "(SELECT id, parent, name, path, kind, size, mtime FROM record WHERE since < ?1
     UNION ALL SELECT id, parent, name, path, kind, size, mtime FROM frozen
         WHERE lo <= ?1 AND ?1 <= hi)";
+
+/// mtimes are stored in nanoseconds.
+const NS: i64 = 1_000_000_000;
+
+/// The filter's ` AND ...` conditions for `search_frozen`, numbered from the next
+/// placeholder of `args`, with the comparison semantics of `search::LibraryQuery::filters`
+/// (size bounds inclusive and files-only, modified in Unix seconds): `None` when the
+/// size range is empty, nothing matches.
+fn filter_conds(f: &FrozenFilters, args: &mut Vec<Value>) -> Option<String> {
+    if f.min_size.zip(f.max_size).is_some_and(|(a, b)| a > b) {
+        return None;
+    }
+    let mut sql = String::new();
+    match f.kind {
+        Some(crate::search::KindFilter::Folder) => sql.push_str(" AND r.kind = 1"),
+        Some(_) => sql.push_str(" AND r.kind = 0"),
+        None => {}
+    }
+    if f.min_size.is_some() || f.max_size.is_some() {
+        sql.push_str(" AND r.kind = 0");
+    }
+    for (bound, op) in [(f.min_size, ">="), (f.max_size, "<=")] {
+        if let Some(b) = bound {
+            args.push(Value::Integer(b.min(i64::MAX as u64) as i64));
+            sql.push_str(&format!(" AND r.size {op} ?{}", args.len()));
+        }
+    }
+    for (bound, op) in [(f.modified_from, ">="), (f.modified_before, "<")] {
+        if let Some(t) = bound {
+            args.push(Value::Integer(t.saturating_mul(NS)));
+            sql.push_str(&format!(" AND r.mtime {op} ?{}", args.len()));
+        }
+    }
+    Some(sql)
+}
 
 fn freeze_row(r: &rusqlite::Row) -> rusqlite::Result<Freeze> {
     Ok(Freeze {
@@ -135,14 +186,17 @@ impl Library {
 
     /// Name or path search inside freeze `id` (`query` a case-insensitive substring),
     /// scoped to `folder` (a source-relative path like `list_frozen`'s `rel`; empty is
-    /// the whole source): only the `AT` rows, so it returns the names as the freeze
-    /// holds them. At most `max` hits, folders first, by name, then path.
+    /// the whole source) and narrowed by `filters` (size/type/modified): only the `AT`
+    /// rows, so it returns the names and the size/type/modified fields as the freeze
+    /// holds them, never live metadata. At most `max` hits, folders first, by name,
+    /// then path.
     pub fn search_frozen(
         &self,
         source: &SourceId,
         id: i64,
         query: &str,
         folder: &str,
+        filters: &FrozenFilters,
         max: usize,
     ) -> Result<Vec<LibraryHit>> {
         let src = self
@@ -158,22 +212,28 @@ impl Library {
         }
         let pattern = format!("%{}%", crate::search::like_escape(query));
         // `AT` binds ?1, so the outer placeholders number from ?2 (positional args).
-        let (scope, limit_n) = if folder.is_empty() {
-            ("", 3)
-        } else {
-            // The folder itself and its contents; escaped so a `_` or `%` in the name is
-            // literal, and the trailing slash keeps same-prefix siblings (docs2) out.
-            (" AND (r.path = ?3 OR r.path LIKE ?4 ESCAPE '\\')", 5)
-        };
         let mut args: Vec<Value> = vec![Value::Integer(id), Value::Text(pattern)];
-        if !folder.is_empty() {
+        let Some(filters_sql) = filter_conds(filters, &mut args) else {
+            return Ok(Vec::new());
+        };
+        // The folder itself and its contents; escaped so a `_` or `%` in the name is
+        // literal, and the trailing slash keeps same-prefix siblings (docs2) out.
+        let scope = if folder.is_empty() {
+            String::new()
+        } else {
             args.push(Value::Text(folder.to_string()));
+            let eq = args.len();
             args.push(Value::Text(crate::search::like_escape(folder) + "/%"));
-        }
+            format!(
+                " AND (r.path = ?{eq} OR r.path LIKE ?{} ESCAPE '\\')",
+                args.len()
+            )
+        };
         args.push(Value::Integer(max as i64));
+        let limit_n = args.len();
         let mut stmt = c.prepare(&format!(
             "SELECT {} FROM {AT} r
-             WHERE (r.name LIKE ?2 OR r.path LIKE ?2 ESCAPE '\\'){scope}
+             WHERE (r.name LIKE ?2 OR r.path LIKE ?2 ESCAPE '\\'){filters_sql}{scope}
              ORDER BY r.kind = 1 DESC, r.name COLLATE NOCASE, r.path COLLATE NOCASE
              LIMIT ?{limit_n}",
             crate::search::HIT_COLUMNS
@@ -187,6 +247,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
+    use super::{FrozenFilters, NS};
     use crate::library::tests::folder;
     use crate::Library;
     use std::fs;
@@ -254,7 +315,12 @@ mod tests {
         assert!(lib.list_frozen(&id, one.id, "nope").is_err());
         assert!(lib.list_frozen(&id, 99, "").is_err());
 
-        let find = |f: i64, q: &str| names(lib.search_frozen(&id, f, q, "", 100).unwrap());
+        let find = |f: i64, q: &str| {
+            names(
+                lib.search_frozen(&id, f, q, "", &FrozenFilters::default(), 100)
+                    .unwrap(),
+            )
+        };
         assert_eq!(
             find(one.id, "f0"),
             ["f0.txt"],
@@ -274,12 +340,15 @@ mod tests {
             "empty query: no hits"
         );
         assert_eq!(
-            lib.search_frozen(&id, two.id, "f", "", 2).unwrap().len(),
+            lib.search_frozen(&id, two.id, "f", "", &FrozenFilters::default(), 2)
+                .unwrap()
+                .len(),
             2,
             "max bounds the hits"
         );
         assert!(
-            lib.search_frozen(&id, 99, "a", "", 1).is_err(),
+            lib.search_frozen(&id, 99, "a", "", &FrozenFilters::default(), 1)
+                .is_err(),
             "unknown freeze id errors"
         );
 
@@ -337,7 +406,7 @@ mod tests {
         let freeze = lib.freeze(&id).unwrap();
         let root_path = src.def.root.path.clone();
         let find = |q: &str, scope: &str, max: usize| {
-            lib.search_frozen(&id, freeze.id, q, scope, max)
+            lib.search_frozen(&id, freeze.id, q, scope, &FrozenFilters::default(), max)
                 .unwrap()
                 .into_iter()
                 .map(|h| h.path.path.strip_prefix(&root_path).unwrap()[1..].to_string())
@@ -369,6 +438,151 @@ mod tests {
             find("my_docs", "my_docs", 100),
             ["my_docs", "my_docs/notes.txt"],
             "the scope includes the folder itself, folders first"
+        );
+    }
+
+    /// Size/type/modified filters match the fields the freeze holds, not live metadata:
+    /// a file edited after freezing (new size, new mtime) still matches its historical
+    /// values and not the live ones; size bounds are inclusive and files-only (a folder
+    /// never matches a size filter), and modified is `from <= mtime < before`.
+    #[test]
+    fn search_frozen_filters_use_stored_values() {
+        let data = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let root = files.path().join("drive");
+        fs::create_dir_all(root.join("data")).unwrap();
+        fs::write(root.join("data/readme.txt"), "r").unwrap();
+        fs::write(root.join("big.txt"), vec![b'x'; 2000]).unwrap();
+        fs::write(root.join("small.txt"), "s").unwrap();
+        let lib = Library::open(data.path(), "f").unwrap();
+        let id = lib.add_source(folder("d", &root)).unwrap();
+        let src = lib.source(&id).unwrap();
+        let walk = || crate::index::tests::walk(&src, &lib.router()).unwrap();
+        walk();
+        // Known historical mtimes in the store: big at t0, small two days later.
+        let t0 = 1_700_000_000i64;
+        let c = src.store.get().unwrap();
+        c.execute(
+            "UPDATE record SET mtime = ?1 WHERE name = 'big.txt'",
+            [t0 * NS],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE record SET mtime = ?1 WHERE name = 'small.txt'",
+            [(t0 + 2 * 86_400) * NS],
+        )
+        .unwrap();
+        let one = lib.freeze(&id).unwrap();
+
+        // Edit live after freezing: big.txt grows to 5000 bytes with a fresh mtime.
+        fs::write(root.join("big.txt"), vec![b'y'; 5000]).unwrap();
+        walk();
+
+        let find = |f: &FrozenFilters, q: &str| {
+            names(lib.search_frozen(&id, one.id, q, "", f, 100).unwrap())
+        };
+        // 1000..=3000 fits the stored 2000 but not the live 5000: the historical size
+        // match survives the live edit.
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    min_size: Some(1000),
+                    max_size: Some(3000),
+                    ..Default::default()
+                },
+                "big"
+            ),
+            ["big.txt"]
+        );
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    min_size: Some(4000),
+                    ..Default::default()
+                },
+                "big"
+            ),
+            Vec::<String>::new(),
+            "the live size is not what the freeze holds"
+        );
+        // Modified: from <= mtime < before, against the stored mtimes. The live mtime
+        // of big.txt (just now) is far past t0 + 1 day.
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    modified_from: Some(t0),
+                    modified_before: Some(t0 + 86_400),
+                    ..Default::default()
+                },
+                "big"
+            ),
+            ["big.txt"]
+        );
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    modified_from: Some(t0 + 86_400),
+                    ..Default::default()
+                },
+                "mall"
+            ),
+            ["small.txt"]
+        );
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    modified_before: Some(t0),
+                    ..Default::default()
+                },
+                "big"
+            ),
+            Vec::<String>::new(),
+            "before is exclusive"
+        );
+        // Type: folders and files; a size filter is files-only, so the folder `data`
+        // (query "data" also matches its child via the path) never matches.
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    kind: Some(crate::KindFilter::Folder),
+                    ..Default::default()
+                },
+                "data"
+            ),
+            ["data"]
+        );
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    kind: Some(crate::KindFilter::File),
+                    ..Default::default()
+                },
+                "big"
+            ),
+            ["big.txt"]
+        );
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    min_size: Some(1),
+                    ..Default::default()
+                },
+                "data"
+            ),
+            ["readme.txt"],
+            "size semantics: files only, the folder stays out"
+        );
+        assert_eq!(
+            find(
+                &FrozenFilters {
+                    min_size: Some(3000),
+                    max_size: Some(2000),
+                    ..Default::default()
+                },
+                "big"
+            ),
+            Vec::<String>::new(),
+            "an empty size range matches nothing"
         );
     }
 }
