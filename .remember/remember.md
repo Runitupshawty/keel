@@ -160,3 +160,47 @@ this sandbox: live backends (EFU/FTS5/Everything), running GUI.
 Main-repo `.remember/remember.md` path unwritable in this sandbox; appended
 here instead.
 Ready to commit: `fix(search): route library prefixes by the library parser's quote and case rules`.
+
+---
+
+## K06 — Apply refinement before the final result cap
+
+Trace: the worker ran ONE backend query capped at `query.max`
+(`search_tab::limit`, first page `PAGE`=1000), then applied the tab's filter
+post-cap: `applied.keeps` (extensions), `omissions`, and `applied.refine`
+(Keel query). On `Target::Plain` backends (Spotlight/locate) and for any
+`refine`, the extension/refine filter is NOT in the backend text, so the
+backend's cap is consumed by non-matching files first: an initial
+non-matching page hides later matches. `search_tab.rs` `capped`
+(`count >= limit`) then hides "Load more" (count is post-refine), stranding
+the user. Everything's `ext:` prefix already filters in the backend, so it
+was unaffected.
+
+Fix (`crates/keel-app/src/worker.rs` only): `run_search` does bounded
+paging — re-query the backend with a doubling cap (same scope/text/toggles,
+only `max` grows) until the post-cap filter has kept `query.max` hits, the
+backend runs out (page not full), or the tab moved on (cancellation ends the
+scan). `filter_page` is the unchanged keep→omissions→refine pipeline. A
+backend that already applied the filter (Everything) keeps the page full, so
+no extra query happens. No Cargo.toml/dependency changes.
+
+Added 2 regression tests in `worker.rs` (`Paged` searcher honours
+`query.max` as a stable prefix):
+- `search_worker_pages_past_a_nonmatching_first_page`: first page all
+  `.txt`, matches (`.pdf`) beyond it; asserts the requested number
+  (`Query::default().max`) is still returned, all matching, and ≥2 backend
+  pages were fetched.
+- `search_worker_cancellation_ends_the_paging_scan`: refine matches nothing
+  (would page 500→8000); superseded mid-scan must stop within ≤3 pages
+  (vs 5 if left live).
+
+fmt idempotent; clippy `-D warnings` clean; `cargo test -p keel-app`
+755 passed / 22 failed / 35 ignored vs baseline 753/22/35 (+2 = new tests);
+the 22 are the known sandbox socket/daemon/network failures (backend,
+profiles, single_instance, update, mount_ui, settings), none in
+worker/search. Not verified in this sandbox: live backends
+(EFU/FTS5/Everything/Spotlight) and the running GUI.
+
+Main-repo `.remember/remember.md` path unwritable in this sandbox; appended
+here instead.
+Ready to commit: `fix(search): page past a nonmatching first page when a post-cap filter is active`.
