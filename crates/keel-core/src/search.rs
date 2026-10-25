@@ -792,7 +792,7 @@ fn wordy(s: &str) -> bool {
 /// The records whose text matches the one parameter.
 const IN_CONTENT: &str = "SELECT rowid FROM record_content WHERE record_content MATCH ?";
 
-fn like_escape(s: &str) -> String {
+pub(crate) fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")

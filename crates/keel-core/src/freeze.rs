@@ -132,6 +132,41 @@ impl Library {
         let rows = stmt.query_map(params![id, dir], |r| crate::search::hit_of(&src, r, 0.0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+
+    /// Name or path search inside freeze `id` (`query` a case-insensitive substring):
+    /// only the `AT` rows, so it returns the names as the freeze holds them. At most
+    /// `max` hits, folders first, by name.
+    pub fn search_frozen(
+        &self,
+        source: &SourceId,
+        id: i64,
+        query: &str,
+        max: usize,
+    ) -> Result<Vec<LibraryHit>> {
+        let src = self
+            .source(source)
+            .with_context(|| format!("no source {source}"))?;
+        let c = src.store.get()?;
+        let known = c
+            .query_row("SELECT 1 FROM freeze WHERE id = ?1", [id], |_| Ok(()))
+            .optional()?;
+        anyhow::ensure!(known.is_some(), "{} has no freeze {id}", src.def.label);
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("%{}%", crate::search::like_escape(query));
+        let mut stmt = c.prepare(&format!(
+            "SELECT {} FROM {AT} r
+             WHERE r.name LIKE ?2 ESCAPE '\\' OR r.path LIKE ?2 ESCAPE '\\'
+             ORDER BY r.kind = 1 DESC, r.name COLLATE NOCASE
+             LIMIT ?3",
+            crate::search::HIT_COLUMNS
+        ))?;
+        let rows = stmt.query_map(params![id, pattern, max as i64], |r| {
+            crate::search::hit_of(&src, r, 0.0)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +237,35 @@ mod tests {
         );
         assert!(lib.list_frozen(&id, one.id, "nope").is_err());
         assert!(lib.list_frozen(&id, 99, "").is_err());
+
+        let find = |f: i64, q: &str| names(lib.search_frozen(&id, f, q, 100).unwrap());
+        assert_eq!(
+            find(one.id, "f0"),
+            ["f0.txt"],
+            "rename: the older freeze keeps the old name"
+        );
+        assert_eq!(find(one.id, "g0"), Vec::<String>::new());
+        assert_eq!(find(two.id, "g0"), ["g0.txt"]);
+        assert_eq!(
+            find(one.id, "docs/f1.txt"),
+            ["f1.txt"],
+            "delete: the older freeze keeps the file"
+        );
+        assert_eq!(find(one.id, "new"), Vec::<String>::new());
+        assert_eq!(
+            find(one.id, ""),
+            Vec::<String>::new(),
+            "empty query: no hits"
+        );
+        assert_eq!(
+            lib.search_frozen(&id, two.id, "f", 2).unwrap().len(),
+            2,
+            "max bounds the hits"
+        );
+        assert!(
+            lib.search_frozen(&id, 99, "a", 1).is_err(),
+            "unknown freeze id errors"
+        );
 
         assert_eq!(
             lib.freezes(&id)
