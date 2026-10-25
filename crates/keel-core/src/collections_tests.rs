@@ -208,3 +208,64 @@ fn an_offline_source_keeps_its_members_until_they_are_removed() {
     assert!(matches!(*src.status.read(), SourceStatus::Online { .. }));
     assert_eq!(names(&lib, id), ["b.txt"]);
 }
+
+#[test]
+fn repeated_additions_stay_one_membership_and_same_names_stay_separate() {
+    let (files, _data, lib, src) = fixture();
+    let id = lib.create_collection("Picks").unwrap();
+    // Two distinct files share the name twin.txt: two records.
+    write(&files.path().join("twin.txt"), "root");
+    write(&files.path().join("sub/twin.txt"), "sub");
+    walk(&src, &lib.router()).unwrap();
+    let root = r(&src, "twin.txt");
+    let sub = r(&src, "sub/twin.txt");
+    assert_ne!(root, sub, "same name, distinct files");
+
+    assert_eq!(
+        lib.add_to_collection(id, &[root.clone(), sub.clone()])
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        lib.add_to_collection(id, &[root.clone(), root.clone()])
+            .unwrap(),
+        0,
+        "repeats, twice in one call"
+    );
+    assert_eq!(
+        lib.add_to_collection(id, std::slice::from_ref(&sub))
+            .unwrap(),
+        0
+    );
+    assert_eq!(lib.collections().unwrap()[0].items, 2, "accurate count");
+    let items = lib.collection_items(id).unwrap();
+    assert_eq!(items.len(), 2, "both same-named members kept");
+    assert!(items.iter().any(|h| h.record == root));
+    assert!(items.iter().any(|h| h.record == sub));
+
+    // Through a supported alias: the rename resolves to the same record, and
+    // re-adding through the new path adds nothing.
+    std::fs::rename(
+        files.path().join("twin.txt"),
+        files.path().join("twin2.txt"),
+    )
+    .unwrap();
+    walk(&src, &lib.router()).unwrap();
+    assert_eq!(
+        id_of(&src, "twin2.txt"),
+        Some(root.id),
+        "rename is an alias"
+    );
+    assert_eq!(
+        lib.add_to_collection(id, std::slice::from_ref(&root))
+            .unwrap(),
+        0
+    );
+    assert_eq!(lib.collections().unwrap()[0].items, 2);
+    let items = lib.collection_items(id).unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(
+        items.iter().any(|h| h.record == root),
+        "the member followed its rename"
+    );
+}

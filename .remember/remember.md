@@ -1,4 +1,31 @@
 # Handoff
+## 2026-10-25 — K18: duplicate member additions idempotent (branch: auto-loop)
+Verified, no production change: the single shared mutation path
+`add_to_collection` in `crates/keel-core/src/collections.rs` already enforces
+the collection identity model (`RecordRef {source, record}`; record ids are
+never reused) — `items.contains(r)` against the growing list dedupes repeats
+both within one call and across calls, returns the true added count, and
+`write_items` is backed by `PRIMARY KEY(collection, source, record)` plus
+`INSERT OR IGNORE`. The API (`collections.add` in keel-api/src/ops.rs) and the
+app (`edit_collection` in keel-app/src/backend.rs) both resolve paths/hits to
+`RecordRef`s and funnel through it. Added regression test
+`collections::tests::repeated_additions_stay_one_membership_and_same_names_stay_separate`
+(`crates/keel-core/src/collections_tests.rs`): two distinct files sharing the
+name `twin.txt` keep distinct records and both stay members; repeated adds —
+including twice in one call — leave one membership each with an accurate
+`items` count; a renamed file resolves to the same record id (a supported
+alias) and re-adding through the new path adds nothing. Already covered
+before: cross-call repeat (`items_keep_the_order_they_are_given`), path-alias
+re-add (keel-api `collections_keep_a_hand_order`), rename identity
+(`a_renamed_member_keeps_its_record_and_a_replacement_is_not_it`). fmt +
+clippy clean; `cargo test -p keel-core` 309 passed / 3 failed / 17 ignored —
+the 3 (plan `a_plan_that_no_longer_matches_is_not_executed`, index
+`library_watchers_arm_when_the_root_comes_back`,
+`a_library_inside_its_watched_source_does_not_recount_itself`) fail in
+isolation without the new test too: known FSEvents/timing flake, pre-existing
+since K13. Ready to commit:
+`test(collections): pin idempotent duplicate member additions`.
+
 
 ## 2026-10-25 — keel-core common-word filter: word starts (branch: auto-loop)
 Made the search common-word path check require a word start, not a bare substring.
