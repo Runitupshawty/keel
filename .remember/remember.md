@@ -69,3 +69,28 @@ all-candidates page without applying `refine` — a pre-existing gap (remote nev
 for queries that also have a name term; remotes.rs not touched, out of scope here).
 Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here instead.
 Ready to commit: `fix(search): route operator-only queries through the all-candidates path`.
+
+## 2026-10-25 — K03: preserve OR and NOT semantics in backend narrowing (branch: auto-loop)
+Verified, no production code change needed: `backend_terms`/`top_level_terms` in
+`crates/keel-app/src/query_filter.rs` push down only the plain top-level `Term` children of a
+top-level `And` (no comparison op, no function). `Or`, `Not`, and any nested group push
+nothing (or only the term that is guaranteed present in every result), so the backend
+narrowing is always a superset of the full query and `refine` can never be starved of a valid
+hit. OR/NOT produce an empty backend string (the all-candidates page, already handled by the
+K02 empty-text match-all), so they drop nothing. No false-negative case found: a non-`Term`
+child (`Or`/`Not`/nested `And`) is skipped, never over-pushed.
+Gotcha that shaped the fixture: Keel query groups use `<...>`, not `(...)` — the lexer only
+makes `<`/`>` into `Tok::Open`/`Close`, so a `(...)` group is read as literal text and matches
+nothing (confirmed by probe: `(invoice | draft)` → `[]` but `<invoice | draft>` → the union).
+Added regression test `query_filter::tests::backend_terms_or_not_and_groups_keep_all_valid_hits`
+(5-hit fixture) covering `report | invoice`, `!draft`, `report <invoice | draft>` and
+`<report | invoice> draft`; for each it pins (a) the exact backend term pushed — `""`, `""`,
+`"report"`, `"draft"` — (b) that the full `refine` excludes exactly the invalid hits, and
+(c) that the backend narrowing (a superset) keeps every valid hit. fmt + clippy clean
+(keel-app); `cargo test -p keel-app` 750 passed / 22 failed / 35 ignored — the 22 are the known
+sandbox socket/network failures (backend daemon, single_instance socket-bind, update network
+GET, profiles/settings config dir, mount_ui), unchanged from the 749/22/35 baseline; the +1 is
+the new test.
+Not verified in this sandbox: live EFU/FTS5/Everything and the running GUI (unchanged from K01/K02).
+Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here instead.
+Ready to commit: `test(search): pin OR/NOT/grouped terms keep all valid hits`.

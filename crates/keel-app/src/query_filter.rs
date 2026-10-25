@@ -290,6 +290,75 @@ mod tests {
     }
 
     #[test]
+    fn backend_terms_or_not_and_groups_keep_all_valid_hits() {
+        // Backend narrowing must be a superset of the full query: a term is pushed
+        // down only when every matching result contains it. OR, NOT and groupings
+        // push nothing (or only the guaranteed term), so the narrowing must drop no
+        // valid hit, and the full refine must then exclude the invalid ones.
+        let hits = vec![
+            file_hit("/a/report invoice.pdf", 1_000, 1_700_000_000),
+            file_hit("/b/report draft.pdf", 1_000, 1_700_000_000),
+            file_hit("/c/report only.pdf", 1_000, 1_700_000_000),
+            file_hit("/d/invoice only.pdf", 1_000, 1_700_000_000),
+            file_hit("/e/unrelated.jpg", 1_000, 1_700_000_000),
+        ];
+
+        // (query, what the backend may push, the full query's valid hit names)
+        let cases: [(&str, &str, &[&str]); 4] = [
+            (
+                "report | invoice",
+                "",
+                &[
+                    "report invoice.pdf",
+                    "report draft.pdf",
+                    "report only.pdf",
+                    "invoice only.pdf",
+                ],
+            ),
+            (
+                "!draft",
+                "",
+                &[
+                    "report invoice.pdf",
+                    "report only.pdf",
+                    "invoice only.pdf",
+                    "unrelated.jpg",
+                ],
+            ),
+            (
+                "report <invoice | draft>",
+                "report",
+                &["report invoice.pdf", "report draft.pdf"],
+            ),
+            ("<report | invoice> draft", "draft", &["report draft.pdf"]),
+        ];
+
+        for (text, pushed, valid) in cases {
+            let got = backend_terms(text);
+            assert_eq!(&got, pushed, "{text}: backend pushed only guaranteed terms");
+
+            let full = refine(hits.clone(), text, &keel_query::Options::default()).unwrap();
+            let mut full_names: Vec<&str> = full.iter().map(|h| h.path.name()).collect();
+            full_names.sort();
+            let mut expected: Vec<&str> = valid.to_vec();
+            expected.sort();
+            assert_eq!(
+                full_names, expected,
+                "{text}: full refine must exclude exactly the invalid hits"
+            );
+
+            let narrowed = refine(hits.clone(), &got, &keel_query::Options::default()).unwrap();
+            let narrowed_names: Vec<&str> = narrowed.iter().map(|h| h.path.name()).collect();
+            for name in valid {
+                assert!(
+                    narrowed_names.contains(name),
+                    "{text}: backend narrowing dropped valid hit {name}: {narrowed_names:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn library_only_terms_are_detected() {
         assert!(library_only("in:Documents"));
         assert!(library_only("tag:work"));
