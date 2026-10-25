@@ -323,3 +323,54 @@ pub fn text_extractor() -> TextExtractor {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{entities, without_markup, Sink};
+    use keel_core::TextCaps;
+
+    #[test]
+    fn entities_markup_and_sink_caps() {
+        // Entities: predefined, decimal, hex, nbsp; unknown and surrogate kept;
+        // multibyte after `&` (and around a trailing `&`) kept as-is.
+        assert_eq!(entities("&amp;"), "&");
+        assert_eq!(entities("a&#233;b"), "aéb");
+        assert_eq!(entities("a&#xE9;b"), "aéb");
+        assert_eq!(entities("&nbsp;"), " ");
+        assert_eq!(entities("&foo;"), "&foo;");
+        assert_eq!(entities("&#xD800;"), "&#xD800;");
+        assert_eq!(entities("héllo & wörld"), "héllo & wörld");
+        assert_eq!(entities("a&éb"), "a&éb");
+        assert_eq!(entities("a&é;"), "a&é;");
+        assert_eq!(entities("&#233;&"), "é&");
+
+        // Markup: comment, script and style blocks dropped, a tag becomes a space,
+        // an unclosed tag ends the text.
+        assert_eq!(without_markup("a<!--c-->b"), "a b");
+        assert_eq!(without_markup("x<script>y</script>z"), "x z");
+        assert_eq!(without_markup("x<style>y</style>z"), "x z");
+        assert_eq!(without_markup("hello<b"), "hello");
+        assert_eq!(without_markup("a<b>c"), "a c");
+
+        // Sink::line: a full line truncates (no line break appended) and stops the
+        // sink; a partial line fills the room; empty lines add nothing.
+        let cap = TextCaps {
+            max_chars: 5,
+            ..keel_core::TEXT_CAPS
+        };
+        let mut sink = Sink::new(&cap);
+        assert!(sink.line("ab"));
+        assert_eq!(
+            (sink.text.as_str(), sink.chars, sink.truncated),
+            ("ab\n", 3, false)
+        );
+        assert!(!sink.line("cdef"));
+        assert_eq!(
+            (sink.text.as_str(), sink.chars, sink.truncated),
+            ("ab\ncd", 5, true)
+        );
+        assert!(!sink.line("x"));
+        assert_eq!(sink.text, "ab\ncd");
+        assert!(!sink.line(""));
+    }
+}
