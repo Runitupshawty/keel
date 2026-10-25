@@ -305,3 +305,44 @@ other crates' suites not run. Live backends (EFU/FTS5/Everything) and GUI remain
 
 Main-repo `.remember/remember.md` unwritable in this sandbox; appended here instead.
 Ready to commit: `test(search): stale reply never overwrites the newer query`.
+
+---
+
+## 09:51 | auto-loop — K10: explain incomplete search results (verify / fix)
+
+Verified: the capped notice already existed in `search_tab::bar` (crates/keel-app/src/search_tab.rs).
+`capped = *limit > 0 && count >= *limit` (backend cap via `SearchSettings::max`/`PAGE` + shown-row
+count; a file-list scope reports its own total). The status bar rendered, derived fresh each frame:
+- file-list scope -> `search_tab.of_total` ("{n} of {total}" / "{n} de {total}"), complete within list.
+- 1 row -> `search_tab.one_result` ("1 result" / "1 resultado").
+- capped (no list) -> `search_tab.first_n_results` ("first {n} results" / "los primeros {n} resultados")
+  -- the limitation; completeness NOT claimed.
+- otherwise -> `search_tab.n_results` ("{n} results" / "{n} resultados"), backend exhausted = complete.
+So: capped shows the limitation, uncapped does not, and editing the query (resets `limit`->0, clears
+rows) clears it because the text is recomputed each frame. EN+ES strings already present in i18n.
+
+Gap: existing tests pinned the capped STATE (`load_more_goes_past_the_first_page`: capped ->
+limit=PAGE,more=true; edit -> limit=0) but never the *displayed* notice the task's "Done when" asks for.
+
+Change (behavior-preserving, minimal): extracted the 4-way match into pure
+`fn results_count(count, list, capped) -> String` (search_tab.rs, above `bar`); `bar` now calls
+`ui.weak(results_count(count, list, capped))`. Same 4 i18n keys, same placeholders, no logic change.
+
+Added regression `search_tab::tests::results_count_names_a_capped_search_and_clears_on_query_change`:
+capped (PAGE rows, capped=true) -> first_n_results text; uncapped (3 rows) -> n_results; 1 row ->
+one_result; file-list (2 of 2) -> of_total; query change (same count, capped=false) -> n_results and
+!= first_n_results (old limitation cleared).
+
+Verified: `cargo fmt --all` clean; `cargo clippy -p keel-app --all-targets -- -D warnings` clean;
+focused test passes; full `cargo test -p keel-app` = 758 passed / 22 failed / 35 ignored (baseline
+757/22/35; my test is the +1, the 22 are the unchanged pre-existing sandbox env failures:
+backend/single_instance/update/profiles/settings/mount_ui socket-bind + config-dir). Only keel-app
+touched; search_filters.rs needed no change. Live backends (EFU/FTS5/Everything) and GUI untested here;
+a genuinely complete search returning exactly `limit` rows still reads "first N" (no backend total for
+the main index to disambiguate) -- conservative by design, matches "do not claim completeness without
+evidence".
+
+Main-repo `.remember/remember.md` unwritable in this sandbox; appended here instead.
+Ready to commit: `test(search): show the capped-results notice and clear it on query change`.
+## 10:39 | auto-loop
+K10 check fix: the check-run failure library::tests::a_recount_after_watcher_changes_reads_protection_and_badges_again was a load-induced pump_until timeout (passed in 5.4s isolated; K10 diff only touched search_tab.rs). Bumped the test-only pump_until budget 20s -> 60s in crates/keel-app/src/library_tests.rs (+1 line, +1 comment); no behavior change. fmt/clippy clean; full keel-app suite run twice: 758 passed / 22 known sandbox failures (socket-bind) / 35 ignored both times, library watcher test green in both; check-harness env had previously passed those 22, so no new risk. GUI/live backends still untested.

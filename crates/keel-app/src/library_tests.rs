@@ -62,7 +62,8 @@ fn state_with(lib: &Arc<Library>, tmp: &std::path::Path) -> AppState {
 }
 
 fn pump_until(s: &mut AppState, what: &str, done: impl Fn(&AppState) -> bool) {
-    let end = Instant::now() + Duration::from_secs(20);
+    // 60s: the full suite runs 800+ tests in parallel and a 20s pump starved once under load.
+    let end = Instant::now() + Duration::from_secs(60);
     while !done(s) {
         assert!(Instant::now() < end, "timed out: {what}");
         if let Ok(m) = s.rx.recv_timeout(Duration::from_millis(30)) {

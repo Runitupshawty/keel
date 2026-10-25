@@ -341,6 +341,22 @@ fn checks_syntax(backend: Option<&str>, library: bool, listing: bool) -> bool {
     matches!(backend, Some("Everything") | Some("Keel index")) && !library && !listing
 }
 
+/// The status bar's count text: a file list's `n of total` (complete within the list),
+/// `1 result`, a capped `first n results` (the backend may hold more past the cap, so
+/// completeness is not claimed), or the complete `n results`.
+fn results_count(count: usize, list: Option<(String, usize)>, capped: bool) -> String {
+    match (count, list) {
+        (n, Some((_, total))) => crate::i18n::tr("search_tab.of_total")
+            .replace("{n}", &n.to_string())
+            .replace("{total}", &total.to_string()),
+        (1, None) => crate::i18n::tr("search_tab.one_result").to_owned(),
+        (n, None) if capped => {
+            crate::i18n::tr("search_tab.first_n_results").replace("{n}", &n.to_string())
+        }
+        (n, None) => crate::i18n::tr("search_tab.n_results").replace("{n}", &n.to_string()),
+    }
+}
+
 /// The query box. Editing schedules the query after the search delay (when searching as
 /// you type); Enter runs it now; Up/Down move the result cursor while typing. The toggles
 /// and the Search menu follow; with the Library backend the filter chips (`chip_row`)
@@ -661,16 +677,7 @@ pub fn bar(
         if busy {
             crate::anim::spinner(ui);
         }
-        ui.weak(match (count, &list) {
-            (n, Some((_, total))) => crate::i18n::tr("search_tab.of_total")
-                .replace("{n}", &n.to_string())
-                .replace("{total}", &total.to_string()),
-            (1, None) => crate::i18n::tr("search_tab.one_result").to_owned(),
-            (n, None) if capped => {
-                crate::i18n::tr("search_tab.first_n_results").replace("{n}", &n.to_string())
-            }
-            (n, None) => crate::i18n::tr("search_tab.n_results").replace("{n}", &n.to_string()),
-        });
+        ui.weak(results_count(count, list, capped));
         if can_more
             && ui
                 .small_button(crate::i18n::tr("search_tab.load_more"))
@@ -1007,6 +1014,45 @@ mod tests {
             f.state.tab(0).kind,
             TabKind::Search { limit: 0, .. }
         ));
+    }
+
+    /// K10: the status bar names a capped search ("first n results") and not a complete
+    /// one; editing the query clears the old limitation. The capped *detection* is pinned
+    /// by `load_more_goes_past_the_first_page`; this pins the notice it renders.
+    #[test]
+    fn results_count_names_a_capped_search_and_clears_on_query_change() {
+        // Capped: the backend hit the limit and may hold more, so the limitation shows.
+        let capped = results_count(PAGE as usize, None, true);
+        assert_eq!(
+            capped,
+            crate::i18n::tr("search_tab.first_n_results").replace("{n}", &PAGE.to_string())
+        );
+        // Uncapped: fewer than the limit, so the backend exhausted and no limitation shows.
+        assert_eq!(
+            results_count(3, None, false),
+            crate::i18n::tr("search_tab.n_results").replace("{n}", "3")
+        );
+        assert_eq!(
+            results_count(1, None, false),
+            crate::i18n::tr("search_tab.one_result").to_owned()
+        );
+        // A file list reports its total and is complete within the list.
+        assert_eq!(
+            results_count(2, Some(("docs".into(), 2)), false),
+            crate::i18n::tr("search_tab.of_total")
+                .replace("{n}", "2")
+                .replace("{total}", "2")
+        );
+        // Editing the query resets the cap (limit 0 -> not capped): the old limitation clears.
+        let after = results_count(PAGE as usize, None, false);
+        assert_eq!(
+            after,
+            crate::i18n::tr("search_tab.n_results").replace("{n}", &PAGE.to_string())
+        );
+        assert_ne!(
+            after,
+            crate::i18n::tr("search_tab.first_n_results").replace("{n}", &PAGE.to_string())
+        );
     }
 
     #[test]
