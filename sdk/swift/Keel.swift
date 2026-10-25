@@ -2,7 +2,7 @@
 
 import Foundation
 
-// API schema fingerprint: c1de2f6b577d6a11262ae1f901c112911eb5f1cebd57271caf6b4d329d744f21
+// API schema fingerprint: 4b4aa810a2bf08b55c0c275644183264120be7b1acb14f33066df056db61a95c
 
 /// Arbitrary JSON, including heterogeneous unions and exact 64-bit integers.
 public indirect enum JSONValue: Codable, Sendable, Equatable {
@@ -2203,6 +2203,55 @@ public struct FreezesDeleteResult: Codable, Sendable {
         self.`plan_id` = `plan_id`
         self.`summary` = `summary`
         self.`warnings` = `warnings`
+    }
+}
+
+public struct FreezesSearchParams: Codable, Sendable {
+    public var `folder`: String?
+    public var `freeze`: Int64
+    public var `id`: String
+    public var `max`: UInt64?
+    public var `query`: String
+    public init(`folder`: String? = nil, `freeze`: Int64, `id`: String, `max`: UInt64? = nil, `query`: String) {
+        self.`folder` = `folder`
+        self.`freeze` = `freeze`
+        self.`id` = `id`
+        self.`max` = `max`
+        self.`query` = `query`
+    }
+}
+
+public struct FreezesSearchResultItemSnippet: Codable, Sendable {
+    public var `marks`: [[UInt64]]?
+    public var `text`: String
+    public init(`marks`: [[UInt64]]? = nil, `text`: String) {
+        self.`marks` = `marks`
+        self.`text` = `text`
+    }
+}
+
+public struct FreezesSearchResultItem: Codable, Sendable {
+    public var `is_dir`: Bool
+    public var `modified`: Int64?
+    public var `name`: String
+    public var `path`: String
+    public var `record`: Int64
+    public var `score`: Double
+    public var `size`: UInt64
+    public var `snippet`: FreezesSearchResultItemSnippet?
+    public var `source`: String
+    public var `source_label`: String
+    public init(`is_dir`: Bool, `modified`: Int64? = nil, `name`: String, `path`: String, `record`: Int64, `score`: Double, `size`: UInt64, `snippet`: FreezesSearchResultItemSnippet? = nil, `source`: String, `source_label`: String) {
+        self.`is_dir` = `is_dir`
+        self.`modified` = `modified`
+        self.`name` = `name`
+        self.`path` = `path`
+        self.`record` = `record`
+        self.`score` = `score`
+        self.`size` = `size`
+        self.`snippet` = `snippet`
+        self.`source` = `source`
+        self.`source_label` = `source_label`
     }
 }
 
@@ -4612,6 +4661,10 @@ extension KeelClient {
     /// Deletes a freeze of a source (the files and the live index are not touched).
     public func freezes_delete(_ params: FreezesDeleteParams) async throws -> FreezesDeleteResult {
         try await call("freezes.delete", params: params, result: FreezesDeleteResult.self)
+    }
+    /// Searches a freeze: the names and paths the source held when the freeze was made (a case-insensitive substring plus size:, kind: and dm: filters), never the live index. A filter-only query (no plain words) matches nothing.
+    public func freezes_search(_ params: FreezesSearchParams) async throws -> [FreezesSearchResultItem] {
+        try await call("freezes.search", params: params, result: [FreezesSearchResultItem].self)
     }
     /// Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.
     public func library_stats(_ params: [String: JSONValue]) async throws -> LibraryStatsResult {

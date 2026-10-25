@@ -93,7 +93,7 @@ fn summary(label: &str, status: SourceStatus) -> SourceSummary {
 fn library_search_keeps_to_a_pane_folder() {
     let (tmp, lib, _) = fixture("within", false);
     let search = |within: Option<PathBuf>| {
-        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new(), None)
             .query(&Query {
                 text: "ext:txt".into(),
                 within,
@@ -135,7 +135,7 @@ fn lib_search_finds_hits_deep_in_a_folder() {
     let job = lib.index(&id).unwrap();
     assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
 
-    let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
+    let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new(), None)
         .query(&Query {
             text: "ext:txt".into(),
             max: 3,
@@ -153,7 +153,7 @@ fn lib_search_finds_hits_deep_in_a_folder() {
 fn library_search_refines_operator_queries() {
     let (_tmp, lib, _) = fixture("refine", false);
     let search = |text: &str| {
-        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new(), None)
             .query(&Query {
                 text: text.into(),
                 ..Query::default()
@@ -554,6 +554,64 @@ fn a_freeze_is_made_browsed_read_only_and_deleted() {
     assert!(lib.freezes(&id).unwrap().is_empty());
 }
 
+/// K14: a search tab opened in a freeze view searches the freeze (historical hits), and
+/// leaving the freeze searches the live index. `freeze_scope` reads the source/freeze from
+/// a `library://<source>@<freeze>/` path; an open search covers the whole freeze, a
+/// search-in keeps its folder.
+#[test]
+fn searching_in_a_freeze_returns_historical_hits() {
+    let (tmp, lib, id) = fixture("freeze-search", false);
+    let docs = tmp.join("docs");
+    let freeze = lib.freeze(&id).unwrap();
+    // The live index changes after the freeze: `c.txt` is renamed away and `d.txt` appears.
+    std::fs::rename(docs.join("c.txt"), docs.join("c2.txt")).unwrap();
+    std::fs::write(docs.join("d.txt"), "d").unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+
+    // `freeze_scope` keeps the source/freeze identity; an open search covers the whole
+    // freeze, a search-in keeps its folder (both from the freeze's VPath).
+    let root = vlib::path(&vlib::frozen(&id.0, freeze.id), "");
+    let scope = freeze_scope(&root, None).unwrap();
+    assert_eq!(&scope.source, &id);
+    assert_eq!(scope.freeze, freeze.id);
+    assert_eq!(scope.folder.as_str(), "");
+    let sub = vlib::path(&vlib::frozen(&id.0, freeze.id), "sub");
+    assert_eq!(
+        freeze_scope(&sub, None).unwrap().folder,
+        "",
+        "open search: whole freeze"
+    );
+    assert_eq!(
+        freeze_scope(&root, Some(&sub)).unwrap().folder,
+        "sub",
+        "search-in: its folder"
+    );
+    // A live (non-freeze) library path has no freeze scope.
+    let live = vlib::path(&id.0, "");
+    assert!(freeze_scope(&live, None).is_none());
+
+    let search = |scope: Option<FreezeScope>, text: &str| {
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new(), scope)
+            .query(&Query {
+                text: text.into(),
+                max: 100,
+                ..Query::default()
+            })
+            .unwrap();
+        let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+        names.sort();
+        names
+    };
+    // In the freeze: the historical `c.txt` is found (renamed away live); `d.txt` is not
+    // in the freeze, so it is absent. The freeze holds the old index, never the live one.
+    assert_eq!(search(Some(scope.clone()), "c.txt"), ["c.txt"]);
+    assert!(search(Some(scope.clone()), "d.txt").is_empty());
+    // Leaving the freeze: the live index. `c.txt` is gone (renamed to `c2.txt`); `d.txt` shows.
+    assert!(search(None, "c.txt").is_empty());
+    assert_eq!(search(None, "d.txt"), ["d.txt"]);
+}
+
 #[test]
 fn tags_and_favorites_round_trip_through_the_ui_model() {
     let (tmp, lib, id) = fixture("tags", false);
@@ -594,7 +652,7 @@ fn tags_and_favorites_round_trip_through_the_ui_model() {
     // Ctrl+D toggles the favorite star; Favorites lists it.
     s.run(0, Action::Library(LibCmd::ToggleFavorite));
     settle(&mut s, "favorite", true, FAVORITES);
-    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new())
+    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()), Vec::new(), None)
         .query(&Query {
             text: FAVORITES_QUERY.into(),
             max: 10,

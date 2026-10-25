@@ -36,6 +36,29 @@ pub struct FrozenFilters {
     pub modified_before: Option<i64>,
 }
 
+/// What `search_frozen` needs from a parsed library query: the plain substring (the words
+/// and phrases, so the `ext:`/`size:`/`dm:`/`kind:` operators narrow it without matching
+/// names) and the size/type/modified filters (a freeze holds `FrozenFilters`' fields,
+/// nothing else). The substring is empty when the query has no plain words; `search_frozen`
+/// then matches nothing (a filter-only query is unsupported, like before K14).
+pub fn frozen_query(q: &crate::search::LibraryQuery) -> (String, FrozenFilters) {
+    (
+        q.terms
+            .iter()
+            .chain(&q.phrases)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" "),
+        FrozenFilters {
+            min_size: q.min_size,
+            max_size: q.max_size,
+            kind: q.kind,
+            modified_from: q.modified_from,
+            modified_before: q.modified_before,
+        },
+    )
+}
+
 /// The records of freeze `?1`: rows unchanged since it, and the rows copied for it.
 const AT: &str = "(SELECT id, parent, name, path, kind, size, mtime FROM record WHERE since < ?1
     UNION ALL SELECT id, parent, name, path, kind, size, mtime FROM frozen
@@ -247,7 +270,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrozenFilters, NS};
+    use super::{frozen_query, FrozenFilters, NS};
     use crate::library::tests::folder;
     use crate::Library;
     use std::fs;
@@ -584,5 +607,25 @@ mod tests {
             Vec::<String>::new(),
             "an empty size range matches nothing"
         );
+    }
+
+    /// `frozen_query` keeps the plain words as the substring (the operators narrow it
+    /// without matching names) and lifts the size/type/modified filters for `search_frozen`.
+    #[test]
+    fn frozen_query_keeps_words_and_filters() {
+        use crate::search::LibraryQuery;
+        let lq = LibraryQuery::parse("invoice size:>1mb kind:folder dm:>=2026-01-01", 0).unwrap();
+        let (substring, f) = frozen_query(&lq);
+        assert_eq!(substring, "invoice", "the operators are not the substring");
+        assert_eq!(
+            f.min_size,
+            Some((1 << 20) + 1),
+            "strict `>` lifts the inclusive bound"
+        );
+        assert_eq!(f.kind, Some(crate::search::KindFilter::Folder));
+        assert!(f.modified_from.is_some() && f.modified_before.is_none());
+        // No plain words: an empty substring (a filter-only query matches nothing in a freeze).
+        let op = LibraryQuery::parse("ext:txt", 0).unwrap();
+        assert_eq!(frozen_query(&op).0, "");
     }
 }

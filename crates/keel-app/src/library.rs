@@ -1651,11 +1651,45 @@ pub(crate) fn entry_of(h: LibraryHit) -> Entry {
     }
 }
 
+/// A search scoped to one freeze of a source (K14): `search_frozen`'s identity, so the
+/// search box in a freeze view returns the index as the freeze holds it, never the live one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FreezeScope {
+    /// The source the freeze belongs to.
+    pub source: SourceId,
+    /// The freeze to search.
+    pub freeze: i64,
+    /// A source-relative folder to scope the search (`""`: the whole source as the freeze
+    /// holds it).
+    pub folder: String,
+}
+
+/// The freeze a search tab belongs to, from the tab's folder (a `library://<source>@<freeze>/`
+/// path). An open search covers the whole freeze; a search-in keeps its folder. `None`: a
+/// live (non-freeze) library search.
+pub fn freeze_scope(dir: &VPath, within: Option<&VPath>) -> Option<FreezeScope> {
+    let root = within.unwrap_or(dir);
+    let (authority, rel) = vlib::split(root)?;
+    let (source, freeze) = vlib::freeze_of(authority);
+    let freeze = freeze?;
+    let folder = if within.is_some() {
+        rel.to_owned()
+    } else {
+        String::new()
+    };
+    Some(FreezeScope {
+        source: SourceId(source.to_owned()),
+        freeze,
+        folder,
+    })
+}
+
 /// The search tab's Library backend: `LibrarySearcher` (or the daemon's `search`), plus
-/// the sidebar's Favorites and Recents queries.
+/// the sidebar's Favorites and Recents queries, and the freeze the tab searches (K14).
 pub struct LibSearch(
     pub LibraryBackend,
     pub Vec<crate::search_filters::CustomFilter>,
+    pub Option<FreezeScope>,
 );
 
 impl Searcher for LibSearch {
@@ -1718,6 +1752,9 @@ impl Searcher for LibSearch {
 
 impl LibSearch {
     fn search(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        if let Some(scope) = &self.2 {
+            return self.search_frozen(scope, q);
+        }
         let lib = match &self.0 {
             LibraryBackend::InProcess(lib) => lib,
             daemon => return Ok(Self::under(daemon.search(q)?, q)),
@@ -1741,6 +1778,18 @@ impl LibSearch {
                 .collect(),
             q,
         ))
+    }
+
+    /// The freeze's historical hits (K14): the query runs through `search_frozen` (in-process
+    /// or the daemon's `freezes.search`), never the live index, scoped to the freeze's folder.
+    fn search_frozen(&self, scope: &FreezeScope, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        self.0.search_frozen(
+            &scope.source,
+            scope.freeze,
+            q.text.trim(),
+            &scope.folder,
+            q.max as usize,
+        )
     }
 
     /// Keeps the hits under the pane's folder: the daemon's `search` and the

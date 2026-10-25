@@ -150,6 +150,8 @@ pub static OPS: &[Operation] = &[
         SourceIdParams => FreezeInfo, freezes_add_preview, freezes_add, json!({"id": "0123456789abcdef0123456789abcdef"})),
     previewed!("freezes.delete", "Deletes a freeze of a source (the files and the live index are not touched).",
         FreezeParams => Done, freezes_delete_preview, freezes_delete, json!({"id": "0123456789abcdef0123456789abcdef", "freeze": 1})),
+    now!("freezes.search", "Searches a freeze: the names and paths the source held when the freeze was made (a case-insensitive substring plus size:, kind: and dm: filters), never the live index. A filter-only query (no plain words) matches nothing.",
+        FreezeSearchParams => Vec<Hit>, freezes_search, json!({"id": "0123456789abcdef0123456789abcdef", "freeze": 1, "query": "invoice", "folder": "", "max": 100})),
     now!("library.stats", "Counts over every source (records, files, bytes, distinct contents, running jobs) and per source (files, folders, bytes, hashed files, last walk, offline), and the remote hashing policy.",
         NoParams => LibraryStats, library_stats, json!({})),
     now!("library.folder_sizes", "A folder's total size and file count, and each child's size (folders by their totals), biggest first (at most `max`, default 1000; `dirs_only` for the folders alone), from the library index; read-only.",
@@ -1985,6 +1987,22 @@ fn freezes_delete(ctx: &Ctx, p: FreezeParams) -> Result<Done> {
     find_source(ctx, &p.id)?;
     ctx.lib.delete_freeze(&SourceId(p.id), p.freeze)?;
     Ok(Done { ok: true })
+}
+
+fn freezes_search(ctx: &Ctx, p: FreezeSearchParams) -> Result<Vec<Hit>> {
+    find_source(ctx, &p.id)?;
+    let lq = LibraryQuery::parse(&p.query, ctx.utc_offset)
+        .map_err(|e| ApiError::invalid_params(format!("{e:#}")))?;
+    let (query, filters) = keel_core::frozen_query(&lq);
+    let max = p.max.unwrap_or(100).clamp(1, 10_000);
+    Ok(hits(ctx.lib.search_frozen(
+        &SourceId(p.id),
+        p.freeze,
+        &query,
+        &p.folder,
+        &filters,
+        max,
+    )?))
 }
 
 fn library_stats(ctx: &Ctx, _: NoParams) -> Result<LibraryStats> {

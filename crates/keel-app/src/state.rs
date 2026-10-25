@@ -1186,12 +1186,17 @@ impl AppState {
         };
         // A remote or cloud tab searches names there (remotes.rs); Everything stays local.
         let remote = crate::remotes::is_network(&tab.dir) && !tab.library_search;
+        // K14: a search tab opened in a freeze view searches the freeze, not the live index.
+        let scope = crate::library::freeze_scope(&tab.dir, within.as_ref());
         let library = (tab.library_search)
             .then(|| self.library.backend.clone())
             .flatten()
             .map(|b| {
-                Arc::new(crate::library::LibSearch(b, self.settings.filters.clone()))
-                    as Arc<dyn Searcher>
+                Arc::new(crate::library::LibSearch(
+                    b,
+                    self.settings.filters.clone(),
+                    scope.clone(),
+                )) as Arc<dyn Searcher>
             });
         // Task 77: a file list tab searches the list's entries (an empty query lists them all).
         let filelist = (tab.filelist.clone()).map(|s| s as Arc<dyn Searcher>);

@@ -147,6 +147,7 @@ fn registry_is_preview_first() {
         "freezes.list",
         "freezes.add",
         "freezes.delete",
+        "freezes.search",
         "devices.settings",
         "devices.settings_set",
         "library.sync",
@@ -1816,6 +1817,55 @@ fn freezes_are_made_listed_browsed_and_deleted() {
         json!({"id": id, "freeze": freeze})
     )
     .is_err());
+}
+
+#[test]
+fn freeze_search_returns_the_historical_index() {
+    let f = fixture(None);
+    let id = add_and_index(&f);
+    let made = apply(&f.ctx, "freezes.add", json!({"id": id}));
+    let freeze = made["id"].as_i64().unwrap();
+    // After the freeze, one file is added and one renamed; the live index changes, the freeze does not.
+    std::fs::write(f.files.path().join("docs/receipt.txt"), b"r").unwrap();
+    std::fs::rename(
+        f.files.path().join("docs/notes.txt"),
+        f.files.path().join("docs/notes2.txt"),
+    )
+    .unwrap();
+    let job = apply(&f.ctx, "sources.index", json!({"id": id}))["job"]
+        .as_i64()
+        .unwrap();
+    f.ctx.lib.jobs().wait(job).unwrap();
+    let names = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // The freeze still finds the old `notes` name and not the new `receipt` file.
+    let frozen = call(
+        &f.ctx,
+        "freezes.search",
+        json!({"id": id, "freeze": freeze, "query": "notes"}),
+    )
+    .unwrap();
+    assert_eq!(names(&frozen), ["notes.txt"], "{frozen}");
+    let frozen_receipt = call(
+        &f.ctx,
+        "freezes.search",
+        json!({"id": id, "freeze": freeze, "query": "receipt"}),
+    )
+    .unwrap();
+    assert!(
+        frozen_receipt.as_array().unwrap().is_empty(),
+        "{frozen_receipt}"
+    );
+    // The live search sees the rename and never the old `notes.txt` name.
+    let live = call(&f.ctx, "search", json!({"query": "notes"})).unwrap();
+    let live_names = names(&live);
+    assert!(!live_names.iter().any(|n| n == "notes.txt"), "{live}");
+    assert!(live_names.iter().any(|n| n == "notes2.txt"), "{live}");
 }
 
 #[test]
