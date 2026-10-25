@@ -130,3 +130,33 @@ isolation (test uses `Default::default()` applied, refine=None — unaffected by
 Not verified in this sandbox: live EFU/FTS5/Everything, mdfind/locate, running GUI.
 Main-repo `.remember/remember.md` path unwritable in this sandbox; appended here instead.
 Ready to commit: `fix(search): carry custom filter macros into validation, routing and refine`.
+
+## 2026-10-25 — K05: keep library prefixes out of the wrong parser (branch: auto-loop)
+Fixed `library_only` in `crates/keel-app/src/query_filter.rs` to mirror the
+library parser's own conventions (`keel_core::chips::tokens` quote-aware
+tokenization; prefix key = part before the first `:`, case-insensitive, as
+`LibraryQuery::parse_at` reads it via `to_ascii_lowercase`). Before: plain
+`split_whitespace` + case-sensitive `starts_with("tag:")`, so (a) a `tag:`
+inside a quoted phrase (e.g. `"my tag: work" | report`) mis-routed operator
+queries to the library parser, and (b) mixed-case prefixes (`Tag:work`,
+`W:>1000`) were missed though the library grammar accepts them. Also added
+`-content` to the key set: the library parser has a `"-content"` arm
+(`-content:word` = not in document text), keel-query parses it as a plain
+word (`-` is not alphabetic-leading, so `looks_like_name` is false), so
+`-content:foo | bar` was refined as the literal word `-content:foo` instead
+of reaching the library parser. Kept the existing key set otherwise
+(`width:`/`height:` stay out: keel-query parse-fails on them, which already
+routes to the library parser; existing test asserts `!library_only("width:1000")`).
+Added regression test `library_only_respects_quotes_and_case`
+(`crates/keel-app/src/query_filter.rs`): quoted `tag:` stays literal,
+routing assertion (`needs_full_language` true + `library_only` false for
+`"my tag: work" | report`), unquoted still detected, mixed-case
+(`Tag:work`, `NAME:report`, `W:>1000`), and `-content:word | other`.
+fmt + clippy clean; `cargo test -p keel-app` 753 passed / 22 failed / 35
+ignored vs baseline 752/22/35 (+1 = new test); the 22 are the known
+sandbox socket/daemon/network failures (backend, profiles, single_instance,
+update, mount_ui, settings), none in query_filter or search. Not verified in
+this sandbox: live backends (EFU/FTS5/Everything), running GUI.
+Main-repo `.remember/remember.md` path unwritable in this sandbox; appended
+here instead.
+Ready to commit: `fix(search): route library prefixes by the library parser's quote and case rules`.

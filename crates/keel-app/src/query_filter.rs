@@ -141,28 +141,26 @@ fn push_plain(term: &Term, out: &mut Vec<String>) {
     }
 }
 
-/// `true` when `text` uses a library-only prefix: any whitespace-delimited
-/// token begins with one of the library-only modifiers (`in:`, `tag:`,
-/// `source:`, `camera:`, `taken:`, `has:`, `contents:`, `content:`, `name:`,
-/// `w:`, `h:`, `duration:`).
+/// `true` when `text` uses a library-only prefix: any unquoted token's `key:`
+/// (the part before its first `:`, case-insensitive, as the library parser reads it)
+/// is one of the library-only modifiers (`in:`, `tag:`, `source:`, `camera:`,
+/// `taken:`, `has:`, `contents:`, `content:`, `-content:`, `name:`, `w:`, `h:`,
+/// `duration:`). Quoted phrases stay literal, so a `tag:` inside `"..."` is not a
+/// prefix.
 #[allow(dead_code)] // pending search-box wiring
 pub fn library_only(text: &str) -> bool {
     const PREFIXES: &[&str] = &[
-        "in:",
-        "tag:",
-        "source:",
-        "camera:",
-        "taken:",
-        "has:",
-        "contents:",
-        "content:",
-        "name:",
-        "w:",
-        "h:",
-        "duration:",
+        "in", "tag", "source", "camera", "taken", "has", "contents", "content", "-content", "name",
+        "w", "h", "duration",
     ];
-    text.split_whitespace()
-        .any(|token| PREFIXES.iter().any(|prefix| token.starts_with(prefix)))
+    keel_core::chips::tokens(text).iter().any(|token| {
+        !token.starts_with('"')
+            && token.split_once(':').is_some_and(|(key, _)| {
+                PREFIXES
+                    .iter()
+                    .any(|prefix| key.eq_ignore_ascii_case(prefix))
+            })
+    })
 }
 
 #[cfg(test)]
@@ -419,5 +417,28 @@ mod tests {
         assert!(!library_only("report"));
         assert!(!library_only("width:1000"));
         assert!(!library_only("height:800"));
+    }
+
+    /// Quoted text stays literal to `library_only` (a `tag:` inside `"..."` is not a
+    /// prefix, so an operator query with it takes the keel-query path), the library
+    /// parser's case-insensitive prefix matching is mirrored (`Tag:` routes like
+    /// `tag:`), and its negated `-content:` is a prefix.
+    #[test]
+    fn library_only_respects_quotes_and_case() {
+        // A `tag:` inside a quoted phrase is literal, not a library prefix.
+        assert!(!library_only(r#""my tag: work""#));
+        assert!(!library_only(r#""tag:work" report"#));
+        // ...so an operator query with a quoted prefix takes the keel-query path.
+        let opts = keel_query::Options::default();
+        assert!(needs_full_language(r#""my tag: work" | report"#, &opts));
+        assert!(!library_only(r#""my tag: work" | report"#));
+        // Unquoted the same token still is a prefix.
+        assert!(library_only("tag:work | report"));
+        // The library parser lowercases prefix keys, so mixed case routes too.
+        assert!(library_only("Tag:work"));
+        assert!(library_only("NAME:report"));
+        assert!(library_only("W:>1000"));
+        // The library's negated `content:` is a prefix as well.
+        assert!(library_only("-content:word | other"));
     }
 }
