@@ -554,6 +554,66 @@ fn the_chart_follows_the_tree_lists_selection() {
     );
 }
 
+/// The disk usage window's text is translated (en/es key parity is checked in i18n::tests).
+#[test]
+fn disk_usage_window_strings_in_spanish() {
+    use crate::i18n::tr;
+    crate::i18n::set("es");
+    assert_eq!(tr("disk_usage.select_drives"), "Elegir unidades…");
+    assert_eq!(tr("disk_usage.rescan"), "Volver a analizar");
+    assert_eq!(tr("disk_usage.stop"), "Detener");
+    assert_eq!(tr("disk_usage.pause"), "Pausar");
+    assert_eq!(tr("disk_usage.resume"), "Reanudar");
+    assert_eq!(tr("disk_usage.paused"), "En pausa");
+    assert_eq!(tr("disk_usage.on_disk"), "en disco");
+    assert_eq!(tr("disk_usage.nothing_selected"), "Nada seleccionado");
+    assert_eq!(tr("disk_usage.grid"), "Líneas de cuadrícula");
+    assert_eq!(tr("disk_usage.collapse"), "Contraer");
+    assert_eq!(tr("disk_usage.expand"), "Expandir");
+    assert_eq!(tr("disk_usage.dismiss"), "Descartar");
+    // Template keys interpolate their placeholders (a mismatch would leave a "{x}").
+    assert_eq!(
+        tr("disk_usage.scanning")
+            .replace("{what}", "un dispositivo portátil")
+            .replace("{files}", "42")
+            .replace("{size}", "1.0 MB")
+            .replace("{rate}", "7")
+            .replace("{time}", "0:12"),
+        "Analizando un dispositivo portátil: 42 archivos, 1.0 MB (7 archivos/s), 0:12"
+    );
+    assert_eq!(
+        tr("disk_usage.items_selected")
+            .replace("{n}", "3")
+            .replace("{size}", "12 KB")
+            .replace("{what}", "en disco"),
+        "3 elementos seleccionados: 12 KB en disco"
+    );
+    assert_eq!(
+        tr("disk_usage.unreadable").replace("{n}", "2"),
+        ", 2 carpetas no se pudieron leer"
+    );
+    assert_eq!(
+        tr("disk_usage.sorted_ascending").replace("{label}", "Tamaño"),
+        "Tamaño, orden ascendente"
+    );
+    assert_eq!(
+        tr("disk_usage.row_hover_parent")
+            .replace("{pct}", "12.5")
+            .replace("{name}", "nested")
+            .replace("{bytes}", "234 B"),
+        "\n12.5 % de nested (234 B)"
+    );
+    assert_eq!(
+        tr("disk_usage.row_hover_drive").replace("{pct}", "99.0"),
+        ", 99.0 % de la unidad"
+    );
+    assert_eq!(
+        tr("disk_usage.rescan_note").replace("{d}", "Copia terminada"),
+        "Copia terminada. Vuelve a analizar para ver el cambio."
+    );
+    crate::i18n::set("en");
+}
+
 /// The scan priority, the File Watcher switch and the previous scans are settings.
 #[test]
 fn priority_watch_and_history_round_trip_through_the_settings() {

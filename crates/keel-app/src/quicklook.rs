@@ -214,7 +214,7 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
     let library = &s.library;
     let screen = ctx.screen_rect();
     let full = ql.full;
-    let mut window = egui::Window::new("Quick Look")
+    let mut window = egui::Window::new(crate::i18n::tr("quicklook.title"))
         .id(Id::new(if full { "keel-ql-full" } else { "keel-ql" }))
         .title_bar(false)
         .collapsible(false)
@@ -245,44 +245,73 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
     let resp = window.show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if button(ui, "Close", "Close (Space or Esc)") {
+                if button(
+                    ui,
+                    crate::i18n::tr("quicklook.close"),
+                    crate::i18n::tr("quicklook.close_tip"),
+                ) {
                     close = true;
                 }
                 let (icon, tip) = if full {
-                    ("Exit Full Screen", "Back to a floating window")
+                    (
+                        crate::i18n::tr("quicklook.exit_fullscreen"),
+                        crate::i18n::tr("quicklook.exit_fullscreen_tip"),
+                    )
                 } else {
-                    ("Full Screen", "Fill the screen")
+                    (
+                        crate::i18n::tr("quicklook.fullscreen"),
+                        crate::i18n::tr("quicklook.fullscreen_tip"),
+                    )
                 };
                 if button(ui, icon, tip) {
                     full_toggle = true;
                 }
-                if shown.is_some() && button(ui, "Open With…", "Open with another app") {
+                if shown.is_some()
+                    && button(
+                        ui,
+                        crate::i18n::tr("quicklook.open_with"),
+                        crate::i18n::tr("quicklook.open_with_tip"),
+                    )
+                {
                     out.push((p, Action::OpenWith));
                 }
                 if video {
                     let playing = ql.player.as_ref().is_some_and(|(_, v)| v.transport.playing);
-                    let label = if playing { "Pause" } else { "▶ Play" };
-                    if button(ui, label, "Play or pause the video") {
+                    let label = if playing {
+                        crate::i18n::tr("quicklook.pause")
+                    } else {
+                        crate::i18n::tr("quicklook.play")
+                    };
+                    if button(ui, label, crate::i18n::tr("quicklook.play_tip")) {
                         play = true;
                     }
                 }
                 if !sel.is_empty() {
-                    if ql.item.is_some() && button(ui, "Index Sheet", "All selected items") {
+                    if ql.item.is_some()
+                        && button(
+                            ui,
+                            crate::i18n::tr("quicklook.index_sheet"),
+                            crate::i18n::tr("quicklook.index_sheet_tip"),
+                        )
+                    {
                         ql.item = None;
                     }
-                    if button(ui, "⏵", "Next selected item (Right)") {
+                    if button(ui, "⏵", crate::i18n::tr("quicklook.next_tip")) {
                         ql.item = step(ql.item, sel.len(), 1);
                     }
-                    if button(ui, "⏴", "Previous selected item (Left)") {
+                    if button(ui, "⏴", crate::i18n::tr("quicklook.prev_tip")) {
                         ql.item = step(ql.item, sel.len(), -1);
                     }
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let title = match (&shown, ql.item) {
-                        (Some(e), Some(i)) => format!("{}  ({} of {})", e.name, i + 1, sel.len()),
+                        (Some(e), Some(i)) => crate::i18n::tr("quicklook.item_of")
+                            .replace("{name}", &e.name)
+                            .replace("{i}", &(i + 1).to_string())
+                            .replace("{n}", &sel.len().to_string()),
                         (Some(e), None) => e.name.clone(),
-                        (None, _) if !sel.is_empty() => format!("{} items", sel.len()),
-                        (None, _) => "Nothing selected".to_owned(),
+                        (None, _) if !sel.is_empty() => crate::i18n::items(sel.len()),
+                        (None, _) => crate::i18n::tr("quicklook.nothing_selected").to_owned(),
                     };
                     ui.add(egui::Label::new(RichText::new(title).strong()).truncate());
                 });
@@ -294,7 +323,9 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
             ui.set_min_size(body.size());
             let Some(e) = &shown else {
                 if sel.is_empty() {
-                    ui.centered_and_justified(|ui| ui.weak("Nothing selected"));
+                    ui.centered_and_justified(|ui| {
+                        ui.weak(crate::i18n::tr("quicklook.nothing_selected"))
+                    });
                 } else if let Some(i) = sheet(ui, &sel, thumbs, library) {
                     ql.item = Some(i);
                 }
@@ -317,7 +348,9 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
                         ui.painter().text(
                             picture.center(),
                             Align2::CENTER_CENTER,
-                            player.download_text().unwrap_or_else(|| "Starting…".into()),
+                            player.download_text().unwrap_or_else(|| {
+                                crate::i18n::tr("quicklook.starting").to_owned()
+                            }),
                             egui::TextStyle::Body.resolve(ui.style()),
                             muted,
                         );
@@ -330,7 +363,7 @@ pub fn ui(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<(usize, Action)>)
                     play = true;
                 }
                 let line = match &player.error {
-                    Some(e) => format!("Playback failed: {e}"),
+                    Some(e) => crate::i18n::tr("quicklook.playback_failed").replace("{error}", e),
                     None => format!("{} / {}", clock_text(pos), clock_text(dur)),
                 };
                 ui.painter().text(
@@ -456,6 +489,72 @@ fn sheet(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Quick Look window's buttons, tips and labels, in Spanish.
+    #[test]
+    fn quicklook_strings_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(crate::i18n::tr("quicklook.title"), "Vista previa");
+        assert_eq!(crate::i18n::tr("quicklook.close"), "Cerrar");
+        assert_eq!(
+            crate::i18n::tr("quicklook.close_tip"),
+            "Cerrar (Space o Esc)"
+        );
+        assert_eq!(crate::i18n::tr("quicklook.fullscreen"), "Pantalla completa");
+        assert_eq!(
+            crate::i18n::tr("quicklook.fullscreen_tip"),
+            "Llenar la pantalla"
+        );
+        assert_eq!(
+            crate::i18n::tr("quicklook.exit_fullscreen"),
+            "Salir de pantalla completa"
+        );
+        assert_eq!(
+            crate::i18n::tr("quicklook.exit_fullscreen_tip"),
+            "Volver a una ventana flotante"
+        );
+        assert_eq!(crate::i18n::tr("quicklook.open_with"), "Abrir con…");
+        assert_eq!(
+            crate::i18n::tr("quicklook.open_with_tip"),
+            "Abrir con otra aplicación"
+        );
+        assert_eq!(crate::i18n::tr("quicklook.play"), "▶ Reproducir");
+        assert_eq!(crate::i18n::tr("quicklook.pause"), "Pausa");
+        assert_eq!(
+            crate::i18n::tr("quicklook.play_tip"),
+            "Reproducir o pausar el vídeo"
+        );
+        assert_eq!(crate::i18n::tr("quicklook.index_sheet"), "Hoja de índice");
+        assert_eq!(
+            crate::i18n::tr("quicklook.index_sheet_tip"),
+            "Todos los elementos seleccionados"
+        );
+        assert_eq!(
+            crate::i18n::tr("quicklook.next_tip"),
+            "Elemento seleccionado siguiente (Derecha)"
+        );
+        assert_eq!(
+            crate::i18n::tr("quicklook.prev_tip"),
+            "Elemento seleccionado anterior (Izquierda)"
+        );
+        assert_eq!(
+            crate::i18n::tr("quicklook.nothing_selected"),
+            "Nada seleccionado"
+        );
+        assert_eq!(crate::i18n::tr("quicklook.starting"), "Iniciando…");
+        assert_eq!(
+            crate::i18n::tr("quicklook.item_of")
+                .replace("{name}", "a.png")
+                .replace("{i}", "2")
+                .replace("{n}", "5"),
+            "a.png  (2 de 5)"
+        );
+        assert_eq!(
+            crate::i18n::tr("quicklook.playback_failed").replace("{error}", "boom"),
+            "Error de reproducción: boom"
+        );
+        crate::i18n::set("en");
+    }
 
     #[test]
     fn stepping_through_selected_items_wraps() {

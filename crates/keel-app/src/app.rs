@@ -161,10 +161,10 @@ impl App {
         let updates = persist.is_some().then(|| {
             if crate::update::ask_once(&mut state.settings.updates) {
                 state.toasts.ask(
-                    "Check for Keel updates once a day? Only the Keel version is sent, to GitHub.",
-                    "Turn on",
+                    tr("update.ask"),
+                    tr("update.ask_turn_on"),
                     Action::EnableUpdateCheck,
-                    "Not now",
+                    tr("update.ask_not_now"),
                 );
             }
             crate::update::Updates::default()

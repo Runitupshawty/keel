@@ -151,8 +151,10 @@ impl Jobs {
         if let Some(src) = t.extract {
             return self.extract(src, t.dst, conflict, router, tx);
         }
-        let verb = if t.mv { "Moving" } else { "Copying" };
-        let title = format!("{verb} {} to {}", items(t.src.len()), t.dst.display());
+        let key = if t.mv { "jobs.moving" } else { "jobs.copying" };
+        let title = crate::i18n::tr(key)
+            .replace("{n}", &items(t.src.len()))
+            .replace("{dst}", &t.dst.display().to_string());
         let remote = t.src.iter().chain([&t.dst]).any(crate::remotes::is_network);
         let queue = self.one_per_drive;
         let record = crate::undo::transfer_refusal(&t, conflict).is_none();
@@ -201,7 +203,9 @@ impl Jobs {
 
     /// Undoes a journal entry (already checked once and confirmed): `undo::run`.
     pub fn undo(&mut self, e: crate::undo::Entry, router: Arc<Router>, tx: Sender<Msg>) -> u64 {
-        let title = format!("Undo {}: {}", e.noun(), items(e.items.len()));
+        let title = crate::i18n::tr("jobs.undo")
+            .replace("{what}", e.noun())
+            .replace("{n}", &items(e.items.len()));
         let remote = e.items.iter().any(|i| crate::remotes::is_network(&i.now));
         let id = self.spawn(title, tx, move |report, cancel| {
             crate::undo::run(&e, &router, report, cancel)
@@ -219,7 +223,7 @@ impl Jobs {
         router: Arc<Router>,
         tx: Sender<Msg>,
     ) -> u64 {
-        let title = format!("Extracting {}", src.archive.name());
+        let title = crate::i18n::tr("jobs.extracting").replace("{name}", src.archive.name());
         let remote = crate::remotes::is_network(&dst);
         let id = self.spawn(title, tx, move |report, cancel| {
             match dst.to_local_path() {
@@ -252,7 +256,7 @@ impl Jobs {
     /// Adds `src` to `zip` (created when missing; same-named entries are replaced).
     pub fn add_to_zip(&mut self, zip: PathBuf, src: Vec<PathBuf>, tx: Sender<Msg>) -> u64 {
         let name = zip.file_name().map(|n| n.to_string_lossy().into_owned());
-        let title = format!("Adding to {}", name.unwrap_or_default());
+        let title = crate::i18n::tr("jobs.adding_to").replace("{name}", &name.unwrap_or_default());
         self.spawn(title, tx, move |report, cancel| {
             keel_vfs::ops::add_to_archive(&zip, &src, "", report, cancel)
         })
@@ -262,11 +266,11 @@ impl Jobs {
     /// folders shown are refreshed.
     pub fn compress(&mut self, start: crate::compress_ui::CompressStart, tx: Sender<Msg>) -> u64 {
         let title = match start.what {
-            keel_vfs::compress::Action::Compress(alg) => {
-                format!("Compressing {} ({})", items(start.paths.len()), alg.label())
-            }
+            keel_vfs::compress::Action::Compress(alg) => crate::i18n::tr("jobs.compressing")
+                .replace("{n}", &items(start.paths.len()))
+                .replace("{alg}", alg.label()),
             keel_vfs::compress::Action::Uncompress => {
-                format!("Uncompressing {}", items(start.paths.len()))
+                crate::i18n::tr("jobs.uncompressing").replace("{n}", &items(start.paths.len()))
             }
         };
         let (ntx, ctx) = (tx.clone(), self.ctx.clone());
@@ -324,7 +328,7 @@ impl Jobs {
     /// Task 85: a confirmed user-defined cleanup (`cleanups::run`); the folders shown are
     /// refreshed after when it says so.
     pub fn cleanup(&mut self, p: crate::cleanups::Prepared, tx: Sender<Msg>) -> u64 {
-        let title = format!("Cleanup: {}", p.cleanup.title);
+        let title = crate::i18n::tr("jobs.cleanup").replace("{name}", &p.cleanup.title);
         let (ntx, ctx) = (tx.clone(), self.ctx.clone());
         self.spawn(title, tx, move |report, cancel| {
             let result = crate::cleanups::run(&p, report, cancel);
@@ -341,10 +345,13 @@ impl Jobs {
     pub fn trash_op(&mut self, op: TrashOp, tx: Sender<Msg>) -> u64 {
         let title = match &op {
             TrashOp::Restore(p) | TrashOp::RestoreTo(p, _) => {
-                format!("Restoring {}", items(p.len()))
+                crate::i18n::tr("jobs.restoring").replace("{n}", &items(p.len()))
             }
-            TrashOp::Purge(p) => format!("Deleting {} permanently", items(p.len())),
-            TrashOp::Empty => format!("Emptying the {}", keel_vfs::trashbin::label()),
+            TrashOp::Purge(p) => {
+                crate::i18n::tr("jobs.deleting_permanently").replace("{n}", &items(p.len()))
+            }
+            TrashOp::Empty => crate::i18n::tr("jobs.emptying_trash")
+                .replace("{trash}", keel_vfs::trashbin::label()),
         };
         self.spawn(title, tx, move |_, _| {
             let bin = keel_vfs::TrashProvider;
@@ -367,7 +374,8 @@ impl Jobs {
         router: Arc<Router>,
         tx: Sender<Msg>,
     ) -> u64 {
-        let title = format!("Calculating sizes in {}", dir.display());
+        let title =
+            crate::i18n::tr("jobs.calculating_sizes").replace("{dir}", &dir.display().to_string());
         let remote = crate::remotes::is_network(dir);
         let (out, ctx) = (tx.clone(), self.ctx.clone());
         let id = self.spawn(title, tx, move |report, cancel| {
@@ -430,7 +438,9 @@ impl Jobs {
         // Entries of a zip: one rewrite of the archive for all of them, progress by bytes.
         if let Some((archive, _)) = paths.first().and_then(VPath::split_archive) {
             if paths.iter().all(|p| p.split_archive().is_some()) {
-                let title = format!("Deleting {} from {}", items(paths.len()), archive.name());
+                let title = crate::i18n::tr("jobs.deleting_from_archive")
+                    .replace("{n}", &items(paths.len()))
+                    .replace("{archive}", archive.name());
                 return self.spawn(title, tx, move |report, cancel| {
                     keel_vfs::ops::remove_entries(&paths, report, cancel)
                 });
@@ -441,10 +451,13 @@ impl Jobs {
         let remote = wsl || paths.first().is_some_and(crate::remotes::is_network);
         let (utx, uctx, generation) = (tx.clone(), self.ctx.clone(), self.undo_generation);
         let (title, did) = if remote {
-            (format!("Deleting {}", items(paths.len())), "deleted")
+            (
+                crate::i18n::tr("jobs.deleting").replace("{n}", &items(paths.len())),
+                "deleted",
+            )
         } else {
             (
-                format!("Moving {} to the trash", items(paths.len())),
+                crate::i18n::tr("jobs.moving_to_trash").replace("{n}", &items(paths.len())),
                 "moved to trash",
             )
         };
@@ -518,7 +531,7 @@ impl Jobs {
         tx: Sender<Msg>,
     ) -> u64 {
         self.spawn(
-            format!("Converting {}", items(src.len())),
+            crate::i18n::tr("jobs.converting").replace("{n}", &items(src.len())),
             tx,
             move |report, cancel| crate::image_convert::run(&src, format, max, report, cancel),
         )
@@ -644,13 +657,17 @@ fn job_row(ui: &mut egui::Ui, job: &Job, dismiss: &mut Option<u64>) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match &job.done {
                         None => {
-                            if ui.button("Cancel").clicked() {
+                            if ui.button(crate::i18n::tr("jobs.cancel")).clicked() {
                                 job.cancel.store(true, Ordering::Relaxed);
                             }
                         }
                         Some(_) if job.clears() => {}
                         Some(_) => {
-                            if ui.small_button("×").on_hover_text("Dismiss").clicked() {
+                            if ui
+                                .small_button("×")
+                                .on_hover_text(crate::i18n::tr("jobs.dismiss"))
+                                .clicked()
+                            {
                                 *dismiss = Some(job.id);
                             }
                         }
@@ -661,20 +678,22 @@ fn job_row(ui: &mut egui::Ui, job: &Job, dismiss: &mut Option<u64>) {
                             .show_percentage(),
                     );
                     let (text, error) = match &job.done {
-                        None if job.cancelled() => ("Cancelling…".to_owned(), false),
+                        None if job.cancelled() => {
+                            (crate::i18n::tr("jobs.cancelling").to_owned(), false)
+                        }
                         None => (job.progress.current.clone(), false),
                         Some(Ok(())) if job.cancelled() => {
-                            ("Done (cancel too late)".to_owned(), false)
+                            (crate::i18n::tr("jobs.done_cancel_late").to_owned(), false)
                         }
                         Some(Ok(())) if job.progress.skipped > 0 => (
-                            format!(
-                                "Done; skipped {} already there",
-                                items(job.progress.skipped)
-                            ),
+                            crate::i18n::tr("jobs.done_skipped")
+                                .replace("{n}", &items(job.progress.skipped)),
                             false,
                         ),
-                        Some(Ok(())) => ("Done".to_owned(), false),
-                        Some(Err(e)) if is_cancel(e) => ("Cancelled".to_owned(), false),
+                        Some(Ok(())) => (crate::i18n::tr("jobs.done").to_owned(), false),
+                        Some(Err(e)) if is_cancel(e) => {
+                            (crate::i18n::tr("jobs.cancelled").to_owned(), false)
+                        }
                         Some(Err(e)) => (format!("{e:#}"), true),
                     };
                     let mut label = egui::RichText::new(text);
@@ -765,7 +784,7 @@ pub enum TrashOp {
     Empty,
 }
 
-/// "1 folder" / "N folders".
+/// "1 folder" / "N folders" (English: this is used by worker threads too).
 fn folders_text(n: u64) -> String {
     if n == 1 {
         "1 folder".into()
@@ -774,11 +793,10 @@ fn folders_text(n: u64) -> String {
     }
 }
 
+/// "1 item" / "N items" in the current language; worker threads (no language set)
+/// get English, so job titles and other UI-thread counts translate.
 pub fn items(n: usize) -> String {
-    match n {
-        1 => "1 item".to_owned(),
-        n => format!("{n} items"),
-    }
+    crate::i18n::items(n)
 }
 
 /// The volume a local path is on: on Windows its volume GUID (the same through `subst`
@@ -1476,5 +1494,58 @@ mod tests {
             }
             _ => panic!("unexpected message"),
         }
+    }
+
+    #[test]
+    fn job_panel_strings_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(crate::i18n::tr("jobs.moving"), "Moviendo {n} a {dst}");
+        assert_eq!(crate::i18n::tr("jobs.copying"), "Copiando {n} a {dst}");
+        assert_eq!(crate::i18n::tr("jobs.undo"), "Deshacer {what}: {n}");
+        assert_eq!(crate::i18n::tr("jobs.extracting"), "Extrayendo {name}");
+        assert_eq!(crate::i18n::tr("jobs.adding_to"), "Añadiendo a {name}");
+        assert_eq!(
+            crate::i18n::tr("jobs.compressing"),
+            "Comprimiendo {n} ({alg})"
+        );
+        assert_eq!(crate::i18n::tr("jobs.uncompressing"), "Descomprimiendo {n}");
+        assert_eq!(crate::i18n::tr("jobs.cleanup"), "Limpieza: {name}");
+        assert_eq!(crate::i18n::tr("jobs.restoring"), "Restaurando {n}");
+        assert_eq!(
+            crate::i18n::tr("jobs.deleting_permanently"),
+            "Eliminando {n} permanentemente"
+        );
+        assert_eq!(crate::i18n::tr("jobs.emptying_trash"), "Vaciar la {trash}");
+        assert_eq!(
+            crate::i18n::tr("jobs.calculating_sizes"),
+            "Calculando tamaños en {dir}"
+        );
+        assert_eq!(
+            crate::i18n::tr("jobs.deleting_from_archive"),
+            "Eliminando {n} de {archive}"
+        );
+        assert_eq!(crate::i18n::tr("jobs.deleting"), "Eliminando {n}");
+        assert_eq!(
+            crate::i18n::tr("jobs.moving_to_trash"),
+            "Moviendo {n} a la papelera"
+        );
+        assert_eq!(crate::i18n::tr("jobs.converting"), "Convirtiendo {n}");
+        assert_eq!(crate::i18n::tr("jobs.cancel"), "Cancelar");
+        assert_eq!(crate::i18n::tr("jobs.dismiss"), "Descartar");
+        assert_eq!(crate::i18n::tr("jobs.cancelling"), "Cancelando…");
+        assert_eq!(
+            crate::i18n::tr("jobs.done_cancel_late"),
+            "Completado (cancelar llegó tarde)"
+        );
+        assert_eq!(
+            crate::i18n::tr("jobs.done_skipped"),
+            "Completado; {n} ya estaban"
+        );
+        assert_eq!(crate::i18n::tr("jobs.done"), "Completado");
+        assert_eq!(crate::i18n::tr("jobs.cancelled"), "Cancelado");
+        // The counts embedded in the titles come from the shared status strings.
+        assert_eq!(items(1), "1 elemento");
+        assert_eq!(items(3), "3 elementos");
+        crate::i18n::set("en");
     }
 }

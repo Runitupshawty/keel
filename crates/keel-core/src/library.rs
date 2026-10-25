@@ -1065,7 +1065,9 @@ impl Library {
         self.shared.utc_offset.store(secs, Ordering::SeqCst);
     }
 
-    pub(crate) fn utc_offset(&self) -> i64 {
+    /// The UTC offset `set_utc_offset` holds, in seconds: `LibraryQuery::parse` uses it
+    /// for `dm:` dates (the app's freeze search parses with it).
+    pub fn utc_offset(&self) -> i64 {
         self.shared.utc_offset.load(Ordering::SeqCst)
     }
 

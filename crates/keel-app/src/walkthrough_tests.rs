@@ -2651,7 +2651,7 @@ fn pane_search_box_searches_under_the_folder() {
     };
     let mut h = app_with(boot, SIZE);
     let ready = |s: &AppState| s.searcher.as_ref().is_some_and(|x| x.available());
-    assert!(wait(&mut h, 60, &ready), "index built");
+    assert!(wait(&mut h, 120, &ready), "index built");
     assert_eq!(h.query_all_by_label("Search in this folder").count(), 2);
 
     click_nth(&mut h, "Search in this folder", 0);

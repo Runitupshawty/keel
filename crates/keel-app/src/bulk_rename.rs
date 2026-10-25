@@ -400,18 +400,26 @@ pub fn run_steps(
 /// Toast text for an outcome and whether it is all good.
 pub fn summary(o: &Outcome, total: usize, verb: &str) -> (String, bool) {
     if o.failed.is_empty() {
-        return (format!("{verb} {}", crate::jobs::items(o.renamed)), true);
+        let text = crate::i18n::tr("bulk_rename.done")
+            .replace("{verb}", verb)
+            .replace("{items}", &crate::jobs::items(o.renamed));
+        return (text, true);
     }
     let shown: Vec<&str> = o.failed.iter().take(3).map(String::as_str).collect();
     let more = o.failed.len().saturating_sub(3);
-    let mut text = format!(
-        "{verb} {} of {total} items. Failed: {}",
-        o.renamed,
-        shown.join("; ")
-    );
-    if more > 0 {
-        text.push_str(&format!("; and {more} more"));
-    }
+    let text = crate::i18n::tr("bulk_rename.partial")
+        .replace("{verb}", verb)
+        .replace("{renamed}", &o.renamed.to_string())
+        .replace("{total}", &total.to_string())
+        .replace("{failed}", &shown.join("; "));
+    let text = if more > 0 {
+        format!(
+            "{text}{}",
+            crate::i18n::tr("bulk_rename.more").replace("{more}", &more.to_string())
+        )
+    } else {
+        text
+    };
     (text, false)
 }
 
@@ -424,46 +432,50 @@ pub fn ui(
     cancel: &mut bool,
 ) -> Option<Vec<(VPath, String)>> {
     ui.set_width(560.0);
-    ui.strong(format!("Rename {}", crate::jobs::items(m.items.len())));
+    let items = crate::jobs::items(m.items.len());
+    ui.strong(crate::i18n::tr("bulk_rename.title").replace("{items}", &items));
     ui.add_space(4.0);
     egui::Grid::new("bulk-rename-fields")
         .num_columns(2)
         .spacing([8.0, 4.0])
         .show(ui, |ui| {
-            ui.label("Pattern");
+            ui.label(crate::i18n::tr("bulk_rename.pattern"));
             let r = ui.add(egui::TextEdit::singleline(&mut m.pattern).desired_width(f32::INFINITY));
             if std::mem::take(&mut m.focus) {
                 r.request_focus();
             }
             r.on_hover_text("{name} {ext} {n} {n:3} {date} {parent}");
             ui.end_row();
-            ui.label("Counter");
+            ui.label(crate::i18n::tr("bulk_rename.counter"));
             ui.horizontal(|ui| {
-                ui.label("start");
+                ui.label(crate::i18n::tr("bulk_rename.start"));
                 ui.add(egui::TextEdit::singleline(&mut m.start).desired_width(50.0));
-                ui.label("step");
+                ui.label(crate::i18n::tr("bulk_rename.step"));
                 ui.add(egui::TextEdit::singleline(&mut m.step).desired_width(50.0));
             });
             ui.end_row();
-            ui.label("Find");
+            ui.label(crate::i18n::tr("bulk_rename.find"));
             ui.add(egui::TextEdit::singleline(&mut m.find).desired_width(f32::INFINITY));
             ui.end_row();
-            ui.label("Replace with");
+            ui.label(crate::i18n::tr("bulk_rename.replace_with"));
             ui.add(egui::TextEdit::singleline(&mut m.replace).desired_width(f32::INFINITY));
             ui.end_row();
             ui.label("");
             ui.horizontal(|ui| {
-                ui.checkbox(&mut m.regex, "regex");
-                ui.checkbox(&mut m.ignore_case, "case-insensitive");
+                ui.checkbox(&mut m.regex, crate::i18n::tr("bulk_rename.regex"));
+                ui.checkbox(
+                    &mut m.ignore_case,
+                    crate::i18n::tr("bulk_rename.ignore_case"),
+                );
             });
             ui.end_row();
-            ui.label("Case");
+            ui.label(crate::i18n::tr("bulk_rename.case"));
             ui.horizontal(|ui| {
                 for (c, t) in [
-                    (Case::Keep, "keep"),
-                    (Case::Lower, "lower"),
-                    (Case::Upper, "UPPER"),
-                    (Case::Title, "Title"),
+                    (Case::Keep, crate::i18n::tr("bulk_rename.case_keep")),
+                    (Case::Lower, crate::i18n::tr("bulk_rename.case_lower")),
+                    (Case::Upper, crate::i18n::tr("bulk_rename.case_upper")),
+                    (Case::Title, crate::i18n::tr("bulk_rename.case_title")),
                 ] {
                     ui.selectable_value(&mut m.case, c, t);
                 }
@@ -509,8 +521,11 @@ pub fn ui(
     let renames = m.renames();
     let mut out = None;
     ui.horizontal(|ui| {
-        let apply = ui.add_enabled(renames.is_some(), egui::Button::new("Apply"));
-        let no = ui.button("Cancel");
+        let apply = ui.add_enabled(
+            renames.is_some(),
+            egui::Button::new(crate::i18n::tr("bulk_rename.apply")),
+        );
+        let no = ui.button(crate::i18n::tr("bulk_rename.cancel"));
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && !no.has_focus();
         if apply.clicked() || enter {
             out = renames.clone();
@@ -716,5 +731,42 @@ mod tests {
         assert_eq!((out.renamed, out.failed.len()), (2, 1));
         let (text, ok) = summary(&out, 3, "Renamed");
         assert!(!ok && text.starts_with("Renamed 2 of 3 items. Failed: x: "));
+    }
+
+    /// The outcome toast is translated (en/es key parity is checked in i18n::tests).
+    #[test]
+    fn bulk_rename_summary_in_spanish() {
+        let o = Outcome {
+            done: Vec::new(),
+            failed: vec![
+                "a.txt: boom".into(),
+                "b: x".into(),
+                "c: y".into(),
+                "d: z".into(),
+            ],
+            renamed: 1,
+        };
+        let (text, ok) = summary(&o, 5, "Renamed");
+        assert!(!ok);
+        assert_eq!(
+            text,
+            "Renamed 1 of 5 items. Failed: a.txt: boom; b: x; c: y; and 1 more"
+        );
+        crate::i18n::set("es");
+        let (text, ok) = summary(&o, 5, crate::i18n::tr("bulk_rename.renamed"));
+        assert!(!ok);
+        assert_eq!(
+            text,
+            "Se renombraron 1 de 5 elementos. Errores: a.txt: boom; b: x; c: y; y 1 más"
+        );
+        let o = Outcome {
+            done: Vec::new(),
+            failed: Vec::new(),
+            renamed: 3,
+        };
+        let (text, ok) = summary(&o, 3, crate::i18n::tr("bulk_rename.renamed_back"));
+        assert!(ok);
+        assert_eq!(text, "Se restauraron 3 elementos");
+        crate::i18n::set("en");
     }
 }

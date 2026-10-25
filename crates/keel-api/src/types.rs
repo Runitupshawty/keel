@@ -1083,6 +1083,25 @@ pub struct FreezeParams {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct FreezeSearchParams {
+    /// The source.
+    pub id: String,
+    /// The freeze to search.
+    pub freeze: i64,
+    /// Library query, parsed the way `search` parses it (`frozen_query` keeps the plain
+    /// words as the substring and the size/type/modified filters).
+    pub query: String,
+    /// A source-relative folder to scope the search (`""`: the whole source as the freeze
+    /// holds it).
+    #[serde(default)]
+    pub folder: String,
+    /// At most this many hits (default 100).
+    #[serde(default)]
+    pub max: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IndexParams {
     pub id: String,
     /// Index whatever is at the root now, for a source held offline because another folder

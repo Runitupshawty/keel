@@ -67,7 +67,7 @@ pub use collections::{Collection, CollectionId};
 pub use comments::MAX_COMMENT;
 pub use finder_tags::{FinderColor, FinderTag};
 pub use folder_dates::{ns_time, FolderDate};
-pub use freeze::Freeze;
+pub use freeze::{frozen_query, Freeze, FrozenFilters};
 pub use fsid::unix_ns;
 pub use hash::{
     background_thread, is_background_thread, on_battery, DupGroup, HashJob, HashResult,

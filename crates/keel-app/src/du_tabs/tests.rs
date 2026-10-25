@@ -221,3 +221,50 @@ fn time_text_is_local_or_empty() {
     assert_eq!(time_text(None), "");
     assert_eq!(time_text(Some(0)).len(), "1970-01-01 00:00".len());
 }
+
+#[test]
+fn flagged_rows() {
+    use keel_vfs::du::permissions::{Entry, Permissions, Row};
+
+    let row = |permissions: Option<Permissions>| Row {
+        node: 0,
+        path: PathBuf::from("/x"),
+        permissions,
+        error: None,
+    };
+
+    // Could not be read -> flagged.
+    assert!(permissions::flagged(&row(None)));
+
+    // Fully decoded, nothing writable, inherits, no own entries -> clean.
+    let clean = Permissions {
+        fully_decoded: true,
+        ..Default::default()
+    };
+    assert!(!permissions::flagged(&row(Some(clean.clone()))));
+
+    // Each flag alone marks the row.
+    let mut p = clean.clone();
+    p.world_writable = true;
+    assert!(permissions::flagged(&row(Some(p))));
+
+    let mut p = clean.clone();
+    p.protected = true;
+    assert!(permissions::flagged(&row(Some(p))));
+
+    let mut p = clean.clone();
+    p.fully_decoded = false;
+    assert!(permissions::flagged(&row(Some(p))));
+
+    let mut p = clean.clone();
+    p.entries.push(Entry {
+        trustee: "Everyone".into(),
+        sid: "S-1-1-0".into(),
+        kind: "Allow".into(),
+        access: "Write".into(),
+        mask: 0x2,
+        inherited: false,
+        applies_to: "This folder".into(),
+    });
+    assert!(permissions::flagged(&row(Some(p))));
+}

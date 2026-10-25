@@ -192,6 +192,11 @@ pub struct LibraryQuery {
     /// The first this many hits (best first) found by their text carry a snippet of it.
     #[serde(default = "snippet_page")]
     pub snippets: usize,
+    /// Restrict hits to a folder (inclusive of its contents).
+    #[serde(default)]
+    pub within: Option<VPath>,
+    #[serde(skip)]
+    within_rel: Option<String>,
 }
 
 fn yes() -> bool {
@@ -229,6 +234,8 @@ impl Default for LibraryQuery {
             not_content: Vec::new(),
             name: Vec::new(),
             snippets: SNIPPET_PAGE,
+            within: None,
+            within_rel: None,
         }
     }
 }
@@ -615,6 +622,7 @@ impl LibraryQuery {
             || self.has_media_filters()
             || !self.content.is_empty()
             || !self.not_content.is_empty()
+            || self.within_rel.is_some()
     }
 
     fn has_media_filters(&self) -> bool {
@@ -714,6 +722,11 @@ impl LibraryQuery {
             sql.push_str(&format!(" AND r.id NOT IN ({IN_CONTENT})"));
             args.push(Value::Text(quote(c)));
         }
+        if let Some(rel) = &self.within_rel {
+            sql.push_str(" AND (r.path = ? OR r.path LIKE ? ESCAPE '\\')");
+            args.push(Value::Text(rel.clone()));
+            args.push(Value::Text(like_escape(rel) + "/%"));
+        }
         Some((sql, args))
     }
 
@@ -809,7 +822,7 @@ fn wordy(s: &str) -> bool {
 /// The records whose text matches the one parameter.
 const IN_CONTENT: &str = "SELECT rowid FROM record_content WHERE record_content MATCH ?";
 
-fn like_escape(s: &str) -> String {
+pub(crate) fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
@@ -865,14 +878,16 @@ fn run(
     }
     args.extend(cand_args);
     args.extend(filter_args);
-    // Words left out of the candidate query: substrings of the path.
+    // Words left out of the candidate query: word starts in the path (the path's start or
+    // a previous char that is not alphanumeric), so `client` does not pass `subclient`.
     let mut filters = filters;
     for word in also {
-        filters.push_str(" AND lower(r.path) LIKE ? ESCAPE '\\'");
-        args.push(Value::Text(format!(
-            "%{}%",
-            like_escape(&word.to_lowercase())
-        )));
+        filters.push_str(
+            " AND (lower(r.path) LIKE ? ESCAPE '\\' OR lower(r.path) LIKE ? ESCAPE '\\')",
+        );
+        let esc = like_escape(&word.to_lowercase());
+        args.push(Value::Text(format!("{esc}%")));
+        args.push(Value::Text(format!("%[^a-z0-9]{esc}%")));
     }
     args.push(Value::Integer(q.max as i64));
     let sql = format!(
@@ -1219,8 +1234,8 @@ fn search_text(
     }
     // bm25 reads every posting of each word to weigh it, and a word in most records weighs
     // nothing: rank by the rarer words and check the common ones in the candidates' paths
-    // (ponytail: as substrings, so `client` also passes `subclient`; a word that common
-    // matches nearly everything anyway).
+    // (ponytail: at word starts only, so `client` does not pass `subclient`; a word that
+    // common matches nearly everything anyway).
     let words = q.text_words();
     let (mut rare, mut common, mut common_words) = (Vec::new(), Vec::new(), Vec::new());
     for (part, word) in parts.into_iter().zip(words) {
@@ -1261,13 +1276,28 @@ impl Library {
         let sources: Vec<Arc<Source>> = self.shared.sources.read().clone();
         let mut hits = Vec::new();
         for src in sources.iter().filter(|s| q.wants(s)) {
+            // Restrict to `within` per source: a source-relative path when the folder is
+            // under the root (whole source when the root is under it); skip a root neither
+            // under nor above the folder.
+            let q = match &q.within {
+                Some(within) => match crate::library::relative(&src.def.root, within) {
+                    Some(rel) => {
+                        let mut cq = q.clone();
+                        cq.within_rel = (!rel.is_empty()).then_some(rel);
+                        cq
+                    }
+                    None if crate::library::relative(within, &src.def.root).is_some() => q.clone(),
+                    None => continue,
+                },
+                None => q.clone(),
+            };
             let contents = has_text(&self.shared, src);
             // A walk rebuilds the filter indexes (a schema change); FTS5 reports that from
             // its constructor on a connection that read the old schema instead of preparing
             // again, so the search would come back empty: once more on the fresh schema.
             let found =
-                search_source(src, q, now, contents).or_else(|e| match schema_changed(&e) {
-                    true => search_source(src, q, now, contents),
+                search_source(src, &q, now, contents).or_else(|e| match schema_changed(&e) {
+                    true => search_source(src, &q, now, contents),
                     false => Err(e),
                 });
             match found {
@@ -1341,6 +1371,7 @@ impl keel_search::Searcher for LibrarySearcher {
             lq.kind = Some(KindFilter::Folder);
         }
         lq.max = q.max as usize;
+        lq.within = q.within.clone().map(VPath::local);
         Ok(self
             .0
             .search(&lq)?

@@ -565,15 +565,13 @@ pub struct SourceRow {
 pub fn offline_text(last_seen: Option<i64>, reason: OfflineReason) -> String {
     let seen = when(last_seen);
     match reason {
-        OfflineReason::Unreachable => format!("offline (last seen {seen})"),
-        OfflineReason::RootMismatch => format!(
-            "offline (last seen {seen}): a different folder is at its root; \
-             right-click → Adopt new root to index it"
-        ),
-        OfflineReason::Empty => format!(
-            "offline (last seen {seen}): its root is empty (unmounted?); \
-             right-click → Adopt new root to index it anyway"
-        ),
+        OfflineReason::Unreachable => {
+            crate::i18n::tr("library.offline_unreachable").replace("{seen}", &seen)
+        }
+        OfflineReason::RootMismatch => {
+            crate::i18n::tr("library.offline_root_mismatch").replace("{seen}", &seen)
+        }
+        OfflineReason::Empty => crate::i18n::tr("library.offline_empty").replace("{seen}", &seen),
     }
 }
 
@@ -582,18 +580,23 @@ pub fn source_rows(sources: &[SourceSummary]) -> Vec<SourceRow> {
         .iter()
         .map(|s| {
             let (dot, detail) = match &s.status {
-                SourceStatus::Online { indexed_at: None } => {
-                    (Dot::Online, "not indexed yet".into())
-                }
-                SourceStatus::Online { indexed_at } => {
-                    (Dot::Online, format!("indexed {}", when(*indexed_at)))
-                }
-                SourceStatus::Indexing { done, total: 0 } => {
-                    (Dot::Indexing, format!("indexing {}", count(*done)))
-                }
+                SourceStatus::Online { indexed_at: None } => (
+                    Dot::Online,
+                    crate::i18n::tr("library.not_indexed_yet").to_owned(),
+                ),
+                SourceStatus::Online { indexed_at } => (
+                    Dot::Online,
+                    crate::i18n::tr("library.indexed").replace("{when}", &when(*indexed_at)),
+                ),
+                SourceStatus::Indexing { done, total: 0 } => (
+                    Dot::Indexing,
+                    crate::i18n::tr("library.indexing").replace("{n}", &count(*done)),
+                ),
                 SourceStatus::Indexing { done, total } => (
                     Dot::Indexing,
-                    format!("indexing {} / {}", count(*done), count(*total)),
+                    crate::i18n::tr("library.indexing_of")
+                        .replace("{done}", &count(*done))
+                        .replace("{total}", &count(*total)),
                 ),
                 SourceStatus::Offline { last_seen, reason } => {
                     (Dot::Offline, offline_text(*last_seen, *reason))
@@ -670,15 +673,12 @@ pub fn restore_offer(file: &std::path::Path) -> anyhow::Result<(String, String)>
     let here = (m.sources.iter())
         .filter(|s| keel_core::backup::reachable(&s.root))
         .count();
-    let about = format!(
-        "Library {} backed up {} by Keel {}: {}, {here} found on this machine (walked again; \
-         the others stay offline until their folder is back). It is restored as a new library \
-         beside the open one; Settings → Library switches to it.",
-        m.library,
-        when(Some(m.created)),
-        m.keel_version,
-        counted(m.sources.len() as u64, "source"),
-    );
+    let about = crate::i18n::tr("library.restore_offer")
+        .replace("{library}", &m.library)
+        .replace("{when}", &when(Some(m.created)))
+        .replace("{version}", &m.keel_version)
+        .replace("{sources}", &counted(m.sources.len() as u64, "source"))
+        .replace("{here}", &here.to_string());
     Ok((about, name))
 }
 
@@ -705,10 +705,9 @@ fn restore(
             (r.name, r.sources.len())
         }
     };
-    Ok(format!(
-        "Restored library {name} ({}): switch to it in Settings → Library",
-        counted(sources as u64, "source")
-    ))
+    Ok(crate::i18n::tr("library.restored")
+        .replace("{name}", &name)
+        .replace("{sources}", &counted(sources as u64, "source")))
 }
 
 /// The source whose root holds `p` (a real path), with `p` relative to it.
@@ -794,9 +793,9 @@ pub fn warning_text(w: &Warning, sources: &[SourceSummary]) -> String {
             ),
             path.name()
         ),
-        Warning::OfflineSource { label, .. } => format!(
-            "Source offline: {label} (previewed from its last index; it must be online to run)"
-        ),
+        Warning::OfflineSource { label, .. } => {
+            crate::i18n::tr("library.offline_source_warning").replace("{label}", label)
+        }
         Warning::NotIndexed { path } => {
             format!(
                 "{} is not indexed: previewed from the folder itself",
@@ -1652,23 +1651,55 @@ pub(crate) fn entry_of(h: LibraryHit) -> Entry {
     }
 }
 
+/// A search scoped to one freeze of a source (K14): `search_frozen`'s identity, so the
+/// search box in a freeze view returns the index as the freeze holds it, never the live one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FreezeScope {
+    /// The source the freeze belongs to.
+    pub source: SourceId,
+    /// The freeze to search.
+    pub freeze: i64,
+    /// A source-relative folder to scope the search (`""`: the whole source as the freeze
+    /// holds it).
+    pub folder: String,
+}
+
+/// The freeze a search tab belongs to, from the tab's folder (a `library://<source>@<freeze>/`
+/// path). An open search covers the whole freeze; a search-in keeps its folder. `None`: a
+/// live (non-freeze) library search.
+pub fn freeze_scope(dir: &VPath, within: Option<&VPath>) -> Option<FreezeScope> {
+    let root = within.unwrap_or(dir);
+    let (authority, rel) = vlib::split(root)?;
+    let (source, freeze) = vlib::freeze_of(authority);
+    let freeze = freeze?;
+    let folder = if within.is_some() {
+        rel.to_owned()
+    } else {
+        String::new()
+    };
+    Some(FreezeScope {
+        source: SourceId(source.to_owned()),
+        freeze,
+        folder,
+    })
+}
+
 /// The search tab's Library backend: `LibrarySearcher` (or the daemon's `search`), plus
-/// the sidebar's Favorites and Recents queries.
-pub struct LibSearch(pub LibraryBackend);
+/// the sidebar's Favorites and Recents queries, and the freeze the tab searches (K14).
+pub struct LibSearch(pub LibraryBackend, pub Option<FreezeScope>);
 
 impl Searcher for LibSearch {
-    /// A pane's folder (`within`) keeps the hits under it.
-    // ponytail: filtered after the library's own cap (the search's page), so a folder deep in
-    // a big library can show fewer hits than it has; filtering in the query needs the folder
-    // in LibraryQuery per source (relative paths) and in the daemon's `search` call.
+    /// A pane's folder (`within`) keeps the hits under it. The plain library search
+    /// filters it in the query (per source in `LibraryQuery`), so its page cap counts
+    // ponytail: only the folder's hits; the daemon's `search` and the favorites/recents/
+    // collections branches don't take the folder, so `search` filters their pages after
+    // the cap (`under`) and a deep folder can show fewer hits than it has there.
     fn query(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
-        let mut hits = self.search(q)?;
-        if let Some(dir) = &q.within {
-            hits.retain(|h| {
-                (h.path.to_local_path()).is_some_and(|p| keel_search::is_under(&p, dir))
-            });
+        // FTS5 has no regex: an honest error, not a silent literal-pattern search.
+        if q.regex {
+            return Err(anyhow::anyhow!("the library index does not support regex"));
         }
-        Ok(hits)
+        self.search(q)
     }
 
     fn available(&self) -> bool {
@@ -1689,9 +1720,12 @@ impl Searcher for LibSearch {
 
 impl LibSearch {
     fn search(&self, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        if let Some(scope) = &self.1 {
+            return self.search_frozen(scope, q);
+        }
         let lib = match &self.0 {
             LibraryBackend::InProcess(lib) => lib,
-            daemon => return daemon.search(q),
+            daemon => return Ok(Self::under(daemon.search(q)?, q)),
         };
         let text = q.text.trim();
         let hits = match (collection_of(text), text) {
@@ -1700,16 +1734,45 @@ impl LibSearch {
             (_, RECENTS_QUERY) => lib.recents(q.max as usize)?,
             _ => return keel_core::LibrarySearcher(lib.clone()).query(q),
         };
-        Ok(hits
-            .into_iter()
-            .map(|h| Hit {
-                path: h.path,
-                is_dir: h.is_dir,
-                size: h.size,
-                modified: entry_of_time(h.modified),
-                snippet: None,
-            })
-            .collect())
+        Ok(Self::under(
+            hits.into_iter()
+                .map(|h| Hit {
+                    path: h.path,
+                    is_dir: h.is_dir,
+                    size: h.size,
+                    modified: entry_of_time(h.modified),
+                    snippet: None,
+                })
+                .collect(),
+            q,
+        ))
+    }
+
+    /// The freeze's historical hits (K14): the query runs through `search_frozen` (in-process
+    /// or the daemon's `freezes.search`), never the live index, scoped to the freeze's folder.
+    fn search_frozen(&self, scope: &FreezeScope, q: &Query) -> anyhow::Result<Vec<Hit>> {
+        self.0.search_frozen(
+            &scope.source,
+            scope.freeze,
+            q.text.trim(),
+            &scope.folder,
+            q.max as usize,
+        )
+    }
+
+    /// Keeps the hits under the pane's folder: the daemon's `search` and the
+    /// favorites/recents/collections branches don't take it, so their pages are
+    /// filtered after the cap.
+    fn under(hits: Vec<Hit>, q: &Query) -> Vec<Hit> {
+        match &q.within {
+            Some(dir) => hits
+                .into_iter()
+                .filter(|h| {
+                    (h.path.to_local_path()).is_some_and(|p| keel_search::is_under(&p, dir))
+                })
+                .collect(),
+            None => hits,
+        }
     }
 }
 
@@ -3182,8 +3245,7 @@ impl AppState {
                 self.set_tag(real, tag, on);
             }
             None => {
-                self.undo
-                    .refuse("tags and favorites (set or clear them again instead)");
+                self.undo.refuse(crate::i18n::tr("library.tag_refusal"));
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 let name = color.name().to_owned();
                 crate::tag_dots::write_through(&tx, &ctx, real.clone(), name.clone(), color, true);

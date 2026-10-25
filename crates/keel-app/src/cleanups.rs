@@ -1581,6 +1581,14 @@ mod tests {
         assert!(expand("cmd /q %p /c dir", &t).is_err());
     }
 
+    #[test]
+    fn glued_cmd_switch_is_refused() {
+        let t = file(r"C:\a b\x.txt", "x.txt", r"C:\a b", "txt");
+        // `/cecho` glues text to the `/c` switch; the `switch[..2]` slice pins `{sw}`.
+        let e = cmd_script("cmd /cecho %p", &t).unwrap_err();
+        assert_eq!(e, "/cecho: put a space after /c (cmd /c <command>)");
+    }
+
     /// The scripts above, run by cmd.exe on names holding `&`, `(`, `)`, `^` and spaces.
     #[cfg(windows)]
     #[test]

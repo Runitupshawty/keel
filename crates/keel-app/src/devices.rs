@@ -118,18 +118,19 @@ fn sync_times<'a>(pairs: impl Iterator<Item = (&'a str, Option<i64>)>) -> HashMa
 
 /// Settings → Devices' line under a device's sync switch, at unix time `now`.
 pub fn sync_note(on: bool, last: Option<i64>, now: i64) -> String {
+    let tr = crate::i18n::tr;
     let Some(t) = last.filter(|_| on) else {
         return match on {
-            true => "Not synced yet: turn it on on that device too".into(),
-            false => "Off".into(),
+            true => tr("devices.sync_not_yet").to_owned(),
+            false => tr("devices.sync_off").to_owned(),
         };
     };
     let ago = now.saturating_sub(t).max(0);
     match ago {
-        0..60 => "Last synced just now".into(),
-        60..3600 => format!("Last synced {} min ago", ago / 60),
-        3600..86_400 => format!("Last synced {} h ago", ago / 3600),
-        _ => format!("Last synced {}", crate::library::when(Some(t))),
+        0..60 => tr("devices.sync_just_now").to_owned(),
+        60..3600 => tr("devices.sync_min_ago").replace("{n}", &(ago / 60).to_string()),
+        3600..86_400 => tr("devices.sync_h_ago").replace("{n}", &(ago / 3600).to_string()),
+        _ => tr("devices.sync_when").replace("{when}", &crate::library::when(Some(t))),
     }
 }
 
@@ -146,16 +147,20 @@ pub fn offer_text(from: &str, files: &[(String, u64)]) -> String {
 /// The offer prompt from counts and the first names (an offer waiting in keel-daemon).
 pub fn offer_summary(from: &str, files: u64, bytes: u64, names: &[&str]) -> String {
     const SHOWN: usize = 3;
-    let mut text = format!(
-        "{from} wants to send {files} file(s) ({})",
-        humansize::format_size(bytes, humansize::DECIMAL)
-    );
+    let tr = crate::i18n::tr;
+    let mut text = tr("devices.offer_wants")
+        .replace("{from}", from)
+        .replace("{files}", &files.to_string())
+        .replace("{size}", &humansize::format_size(bytes, humansize::DECIMAL));
     for name in names.iter().take(SHOWN) {
-        text += &format!("\n• {name}");
+        text += &format!("\n{}", tr("devices.offer_name").replace("{name}", name));
     }
     let shown = names.len().min(SHOWN) as u64;
     if files > shown {
-        text += &format!("\n…and {} more", files - shown);
+        text += &format!(
+            "\n{}",
+            tr("devices.offer_more").replace("{n}", &(files - shown).to_string())
+        );
     }
     text
 }
@@ -430,7 +435,7 @@ impl Pair {
                 Ok(_) => Pair::Joining { text },
                 Err(_) => Pair::Entering {
                     text,
-                    error: Some("That is not a pairing code".into()),
+                    error: Some(crate::i18n::tr("devices.pair_not_code").into()),
                 },
             },
             (Pair::Joining { .. }, E::Joined(Ok(label))) => Pair::Paired(label),
@@ -484,10 +489,10 @@ pub fn share_rows(grants: &[Grant], sources: &[SourceSummary], peer: &PeerId) ->
         .filter(|g| g.peer == *peer)
         .map(|g| ShareRow {
             source: g.source.clone(),
-            label: sources
-                .iter()
-                .find(|s| s.id.0 == g.source)
-                .map_or_else(|| "(removed source)".into(), |s| s.label.clone()),
+            label: sources.iter().find(|s| s.id.0 == g.source).map_or_else(
+                || crate::i18n::tr("devices.shares_removed").to_owned(),
+                |s| s.label.clone(),
+            ),
             subtree: g.subtree.clone(),
             access: g.access,
         })
@@ -909,10 +914,11 @@ impl Devices {
                 }
                 NetEvent::DropReceived { peer, path, .. } => {
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    toasts.push(format!(
-                        "Received {name} from {}",
-                        label_of(&self.peers, &peer)
-                    ));
+                    toasts.push(
+                        crate::i18n::tr("devices.offer_received")
+                            .replace("{name}", &name)
+                            .replace("{from}", &label_of(&self.peers, &peer)),
+                    );
                 }
                 NetEvent::LibrarySynced { .. } => {
                     self.synced = true;
@@ -985,10 +991,14 @@ impl AppState {
             .map(|_| device_rows(&self.devices.peers));
         self.sidebar.devices_note = match (&self.devices.node, &self.devices.error) {
             (Some(_), _) => None,
-            (None, Some(e)) => Some(format!("Not available: {e}")),
-            _ if self.devices.opening => Some("Starting…".into()),
-            _ if !self.settings.devices.enabled => Some("Off (Settings → Devices)".into()),
-            _ => Some("Needs the library (Settings → Library)".into()),
+            (None, Some(e)) => {
+                Some(crate::i18n::tr("devices.status_not_available").replace("{e}", e))
+            }
+            _ if self.devices.opening => Some(crate::i18n::tr("devices.status_starting").into()),
+            _ if !self.settings.devices.enabled => {
+                Some(crate::i18n::tr("devices.status_off").into())
+            }
+            _ => Some(crate::i18n::tr("devices.status_needs_library").into()),
         };
     }
 
@@ -1039,8 +1049,8 @@ impl AppState {
         self.sidebar.devices = d.remote_self.as_ref().map(|_| device_rows(&d.peers));
         self.sidebar.devices_note = match (&d.remote_self, &d.error) {
             (Some(_), _) => None,
-            (None, Some(e)) => Some(format!("keel-daemon: {e}")),
-            (None, None) => Some("Asking keel-daemon…".into()),
+            (None, Some(e)) => Some(crate::i18n::tr("devices.daemon_error").replace("{e}", e)),
+            (None, None) => Some(crate::i18n::tr("devices.status_asking").into()),
         };
     }
 
@@ -1100,7 +1110,11 @@ impl AppState {
                     .and_then(|p| p.parse::<keel_net::NodeId>().ok())
                     .map(|n| label_of(&self.devices.peers, &PeerId(n)))
                     .unwrap_or_default();
-                self.toasts.info(format!("Received {name} from {from}"));
+                self.toasts.info(
+                    crate::i18n::tr("devices.offer_received")
+                        .replace("{name}", &name)
+                        .replace("{from}", &from),
+                );
             }
             _ => {}
         }
@@ -1147,10 +1161,12 @@ impl AppState {
                 d.next_poll = Instant::now();
                 if restart {
                     self.toasts
-                        .info("Relays change when keel-daemon starts again");
+                        .info(crate::i18n::tr("devices.offer_relay_change"));
                 }
             }
-            DevMsg::Applied(Err(e)) => self.toasts.error(format!("Settings → Devices: {e}")),
+            DevMsg::Applied(Err(e)) => self
+                .toasts
+                .error(crate::i18n::tr("devices.settings_applied_failed").replace("{e}", &e)),
             DevMsg::SyncTimes(times) => d.last_sync = times,
             DevMsg::Remote(Ok(r)) => {
                 d.remote_self = Some((r.id, r.label));
@@ -1176,9 +1192,7 @@ impl AppState {
                 d.grants.clear();
                 d.remote_offers.clear();
                 d.error = Some(if e.contains("devices are off") {
-                    "devices are off there (turn on Settings → Devices, then restart \
-                     keel-daemon)"
-                        .into()
+                    crate::i18n::tr("devices.daemon_off").to_owned()
                 } else {
                     e
                 });
@@ -1218,7 +1232,9 @@ impl AppState {
                                 l => l.to_owned(),
                             })
                         })()
-                        .map_err(|e| format!("Pairing failed: {e:#}"));
+                        .map_err(|e| {
+                            crate::i18n::tr("devices.pair_failed").replace("{e}", &format!("{e:#}"))
+                        });
                         worker::send(&tx, &ctx, Msg::Devices(DevMsg::Joined(joined)));
                     });
                 }
@@ -1250,7 +1266,9 @@ impl AppState {
                         let peer = rt.block_on(node.pair_with(&code))?;
                         Ok(label_of(std::slice::from_ref(&peer), &peer.id))
                     })()
-                    .map_err(|e| format!("Pairing failed: {e:#}"));
+                    .map_err(|e| {
+                        crate::i18n::tr("devices.pair_failed").replace("{e}", &format!("{e:#}"))
+                    });
                     worker::send(&tx, &ctx, Msg::Devices(DevMsg::Joined(joined)));
                 });
             }
@@ -1266,7 +1284,7 @@ impl AppState {
         let Some(node) = self.devices.node.clone() else {
             if !matches!(cmd, DevCmd::Answer { .. }) {
                 self.toasts
-                    .error("Devices are not running (Settings → Devices, and the library)");
+                    .error(crate::i18n::tr("devices.offer_not_running"));
             }
             return;
         };
@@ -1277,14 +1295,16 @@ impl AppState {
         match cmd {
             DevCmd::Send { peer, paths } => {
                 if let Some(bad) = paths.iter().find(|p| p.split_archive().is_some()) {
-                    return self.toasts.error(format!(
-                        "Extract {} first: Spacedrop sends files and folders",
-                        bad.name()
-                    ));
+                    return self.toasts.error(
+                        crate::i18n::tr("devices.offer_extract").replace("{name}", bad.name()),
+                    );
                 }
                 let n = paths.len();
-                self.toasts
-                    .info(format!("Sending {n} item(s) to {}", label(self, &peer)));
+                self.toasts.info(
+                    crate::i18n::tr("devices.offer_sending")
+                        .replace("{n}", &n.to_string())
+                        .replace("{label}", &label(self, &peer)),
+                );
                 self.library.send_drop(node, peer, paths);
             }
             DevCmd::Grant {
@@ -1301,7 +1321,10 @@ impl AppState {
                     created: chrono::Utc::now().timestamp(),
                 };
                 if let Err(e) = node.grant(grant) {
-                    self.toasts.error(format!("Could not share: {e:#}"));
+                    self.toasts.error(format!(
+                        "{}: {e:#}",
+                        crate::i18n::tr("devices.offer_share_failed")
+                    ));
                 }
                 self.devices.refresh();
             }
@@ -1311,7 +1334,10 @@ impl AppState {
                 subtree,
             } => {
                 if let Err(e) = node.revoke(&peer, &source, &subtree) {
-                    self.toasts.error(format!("Could not revoke: {e:#}"));
+                    self.toasts.error(format!(
+                        "{}: {e:#}",
+                        crate::i18n::tr("devices.offer_revoke_failed")
+                    ));
                 }
                 self.devices.refresh();
             }
@@ -1328,8 +1354,10 @@ impl AppState {
                 self.settings.devices.auto_accept.retain(|a| *a != id);
                 self.settings.devices.sync.retain(|a| *a != id);
                 if let Err(e) = node.forget_peer(&peer) {
-                    self.toasts
-                        .error(format!("Could not forget the device: {e:#}"));
+                    self.toasts.error(format!(
+                        "{}: {e:#}",
+                        crate::i18n::tr("devices.offer_forget_failed")
+                    ));
                 }
                 for id in device_sources_of(&self.library.sources, &peer) {
                     self.library_cmd(p, crate::library::LibCmd::RemoveConfirmed(id));
@@ -1363,7 +1391,9 @@ impl AppState {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 worker::spawn("keel-drop-pick", move || {
                     let picked =
-                        crate::platform::file_dialog("Send with Spacedrop", |d| d.pick_files());
+                        crate::platform::file_dialog(crate::i18n::tr("devices.send_title"), |d| {
+                            d.pick_files()
+                        });
                     if let Some(paths) = picked.filter(|p| !p.is_empty()) {
                         worker::send(&tx, &ctx, Msg::Devices(DevMsg::Picked { peer, paths }));
                     }
@@ -1374,9 +1404,10 @@ impl AppState {
                     .filter_map(|e| crate::library::real_of(&self.library.sources, &e.path))
                     .collect();
                 if paths.is_empty() {
-                    self.toasts.error("Nothing selected to send");
+                    self.toasts.error(crate::i18n::tr("devices.offer_nothing"));
                 } else if self.devices.peers.is_empty() {
-                    self.toasts.error("No paired devices (Devices → Pair…)");
+                    self.toasts
+                        .error(crate::i18n::tr("devices.offer_no_paired"));
                 } else {
                     self.devices.send_pick = Some(paths);
                 }
@@ -1457,8 +1488,8 @@ impl AppState {
         }
         if self.devices.remote_self.is_none() && !matches!(cmd, DevCmd::Answer { .. }) {
             return self.toasts.error(match &self.devices.error {
-                Some(e) => format!("keel-daemon: {e}"),
-                None => "Still asking keel-daemon about devices".into(),
+                Some(e) => crate::i18n::tr("devices.daemon_error").replace("{e}", e),
+                None => crate::i18n::tr("devices.offer_still_asking").into(),
             });
         }
         // Runs `f` on a worker; an error is a toast; peers and grants are read again.
@@ -1479,18 +1510,21 @@ impl AppState {
         match cmd {
             DevCmd::Send { peer, paths } => {
                 if let Some(bad) = paths.iter().find(|p| p.split_archive().is_some()) {
-                    return self.toasts.error(format!(
-                        "Extract {} first: Spacedrop sends files and folders",
-                        bad.name()
-                    ));
+                    return self.toasts.error(
+                        crate::i18n::tr("devices.offer_extract").replace("{name}", bad.name()),
+                    );
                 }
-                self.toasts.info(format!(
-                    "Sending {} item(s) to {}",
-                    paths.len(),
-                    label_of(&self.devices.peers, &peer)
-                ));
+                self.toasts.info(
+                    crate::i18n::tr("devices.offer_sending")
+                        .replace("{n}", &paths.len().to_string())
+                        .replace("{label}", &label_of(&self.devices.peers, &peer)),
+                );
                 let paths: Vec<String> = paths.iter().map(VPath::display).collect();
-                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                let (tx, ctx, failed) = (
+                    self.tx.clone(),
+                    self.ctx.clone(),
+                    crate::i18n::tr("devices.spacedrop_failed"),
+                );
                 worker::spawn("keel-drop-send", move || {
                     let sent = remote.apply(
                         "spacedrop.send",
@@ -1501,7 +1535,7 @@ impl AppState {
                             kind: "drop",
                             id: done.job,
                         }),
-                        Err(e) => Msg::Toast(format!("Spacedrop: {e:#}")),
+                        Err(e) => Msg::Toast(failed.replace("{e}", &format!("{e:#}"))),
                     };
                     worker::send(&tx, &ctx, msg);
                 });
@@ -1520,7 +1554,7 @@ impl AppState {
                     "subtree": clean_subtree(&subtree), "access": access});
                 run(
                     self,
-                    "Could not share",
+                    crate::i18n::tr("devices.offer_share_failed"),
                     Box::new(move || remote.apply("shares.grant", params).map(drop)),
                 );
             }
@@ -1533,7 +1567,7 @@ impl AppState {
                     json!({"peer": peer.0.to_string(), "source": source, "subtree": subtree});
                 run(
                     self,
-                    "Could not revoke",
+                    crate::i18n::tr("devices.offer_revoke_failed"),
                     Box::new(move || {
                         remote
                             .call::<api::Revoked>("shares.revoke", params)
@@ -1551,7 +1585,7 @@ impl AppState {
                 self.settings.devices.sync.retain(|a| *a != id);
                 run(
                     self,
-                    "Could not forget the device",
+                    crate::i18n::tr("devices.offer_forget_failed"),
                     Box::new(move || {
                         remote
                             .apply("devices.forget", json!({ "peer": id }))
@@ -1608,7 +1642,7 @@ pub fn sidebar(
     out: &mut Vec<Action>,
 ) {
     let Some(rows) = rows else {
-        ui.weak(note.unwrap_or("Off"));
+        ui.weak(note.unwrap_or_else(|| crate::i18n::tr("devices.off")));
         return;
     };
     for row in rows {
@@ -1626,9 +1660,9 @@ pub fn sidebar(
             })
             .inner;
         let tip = match row.link {
-            Link::Lan => "Connected directly",
-            Link::Relay => "Connected through a relay",
-            Link::Offline => "Offline",
+            Link::Lan => crate::i18n::tr("devices.link_lan"),
+            Link::Relay => crate::i18n::tr("devices.link_relay"),
+            Link::Offline => crate::i18n::tr("devices.link_offline"),
         };
         let r = r.on_hover_text(tip);
         if r.clicked() {
@@ -1644,10 +1678,19 @@ pub fn sidebar(
         }
         r.context_menu(|ui| {
             for (text, cmd) in [
-                ("Browse", DevCmd::Browse(row.id)),
-                ("Send files…", DevCmd::SendFiles(row.id)),
-                ("Shares…", DevCmd::Shares(row.id)),
-                ("Forget…", DevCmd::Forget(row.id)),
+                (crate::i18n::tr("devices.browse"), DevCmd::Browse(row.id)),
+                (
+                    crate::i18n::tr("devices.send_files"),
+                    DevCmd::SendFiles(row.id),
+                ),
+                (
+                    crate::i18n::tr("devices.shares_menu"),
+                    DevCmd::Shares(row.id),
+                ),
+                (
+                    crate::i18n::tr("devices.forget_menu"),
+                    DevCmd::Forget(row.id),
+                ),
             ] {
                 if ui.button(text).clicked() {
                     out.push(dev(cmd));
@@ -1662,14 +1705,20 @@ pub fn sidebar(
                     .desired_height(4.0)
                     .fill(accent),
             )
-            .on_hover_text(format!(
-                "{} used of {}",
-                humansize::format_size(used, humansize::DECIMAL),
-                humansize::format_size(total, humansize::DECIMAL)
-            ));
+            .on_hover_text(
+                crate::i18n::tr("devices.storage_used")
+                    .replace("{used}", &humansize::format_size(used, humansize::DECIMAL))
+                    .replace(
+                        "{total}",
+                        &humansize::format_size(total, humansize::DECIMAL),
+                    ),
+            );
         }
     }
-    if ui.small_button("Pair…").clicked() {
+    if ui
+        .small_button(crate::i18n::tr("devices.pair_button"))
+        .clicked()
+    {
         out.push(dev(DevCmd::Pair));
     }
 }
@@ -1683,22 +1732,25 @@ pub fn windows(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
         let label = label_of(&s.devices.peers, &peer);
         let mut open = true;
         // Esc closes it (a11y).
-        crate::a11y::esc_closes(ctx, "Forget device", &mut open);
-        egui::Window::new("Forget device")
+        crate::a11y::esc_closes(ctx, crate::i18n::tr("devices.forget_title"), &mut open);
+        egui::Window::new(crate::i18n::tr("devices.forget_title"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label(format!(
-                    "Forget {label}? Its shares end now and its folders leave the library; \
-                     pair again to reconnect."
-                ));
+                ui.label(crate::i18n::tr("devices.forget_question").replace("{label}", &label));
                 ui.horizontal(|ui| {
-                    if ui.button("Forget").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("devices.forget_button"))
+                        .clicked()
+                    {
                         out.push(dev(DevCmd::ForgetConfirmed(peer)));
                         s.devices.forget = None;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("devices.forget_cancel"))
+                        .clicked()
+                    {
                         s.devices.forget = None;
                     }
                 });
@@ -1717,19 +1769,25 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let step = |ev| dev(DevCmd::PairStep(ev));
     let mut open = true;
     // Esc closes it (a11y).
-    crate::a11y::esc_closes(ctx, "Pair a device", &mut open);
-    egui::Window::new("Pair a device")
+    crate::a11y::esc_closes(ctx, crate::i18n::tr("devices.pair_title"), &mut open);
+    egui::Window::new(crate::i18n::tr("devices.pair_title"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| match state {
             Pair::Choose => {
-                ui.label("Pair with another Keel: show this device's code there, or enter its code here.");
+                ui.label(crate::i18n::tr("devices.pair_choose"));
                 ui.horizontal(|ui| {
-                    if ui.button("Show code").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("devices.pair_show_code"))
+                        .clicked()
+                    {
                         out.push(step(PairEvent::ShowCode));
                     }
-                    if ui.button("Enter code").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("devices.pair_enter_code"))
+                        .clicked()
+                    {
                         out.push(step(PairEvent::EnterCode));
                     }
                 });
@@ -1737,15 +1795,18 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             Pair::Requesting => {
                 ui.horizontal(|ui| {
                     crate::anim::spinner(ui);
-                    ui.label("Making a code…");
+                    ui.label(crate::i18n::tr("devices.pair_making"));
                 });
             }
             Pair::Showing { short, ticket } => {
-                ui.label("On the other device: Pair… → Enter code, then type or scan:");
+                ui.label(crate::i18n::tr("devices.pair_on_other"));
                 // One line: a code wrapped at a hyphen reads as two.
                 let code = egui::RichText::new(&short).monospace().size(18.0);
                 ui.add(egui::Label::new(code).extend());
-                if ui.small_button("Copy full code").clicked() {
+                if ui
+                    .small_button(crate::i18n::tr("devices.pair_copy_full"))
+                    .clicked()
+                {
                     ui.ctx().copy_text(ticket.clone());
                 }
                 if s.devices.qr.as_ref().is_none_or(|(t, _)| *t != ticket) {
@@ -1758,14 +1819,14 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                 if let Some((_, tex)) = &s.devices.qr {
                     ui.add(egui::Image::new(tex).fit_to_exact_size([240.0, 240.0].into()));
                 }
-                ui.weak("The code works once, for ten minutes, also on the same network without internet. Anyone who has it can pair.");
+                ui.weak(crate::i18n::tr("devices.pair_code_tip"));
                 ui.horizontal(|ui| {
                     crate::anim::spinner(ui);
-                    ui.label("Waiting for the other device…");
+                    ui.label(crate::i18n::tr("devices.pair_waiting"));
                 });
             }
             Pair::Entering { mut text, error } => {
-                ui.label("Code shown on the other device (short code or full code):");
+                ui.label(crate::i18n::tr("devices.pair_enter_hint"));
                 let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(360.0));
                 if r.changed() {
                     s.devices.pair = Some(Pair::Entering {
@@ -1777,26 +1838,26 @@ fn pair_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button("Pair").clicked() || enter {
+                if ui.button(crate::i18n::tr("devices.pair_submit")).clicked() || enter {
                     out.push(step(PairEvent::Submit));
                 }
             }
             Pair::Joining { .. } => {
                 ui.horizontal(|ui| {
                     crate::anim::spinner(ui);
-                    ui.label("Pairing…");
+                    ui.label(crate::i18n::tr("devices.pair_pairing"));
                 });
             }
             Pair::Paired(label) => {
-                ui.label(format!("Paired with {label}."));
-                ui.weak("It sees nothing until you share a source: right-click it → Shares….");
-                if ui.button("Done").clicked() {
+                ui.label(crate::i18n::tr("devices.pair_paired").replace("{label}", &label));
+                ui.weak(crate::i18n::tr("devices.pair_paired_tip"));
+                if ui.button(crate::i18n::tr("devices.pair_done")).clicked() {
                     s.devices.pair = None;
                 }
             }
             Pair::Failed(e) => {
                 ui.colored_label(ui.visuals().error_fg_color, e);
-                if ui.button("Back").clicked() {
+                if ui.button(crate::i18n::tr("devices.pair_back")).clicked() {
                     out.push(step(PairEvent::Back));
                 }
             }
@@ -1818,7 +1879,7 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     let searchable = s.devices.search_grants.contains(&peer);
     let attached = s.devices.remote_self.is_some();
     let mut open = true;
-    let title = format!("Shares with {label}");
+    let title = crate::i18n::tr("devices.shares_title").replace("{label}", &label);
     crate::a11y::esc_closes(ctx, &title, &mut open);
     egui::Window::new(title)
         .id(egui::Id::new("keel-shares"))
@@ -1840,7 +1901,7 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
             }
             ui.separator();
             if rows.is_empty() {
-                ui.weak("Nothing shared: this device sees none of your sources.");
+                ui.weak(crate::i18n::tr("devices.shares_none"));
             }
             egui::Grid::new("keel-shares-grid")
                 .num_columns(4)
@@ -1849,15 +1910,15 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     for row in &rows {
                         ui.label(&row.label);
                         ui.label(if row.subtree.is_empty() {
-                            "(whole source)"
+                            crate::i18n::tr("devices.shares_whole")
                         } else {
                             row.subtree.as_str()
                         });
                         ui.label(match row.access {
-                            Access::Read => "Read",
-                            Access::ReadWrite => "Read-write",
+                            Access::Read => crate::i18n::tr("devices.access_read"),
+                            Access::ReadWrite => crate::i18n::tr("devices.access_readwrite"),
                         });
-                        if ui.button("Revoke").clicked() {
+                        if ui.button(crate::i18n::tr("devices.revoke")).clicked() {
                             out.push(dev(DevCmd::Revoke {
                                 peer,
                                 source: row.source.clone(),
@@ -1868,9 +1929,9 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     }
                 });
             ui.separator();
-            ui.strong("Share");
+            ui.strong(crate::i18n::tr("devices.share"));
             if sources.is_empty() {
-                ui.weak("Add a source to the library first.");
+                ui.weak(crate::i18n::tr("devices.shares_need_source"));
                 return;
             }
             let shown = (d.source.as_ref())
@@ -1884,18 +1945,26 @@ fn shares_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
                     }
                 });
             ui.horizontal(|ui| {
-                ui.label("Folder inside it");
+                ui.label(crate::i18n::tr("devices.shares_subtree"));
                 ui.add(
                     egui::TextEdit::singleline(&mut d.subtree)
-                        .hint_text("empty: the whole source")
+                        .hint_text(crate::i18n::tr("devices.shares_subtree_hint"))
                         .desired_width(220.0),
                 );
             });
             ui.horizontal(|ui| {
-                ui.radio_value(&mut d.access, Access::Read, "Read");
-                ui.radio_value(&mut d.access, Access::ReadWrite, "Read-write");
+                ui.radio_value(
+                    &mut d.access,
+                    Access::Read,
+                    crate::i18n::tr("devices.access_read"),
+                );
+                ui.radio_value(
+                    &mut d.access,
+                    Access::ReadWrite,
+                    crate::i18n::tr("devices.access_readwrite"),
+                );
             });
-            if ui.button("Share").clicked() {
+            if ui.button(crate::i18n::tr("devices.share")).clicked() {
                 if let Some(source) = d.source.clone() {
                     out.push(dev(DevCmd::Grant {
                         peer,
@@ -1917,13 +1986,13 @@ fn pick_window(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
     };
     let mut open = true;
     // Esc closes it (a11y).
-    crate::a11y::esc_closes(ctx, "Send with Spacedrop", &mut open);
-    egui::Window::new("Send with Spacedrop")
+    crate::a11y::esc_closes(ctx, crate::i18n::tr("devices.send_title"), &mut open);
+    egui::Window::new(crate::i18n::tr("devices.send_title"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.label(format!("Send {} item(s) to:", paths.len()));
+            ui.label(crate::i18n::tr("devices.send_to").replace("{n}", &paths.len().to_string()));
             for row in device_rows(&s.devices.peers) {
                 if ui.button(&row.label).clicked() {
                     out.push(dev(DevCmd::Send {
@@ -1977,9 +2046,12 @@ fn offer_prompt(
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_max_width(420.0);
                 ui.label(text);
-                ui.checkbox(always, "Always accept from this device");
+                ui.checkbox(always, crate::i18n::tr("devices.offer_always"));
                 ui.horizontal(|ui| {
-                    for (text, accept) in [("Accept", true), ("Decline", false)] {
+                    for (text, accept) in [
+                        (crate::i18n::tr("devices.offer_accept"), true),
+                        (crate::i18n::tr("devices.offer_decline"), false),
+                    ] {
                         if ui.button(text).clicked() {
                             out.push(dev(DevCmd::Answer {
                                 id: id.to_owned(),
@@ -1998,7 +2070,7 @@ fn offer_prompt(
 pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &Devices) {
     let ds = &mut s.devices;
     if ui
-        .checkbox(&mut ds.enabled, "Devices (pairing, shares, Spacedrop)")
+        .checkbox(&mut ds.enabled, crate::i18n::tr("devices.enabled"))
         .changed()
     {
         ds.explicit = true;
@@ -2008,7 +2080,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         .num_columns(2)
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
-            ui.label("This device");
+            ui.label(crate::i18n::tr("devices.this_device"));
             let current = match (&d.node, &d.remote_self) {
                 (Some(n), _) => n.label(),
                 (None, Some((_, label))) => label.clone(),
@@ -2020,9 +2092,9 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
                     .desired_width(240.0),
             );
             ui.end_row();
-            ui.label("Inbox");
+            ui.label(crate::i18n::tr("devices.inbox"));
             let default = match &d.remote_self {
-                Some(_) => "keel-daemon's (the inbox in its data folder)".to_owned(),
+                Some(_) => crate::i18n::tr("devices.daemon_inbox_hint").to_owned(),
                 None => DeviceSettings::default()
                     .inbox_dir()
                     .map(|p| p.display().to_string())
@@ -2037,26 +2109,26 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
             if ds.inbox.trim().is_empty() && downloads().is_none() && d.remote_self.is_none() {
                 ui.label("");
                 match ds.inbox_dir() {
-                    Some(dir) => ui.weak(format!(
-                        "No Downloads folder: drops go to {}",
-                        dir.display()
-                    )),
+                    Some(dir) => ui.weak(
+                        crate::i18n::tr("devices.no_downloads")
+                            .replace("{dir}", &dir.display().to_string()),
+                    ),
                     None => ui.colored_label(
                         ui.visuals().error_fg_color,
-                        "No inbox: drops are declined until you set one",
+                        crate::i18n::tr("devices.no_inbox"),
                     ),
                 };
                 ui.end_row();
             }
-            ui.label("Relays");
-            ui.checkbox(&mut ds.relay, "Use public relays when no direct path works")
-                .on_hover_text("Applies the next time devices start");
+            ui.label(crate::i18n::tr("devices.relays"));
+            ui.checkbox(&mut ds.relay, crate::i18n::tr("devices.use_relays"))
+                .on_hover_text(crate::i18n::tr("devices.use_relays_tip"));
             ui.end_row();
         });
     ui.add_space(6.0);
-    ui.strong("Always accept drops from");
+    ui.strong(crate::i18n::tr("devices.auto_accept"));
     if ds.auto_accept.is_empty() {
-        ui.weak("Nobody: every drop asks first.");
+        ui.weak(crate::i18n::tr("devices.nobody"));
     }
     let mut remove = None;
     for (i, id) in ds.auto_accept.iter().enumerate() {
@@ -2066,7 +2138,7 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
                 .map(|n| label_of(&d.peers, &PeerId(n)))
                 .unwrap_or_else(|_| id.clone());
             ui.label(label);
-            if ui.small_button("Remove").clicked() {
+            if ui.small_button(crate::i18n::tr("devices.remove")).clicked() {
                 remove = Some(i);
             }
         });
@@ -2075,9 +2147,9 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         ds.auto_accept.remove(i);
     }
     ui.add_space(6.0);
-    ui.strong("Sync tags and favorites");
+    ui.strong(crate::i18n::tr("devices.sync_title"));
     if d.peers.is_empty() {
-        ui.weak("No paired devices.");
+        ui.weak(crate::i18n::tr("devices.no_peers"));
     }
     let now = chrono::Utc::now().timestamp();
     for p in &d.peers {
@@ -2086,12 +2158,8 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
         ui.horizontal(|ui| {
             ui.label(&p.label);
             let switch = ui
-                .checkbox(&mut on, "Sync library with this device")
-                .on_hover_text(
-                    "Tags, tag assignments, favorites and the content ids of tagged files \
-                     follow you between the two devices. Turn it on on both; turning it off \
-                     (or forgetting the device) keeps what already arrived.",
-                );
+                .checkbox(&mut on, crate::i18n::tr("devices.sync_with_device"))
+                .on_hover_text(crate::i18n::tr("devices.sync_tip"));
             if switch.changed() {
                 ds.sync.retain(|a| *a != id);
                 if on {
@@ -2103,13 +2171,10 @@ pub fn settings_page(ui: &mut egui::Ui, s: &mut crate::settings::Settings, d: &D
     }
     if let Some(node) = &d.node {
         ui.add_space(6.0);
-        ui.weak(format!("Device id: {}", node.id()));
+        ui.weak(crate::i18n::tr("devices.device_id").replace("{id}", &node.id().to_string()));
     } else if let Some((id, _)) = &d.remote_self {
         ui.add_space(6.0);
-        ui.weak(format!(
-            "Device id: {id} (keel-daemon's: label, inbox and the always-accept list apply \
-             at once, relays when it starts again)"
-        ));
+        ui.weak(crate::i18n::tr("devices.device_id_daemon").replace("{id}", id));
     }
 }
 
@@ -2136,6 +2201,84 @@ mod tests {
         assert!(b.y1 - b.y0 < 30.0, "{b:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Settings → Devices in Spanish: the device list, pairing and sync labels.
+    #[test]
+    fn devices_page_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(
+            tr("devices.enabled"),
+            "Dispositivos (emparejamiento, compartidos, Spacedrop)"
+        );
+        assert_eq!(tr("devices.this_device"), "Este dispositivo");
+        assert_eq!(tr("devices.inbox"), "Bandeja de entrada");
+        assert_eq!(
+            tr("devices.daemon_inbox_hint"),
+            "la de keel-daemon (la bandeja de entrada en su carpeta de datos)"
+        );
+        assert_eq!(
+            tr("devices.no_downloads").replace("{dir}", "/tmp/in"),
+            "Sin carpeta Descargas: los archivos se guardan en /tmp/in"
+        );
+        assert_eq!(
+            tr("devices.no_inbox"),
+            "Sin bandeja de entrada: los archivos se rechazan hasta que configures una"
+        );
+        assert_eq!(tr("devices.relays"), "Relevos");
+        assert_eq!(
+            tr("devices.use_relays"),
+            "Usar relevos públicos cuando no hay ruta directa"
+        );
+        assert_eq!(
+            tr("devices.use_relays_tip"),
+            "Se aplica la próxima vez que se inician los dispositivos"
+        );
+        assert_eq!(tr("devices.auto_accept"), "Aceptar siempre archivos de");
+        assert_eq!(
+            tr("devices.nobody"),
+            "Nadie: cada archivo pide confirmación."
+        );
+        assert_eq!(tr("devices.remove"), "Quitar");
+        assert_eq!(
+            tr("devices.sync_title"),
+            "Sincronizar etiquetas y favoritos"
+        );
+        assert_eq!(tr("devices.no_peers"), "Sin dispositivos emparejados.");
+        assert_eq!(
+            tr("devices.sync_with_device"),
+            "Sincronizar biblioteca con este dispositivo"
+        );
+        assert_eq!(tr("devices.sync_tip"), "Las etiquetas, sus asignaciones, los favoritos y los ids de contenido de los archivos etiquetados se mueven entre los dos dispositivos. Actívalo en ambos; desactivarlo (o olvidar el dispositivo) conserva lo que ya llegó.");
+        assert_eq!(
+            tr("devices.device_id").replace("{id}", "abc123"),
+            "Id del dispositivo: abc123"
+        );
+        assert_eq!(
+            tr("devices.device_id_daemon").replace("{id}", "abc123"),
+            "Id del dispositivo: abc123 (keel-daemon: la etiqueta, la bandeja y la lista de aceptación inmediata se aplican al momento; los relevos al reiniciarse)"
+        );
+        assert_eq!(
+            tr("devices.sync_not_yet"),
+            "Aún no sincronizado: actívalo también en ese dispositivo"
+        );
+        assert_eq!(tr("devices.sync_off"), "Desactivado");
+        assert_eq!(tr("devices.sync_just_now"), "Sincronizado hace un momento");
+        assert_eq!(
+            tr("devices.sync_min_ago").replace("{n}", "5"),
+            "Sincronizado hace 5 min"
+        );
+        assert_eq!(
+            tr("devices.sync_h_ago").replace("{n}", "3"),
+            "Sincronizado hace 3 h"
+        );
+        assert_eq!(
+            tr("devices.sync_when").replace("{when}", "ayer"),
+            "Sincronizado ayer"
+        );
+        crate::i18n::set("en");
+    }
+
     use keel_core::{SourceId, SourceStatus};
     use keel_net::{NodeId, Storage};
 
@@ -2500,6 +2643,105 @@ mod tests {
         );
         let one = offer_text("Desk", &files[2..3]);
         assert!(one.ends_with("• dir/c.txt"), "{one}");
+    }
+
+    /// The same offer prompt in Spanish: header, bullets and the "more" tail.
+    #[test]
+    fn offer_text_in_spanish() {
+        crate::i18n::set("es");
+        let files = vec![
+            ("a.txt".to_string(), 1u64),
+            ("b.txt".to_string(), 1),
+            ("c.txt".to_string(), 1),
+            ("d.txt".to_string(), 1),
+        ];
+        let text = offer_text("Escritorio", &files);
+        assert!(
+            text.starts_with("Escritorio quiere enviar 4 archivo(s) ("),
+            "{text}"
+        );
+        assert!(text.contains("• a.txt"), "{text}");
+        assert!(text.ends_with("…y 1 más"), "{text}");
+    }
+
+    /// The remaining device toasts, errors and dialogs in Spanish: the sidebar status
+    /// notes, the daemon and Spacedrop toasts, the shares dialog and the send picker.
+    #[test]
+    fn device_toasts_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(
+            tr("devices.status_not_available").replace("{e}", "sin red"),
+            "No disponible: sin red"
+        );
+        assert_eq!(tr("devices.status_starting"), "Iniciando…");
+        assert_eq!(
+            tr("devices.status_off"),
+            "Desactivado (Ajustes → Dispositivos)"
+        );
+        assert_eq!(
+            tr("devices.status_needs_library"),
+            "Necesita la biblioteca (Ajustes → Biblioteca)"
+        );
+        assert_eq!(tr("devices.status_asking"), "Preguntando a keel-daemon…");
+        assert_eq!(tr("devices.off"), "Desactivado");
+        assert_eq!(
+            tr("devices.settings_applied_failed").replace("{e}", "sin red"),
+            "Ajustes → Dispositivos: sin red"
+        );
+        assert_eq!(
+            tr("devices.daemon_off"),
+            "los dispositivos están desactivados allí (activa Ajustes → Dispositivos y reinicia keel-daemon)"
+        );
+        assert_eq!(
+            tr("devices.daemon_error").replace("{e}", "sin red"),
+            "keel-daemon: sin red"
+        );
+        assert_eq!(
+            tr("devices.spacedrop_failed").replace("{e}", "sin red"),
+            "Spacedrop: sin red"
+        );
+        assert_eq!(
+            tr("devices.shares_title").replace("{label}", "Escritorio"),
+            "Compartidos con Escritorio"
+        );
+        assert_eq!(
+            tr("devices.shares_none"),
+            "Nada compartido: este dispositivo no ve ninguno de tus orígenes."
+        );
+        assert_eq!(tr("devices.shares_whole"), "(origen completo)");
+        assert_eq!(tr("devices.shares_removed"), "(origen eliminado)");
+        assert_eq!(
+            tr("devices.shares_need_source"),
+            "Añade primero un origen a la biblioteca."
+        );
+        assert_eq!(tr("devices.shares_subtree"), "Carpeta dentro de él");
+        assert_eq!(
+            tr("devices.shares_subtree_hint"),
+            "vacío: el origen completo"
+        );
+        assert_eq!(tr("devices.access_read"), "Lectura");
+        assert_eq!(tr("devices.access_readwrite"), "Lectura-escritura");
+        assert_eq!(tr("devices.revoke"), "Revocar");
+        assert_eq!(tr("devices.share"), "Compartir");
+        assert_eq!(tr("devices.send_title"), "Enviar con Spacedrop");
+        assert_eq!(
+            tr("devices.send_to").replace("{n}", "3"),
+            "Enviar 3 elemento(s) a:"
+        );
+        assert_eq!(tr("devices.link_lan"), "Conectado directamente");
+        assert_eq!(tr("devices.link_relay"), "Conectado a través de un relevo");
+        assert_eq!(tr("devices.link_offline"), "Sin conexión");
+        assert_eq!(tr("devices.browse"), "Examinar");
+        assert_eq!(tr("devices.send_files"), "Enviar archivos…");
+        assert_eq!(tr("devices.shares_menu"), "Compartidos…");
+        assert_eq!(
+            tr("devices.storage_used")
+                .replace("{used}", "1 GB")
+                .replace("{total}", "4 GB"),
+            "1 GB usados de 4 GB"
+        );
+        crate::i18n::set("en");
     }
 
     #[test]

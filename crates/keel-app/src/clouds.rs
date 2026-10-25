@@ -78,11 +78,13 @@ pub fn quota_text(slot: Option<&QuotaSlot>) -> String {
     };
     match slot {
         Some(QuotaSlot { value: Some(q), .. }) => match q.total {
-            Some(total) => format!("{} of {} used", size(q.used), size(total)),
-            None => format!("{} used (no limit)", size(q.used)),
+            Some(total) => crate::i18n::tr("clouds.quota_of")
+                .replace("{used}", &size(q.used))
+                .replace("{total}", &size(total)),
+            None => crate::i18n::tr("clouds.quota_no_limit").replace("{used}", &size(q.used)),
         },
-        Some(s) if s.asking => "Checking storage…".into(),
-        _ => "Quota unknown".into(),
+        Some(s) if s.asking => crate::i18n::tr("clouds.quota_checking").into(),
+        _ => crate::i18n::tr("clouds.quota_unknown").into(),
     }
 }
 
@@ -137,19 +139,20 @@ pub fn root_of(id: &str) -> VPath {
 pub fn delete_text(n: usize, kind: RemoveKind) -> String {
     let items = crate::jobs::items(n);
     match kind {
-        RemoveKind::Trash => format!("Move {items} to the Drive trash?"),
-        RemoveKind::RecoverableDelete => {
-            format!("Delete {items} on Dropbox? (recoverable for 30 days)")
-        }
-        RemoveKind::Permanent => format!("Delete {items} from the bucket permanently?"),
+        RemoveKind::Trash => crate::i18n::tr("clouds.delete_trash"),
+        RemoveKind::RecoverableDelete => crate::i18n::tr("clouds.delete_dropbox"),
+        RemoveKind::Permanent => crate::i18n::tr("clouds.delete_permanent"),
     }
+    .replace("{items}", &items)
 }
 
 /// The delete confirmation's button: a move to the Drive trash says so.
 pub fn delete_button(kind: RemoveKind) -> &'static str {
     match kind {
-        RemoveKind::Trash => "Move to trash",
-        RemoveKind::RecoverableDelete | RemoveKind::Permanent => "Delete",
+        RemoveKind::Trash => crate::i18n::tr("clouds.delete_button_trash"),
+        RemoveKind::RecoverableDelete | RemoveKind::Permanent => {
+            crate::i18n::tr("clouds.delete_button_delete")
+        }
     }
 }
 
@@ -208,6 +211,9 @@ struct LazyCloud {
     account: CloudAccount,
     secrets: Arc<dyn SecretStore>,
     events: Sender<RemoteEvent>,
+    /// "Connecting" / "Connected" status text, taken on the UI thread in `register`.
+    connecting: String,
+    connected: String,
     inner: Mutex<Option<Arc<CloudProvider>>>,
     last: Mutex<Option<(ConnStatus, String)>>,
 }
@@ -254,12 +260,12 @@ impl Provider for LazyCloud {
     fn list(&self, dir: &VPath) -> anyhow::Result<Vec<Entry>> {
         let connected = matches!(&*self.last.lock(), Some((ConnStatus::Connected, _)));
         if !connected {
-            self.status(ConnStatus::Connecting, "connecting".into());
+            self.status(ConnStatus::Connecting, self.connecting.clone());
         }
         let result = self.get()?.list(dir);
         match &result {
             Err(e) if !folder_error(e) => self.status(ConnStatus::Failed, format!("{e:#}")),
-            _ => self.status(ConnStatus::Connected, "connected".into()),
+            _ => self.status(ConnStatus::Connected, self.connected.clone()),
         }
         result
     }
@@ -437,6 +443,8 @@ impl Clouds {
             account: a.clone(),
             secrets: self.secrets.clone(),
             events: self.events.clone(),
+            connecting: crate::i18n::tr("clouds.status_connecting").into(),
+            connected: crate::i18n::tr("clouds.status_connected").into(),
             inner: Mutex::default(),
             last: Mutex::default(),
         });
@@ -502,12 +510,12 @@ impl Clouds {
     pub fn settings_page(&mut self, ui: &mut egui::Ui, s: &mut Settings, _tx: &Sender<Msg>) {
         ui.checkbox(
             &mut s.remote_thumbnails,
-            "Thumbnails for remote and cloud files",
+            crate::i18n::tr("clouds.thumbnails"),
         )
-        .on_hover_text("Grid view then downloads every image and video it shows");
+        .on_hover_text(crate::i18n::tr("clouds.thumbnails_tip"));
         ui.add_space(6.0);
         if s.clouds.is_empty() {
-            ui.weak("No cloud accounts yet.");
+            ui.weak(crate::i18n::tr("clouds.no_accounts"));
         }
         let mut ask = Vec::new();
         egui::Grid::new("settings-clouds")
@@ -530,15 +538,15 @@ impl Clouds {
                         ui.label(quota_text(slot));
                         let idle = !slot.is_some_and(|q| q.asking);
                         let refresh = ui
-                            .add_enabled(idle, egui::Button::new("Refresh"))
-                            .on_hover_text("Ask the service for its storage now");
+                            .add_enabled(idle, egui::Button::new(crate::i18n::tr("clouds.refresh")))
+                            .on_hover_text(crate::i18n::tr("clouds.refresh_tip"));
                         ask.push((a.id.clone(), refresh.clicked()));
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("Edit…").clicked() {
+                        if ui.button(crate::i18n::tr("clouds.edit")).clicked() {
                             self.wizard = Some(Wizard::edit(a));
                         }
-                        if ui.button("Remove…").clicked() {
+                        if ui.button(crate::i18n::tr("clouds.remove")).clicked() {
                             self.removing = Some(a.id.clone());
                         }
                     });
@@ -550,7 +558,10 @@ impl Clouds {
             self.want_quota(&id, force);
         }
         ui.add_space(6.0);
-        let add = ui.add_enabled(self.cpu.is_ok(), egui::Button::new("Add account…"));
+        let add = ui.add_enabled(
+            self.cpu.is_ok(),
+            egui::Button::new(crate::i18n::tr("clouds.add_account")),
+        );
         if add.clicked() {
             self.wizard = Some(Wizard::default());
         }
@@ -560,12 +571,20 @@ impl Clouds {
     }
 }
 
+/// The sign-out's toasts, taken on the UI thread (the worker's language is English).
+struct SignOutMsgs {
+    removed: String,
+    removed_out: String,
+    removed_failed: String,
+}
+
 /// Deletes the keychain entries and, with `revoke`, then revokes the grant where the service
 /// allows it, on a worker (both block).
 fn sign_out(
     account: CloudAccount,
     secrets: Arc<dyn SecretStore>,
     revoke: Option<Revoke>,
+    msgs: SignOutMsgs,
     tx: Sender<Msg>,
     ctx: egui::Context,
 ) {
@@ -573,18 +592,17 @@ fn sign_out(
         let label = &account.label;
         let Some(revoke) = revoke else {
             forget_account(&*secrets, &account.id);
-            let text = format!("Removed {label}; its keys are deleted from this PC");
+            let text = msgs.removed.replace("{label}", label);
             return send(&tx, &ctx, Msg::Info(text));
         };
         let revoked = cloud::sign_out_with(&account, &*secrets, |t, c| revoke(account.kind, t, c));
         let msg = match revoked {
-            Ok(()) => Msg::Info(format!(
-                "Removed {label}; signed out and its keys are deleted from this PC"
-            )),
-            Err(e) => Msg::Toast(format!(
-                "Removed {label} and deleted its keys from this PC, but the service did not \
-                 confirm the sign-out: {e:#}"
-            )),
+            Ok(()) => Msg::Info(msgs.removed_out.replace("{label}", label)),
+            Err(e) => Msg::Toast(
+                msgs.removed_failed
+                    .replace("{label}", label)
+                    .replace("{error}", &format!("{e:#}")),
+            ),
         };
         send(&tx, &ctx, msg);
     });
@@ -594,21 +612,11 @@ fn sign_out(
 pub fn remove_text(a: &CloudAccount) -> String {
     let label = &a.label;
     match a.kind {
-        CloudKind::S3 | CloudKind::AzureBlob => format!(
-            "Remove {label}? Keel deletes its keys from this PC (revoke them in the \
-             provider's console); the files in storage stay."
-        ),
-        CloudKind::WebDav => format!(
-            "Remove {label}? Keel deletes its password from this PC (change it on the server \
-             if you want it invalid); the files on the server stay."
-        ),
-        _ => format!(
-            "Remove {label}?\n\nSign out and remove: signs this app out of {label} everywhere \
-             it uses this client id and deletes its keys from this PC.\n\nRemove from this PC \
-             only: deletes its keys here; other devices stay signed in.\n\nThe files in the \
-             cloud stay."
-        ),
+        CloudKind::S3 | CloudKind::AzureBlob => crate::i18n::tr("clouds.remove_keys"),
+        CloudKind::WebDav => crate::i18n::tr("clouds.remove_password"),
+        _ => crate::i18n::tr("clouds.remove_oauth"),
     }
+    .replace("{label}", label)
 }
 
 /// The "Remove?" dialog: Some(answer) once answered, `Some(None)` = cancelled.
@@ -620,18 +628,27 @@ fn remove_ui(ctx: &egui::Context, a: &CloudAccount) -> Option<Option<CloudCmd>> 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if !uses_oauth(a.kind) {
-                if ui.button("Remove").clicked() {
+                if ui
+                    .button(crate::i18n::tr("clouds.remove_confirm"))
+                    .clicked()
+                {
                     answer = Some(Some(CloudCmd::RemoveLocal));
                 }
             } else {
-                if ui.button("Sign out and remove").clicked() {
+                if ui
+                    .button(crate::i18n::tr("clouds.sign_out_and_remove"))
+                    .clicked()
+                {
                     answer = Some(Some(CloudCmd::RemoveNow));
                 }
-                if ui.button("Remove from this PC only").clicked() {
+                if ui
+                    .button(crate::i18n::tr("clouds.remove_pc_only"))
+                    .clicked()
+                {
                     answer = Some(Some(CloudCmd::RemoveLocal));
                 }
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 answer = Some(None);
             }
         });
@@ -651,10 +668,10 @@ fn link_ui(ctx: &egui::Context, name: &str, question: &str) -> Option<bool> {
         ui.label(question);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button("Create link").clicked() {
+            if ui.button(crate::i18n::tr("clouds.create_link")).clicked() {
                 answer = Some(true);
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 answer = Some(false);
             }
         });
@@ -803,18 +820,16 @@ impl Wizard {
     pub fn build(&self, existing: &[CloudAccount]) -> Result<(CloudAccount, Secrets), String> {
         let label = self.label.trim();
         if label.is_empty() {
-            return Err("Enter a label".into());
+            return Err(crate::i18n::tr("clouds.enter_label").into());
         }
         let root = self.root.trim().trim_matches('/');
         let bad_segment = |s: &str| s.is_empty() || s == "." || s == "..";
         if root.contains('\\') || (!root.is_empty() && root.split('/').any(bad_segment)) {
-            return Err("The root folder must be a plain path like Photos/2026".into());
+            return Err(crate::i18n::tr("clouds.bad_root").into());
         }
         if let Some(id) = &self.id {
             if !cloud::valid_id(id) {
-                return Err(format!(
-                    "The id \"{id}\" in config.toml must be lowercase letters, digits, - or _;                      remove this account and add it again"
-                ));
+                return Err(crate::i18n::tr("clouds.bad_id").replace("{id}", id));
             }
         }
         let new = self.id.is_none();
@@ -832,13 +847,13 @@ impl Wizard {
             let (endpoint, region, bucket) =
                 (self.endpoint.trim(), self.region.trim(), self.bucket.trim());
             if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-                return Err("The endpoint must start with https://".into());
+                return Err(crate::i18n::tr("clouds.bad_endpoint_scheme").into());
             }
             if region.is_empty() {
-                return Err("Enter the region (e.g. us-west-002 for Backblaze B2)".into());
+                return Err(crate::i18n::tr("clouds.enter_region").into());
             }
             if bucket.is_empty() || bucket.contains(['/', ' ']) {
-                return Err("Enter the bucket name".into());
+                return Err(crate::i18n::tr("clouds.enter_bucket").into());
             }
             let (ak, sk) = (self.access_key.trim(), self.secret_key.trim());
             match (ak.is_empty(), sk.is_empty()) {
@@ -847,7 +862,9 @@ impl Wizard {
                     secrets.push((key("secret_access_key"), sk.to_owned().into()));
                 }
                 (true, true) if !new => {}
-                _ => return Err("Enter both the access key id and the secret key".into()),
+                _ => {
+                    return Err(crate::i18n::tr("clouds.enter_keys").into());
+                }
             }
             Some(S3Config {
                 endpoint: endpoint.to_owned(),
@@ -864,7 +881,7 @@ impl Wizard {
             if !self.secret_key.trim().is_empty() {
                 secrets.push((key("account_key"), self.secret_key.trim().to_owned().into()));
             } else if new {
-                return Err("Enter the account key".into());
+                return Err(crate::i18n::tr("clouds.enter_account_key").into());
             }
             azure = Some(cfg);
             None
@@ -873,12 +890,12 @@ impl Wizard {
                 .map_err(|e| format!("{e:#}"))?;
             let username = self.username.trim();
             if username.is_empty() {
-                return Err("Enter the user name".into());
+                return Err(crate::i18n::tr("clouds.enter_username").into());
             }
             if !self.password.is_empty() {
                 secrets.push((key("password"), self.password.to_string().into()));
             } else if new {
-                return Err("Enter the password (an app password works best)".into());
+                return Err(crate::i18n::tr("clouds.enter_password_hint").into());
             }
             webdav = Some(WebDavConfig {
                 insecure: url.starts_with("http://"),
@@ -888,7 +905,7 @@ impl Wizard {
             None
         } else {
             if client_id.is_empty() && self.kind.default_client().is_none() {
-                return Err("Enter your app's client id (Keel ships none)".into());
+                return Err(crate::i18n::tr("clouds.enter_client_id").into());
             }
             if !self.client_secret.trim().is_empty() {
                 let secret = self.client_secret.trim().to_owned().into();
@@ -965,7 +982,7 @@ impl Wizard {
             ctx2.request_repaint();
         });
         if !started {
-            self.error = Some("Could not start a worker thread".into());
+            self.error = Some(crate::i18n::tr("clouds.worker_failed").into());
             return;
         }
         self.error = None;
@@ -986,7 +1003,7 @@ impl Wizard {
         let result = match p.rx.try_recv() {
             Ok(r) => r,
             Err(crossbeam_channel::TryRecvError::Empty) => return Outcome::Open,
-            Err(_) => Err("the sign-in worker stopped".into()),
+            Err(_) => Err(crate::i18n::tr("clouds.sign_in_worker_stopped").into()),
         };
         match result {
             Ok(()) => {
@@ -1037,9 +1054,13 @@ impl Wizard {
         let mut outcome = Outcome::Open;
         let mut submit = None;
         let title = match (&self.id, &self.step) {
-            (_, Step::Pending(p)) if p.sign_in => format!("Sign in to {}", kind_name(self.kind)),
-            (Some(_), _) => format!("Edit {} account", kind_name(self.kind)),
-            (None, _) => "Add a cloud account".into(),
+            (_, Step::Pending(p)) if p.sign_in => {
+                crate::i18n::tr("clouds.sign_in_to").replace("{name}", kind_name(self.kind))
+            }
+            (Some(_), _) => {
+                crate::i18n::tr("clouds.edit_account").replace("{name}", kind_name(self.kind))
+            }
+            (None, _) => crate::i18n::tr("clouds.add_account_title").to_owned(),
         };
         let modal = Modal::new(Id::new("keel-cloud-wizard")).show(ctx, |ui| {
             ui.set_width(460.0);
@@ -1047,7 +1068,7 @@ impl Wizard {
             ui.add_space(6.0);
             match &self.step {
                 Step::Kind => {
-                    ui.label("Which service?");
+                    ui.label(crate::i18n::tr("clouds.which_service"));
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         for kind in [
@@ -1058,20 +1079,20 @@ impl Wizard {
                             CloudKind::AzureBlob,
                         ] {
                             let text = match kind {
-                                CloudKind::S3 => "S3-compatible (B2, AWS, MinIO)",
-                                CloudKind::WebDav => "WebDAV (Nextcloud, ownCloud, NAS)",
+                                CloudKind::S3 => crate::i18n::tr("clouds.kind_s3"),
+                                CloudKind::WebDav => crate::i18n::tr("clouds.kind_webdav"),
                                 k => kind_name(k),
                             };
                             if ui.button(text).clicked() {
                                 self.choose(kind);
                             }
                         }
-                        if ui.button("Google Cloud Storage (HMAC)").clicked() {
+                        if ui.button(crate::i18n::tr("clouds.kind_gcs")).clicked() {
                             self.choose_gcs();
                         }
                     });
                     ui.add_space(8.0);
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                         outcome = Outcome::Cancelled;
                     }
                 }
@@ -1079,26 +1100,33 @@ impl Wizard {
                 Step::Pending(p) => {
                     match self.left() {
                         Some(left) => {
-                            ui.label(format!(
-                                "Finish signing in to {} in your browser.",
-                                kind_name(self.kind)
-                            ));
+                            ui.label(
+                                crate::i18n::tr("clouds.finish_sign_in")
+                                    .replace("{name}", kind_name(self.kind)),
+                            );
                             ui.horizontal(|ui| {
                                 crate::anim::spinner(ui);
                                 let s = left.as_secs();
-                                ui.weak(format!("{}:{:02} left", s / 60, s % 60));
+                                ui.weak(
+                                    crate::i18n::tr("clouds.time_left")
+                                        .replace("{m}", &format!("{}", s / 60))
+                                        .replace("{s}", &format!("{:02}", s % 60)),
+                                );
                             });
                             ctx.request_repaint_after(Duration::from_secs(1));
                         }
                         None => {
                             ui.horizontal(|ui| {
                                 crate::anim::spinner(ui);
-                                ui.label(format!("Saving {} to the OS keychain…", p.account.label));
+                                ui.label(
+                                    crate::i18n::tr("clouds.saving_keychain")
+                                        .replace("{name}", &p.account.label),
+                                );
                             });
                         }
                     }
                     ui.add_space(8.0);
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                         outcome = self.cancel();
                     }
                 }
@@ -1128,6 +1156,11 @@ impl Wizard {
         };
         let typed = secrets.into_iter().next().map(|(_, v)| v);
         let (store, ctx) = (store.clone(), ctx.clone());
+        // The worker thread's language is English; take the texts on this UI thread.
+        let (enter_password, connected) = (
+            crate::i18n::tr("clouds.enter_password"),
+            crate::i18n::tr("clouds.connected"),
+        );
         let (tx, rx) = crossbeam_channel::bounded(1);
         let started = spawn("keel-cloud-test", move || {
             let list = || -> anyhow::Result<usize> {
@@ -1136,7 +1169,7 @@ impl Wizard {
                     Some(p) => p.to_string(),
                     None => store
                         .get(&key)?
-                        .ok_or_else(|| anyhow::anyhow!("Enter the password"))?,
+                        .ok_or_else(|| anyhow::anyhow!("{enter_password}"))?,
                 };
                 let temp = Arc::new(cloud::MemoryStore::default());
                 temp.set(&key, &password)?;
@@ -1144,7 +1177,7 @@ impl Wizard {
                 Ok(dav.list_complete(&root_of(&account.id))?.len())
             };
             let answer = list()
-                .map(|n| format!("Connected: {n} items in the root folder"))
+                .map(|n| connected.replace("{n}", &n.to_string()))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(answer);
             ctx.request_repaint();
@@ -1152,7 +1185,7 @@ impl Wizard {
         if started {
             self.test = Some(rx);
         } else {
-            self.test_result = Some(Err("Could not start a worker thread".into()));
+            self.test_result = Some(Err(crate::i18n::tr("clouds.worker_failed").into()));
         }
     }
 
@@ -1192,81 +1225,156 @@ impl Wizard {
                     );
                     ui.end_row();
                 };
-                field(ui, "Label", &mut self.label, kind_name(self.kind));
+                field(
+                    ui,
+                    crate::i18n::tr("clouds.field_label"),
+                    &mut self.label,
+                    kind_name(self.kind),
+                );
                 if oauth {
-                    field(ui, "Root folder", &mut self.root, "/ (optional)");
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_root"),
+                        &mut self.root,
+                        crate::i18n::tr("clouds.hint_root_optional"),
+                    );
                     let hint = if self.kind.default_client().is_some() {
-                        "built-in (optional)"
+                        crate::i18n::tr("clouds.hint_client_builtin")
                     } else {
-                        "required: Keel ships none"
+                        crate::i18n::tr("clouds.hint_client_required")
                     };
-                    field(ui, "Client id", &mut self.client_id, hint);
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_client_id"),
+                        &mut self.client_id,
+                        hint,
+                    );
                     if self.kind == CloudKind::GoogleDrive {
                         secret(
                             ui,
-                            "Client secret",
+                            crate::i18n::tr("clouds.field_client_secret"),
                             &mut self.client_secret,
-                            "optional; kept in the OS keychain",
+                            crate::i18n::tr("clouds.hint_client_secret"),
                         );
                     }
                     ui.label("");
-                    ui.hyperlink_to("Bring your own client id", CLIENT_ID_HELP);
+                    ui.hyperlink_to(
+                        crate::i18n::tr("clouds.bring_your_own_client_id"),
+                        CLIENT_ID_HELP,
+                    );
                     ui.end_row();
                 } else if dav {
                     field(
                         ui,
-                        "Address",
+                        crate::i18n::tr("clouds.field_dav_address"),
                         &mut self.dav_url,
-                        "https://host/remote.php/dav/files/<user>/",
+                        crate::i18n::tr("clouds.hint_dav_address"),
                     );
-                    field(ui, "User name", &mut self.username, "");
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_username"),
+                        &mut self.username,
+                        "",
+                    );
                     let hint = if editing {
-                        "leave empty to keep the stored one"
+                        crate::i18n::tr("clouds.hint_keep_stored")
                     } else {
-                        "app password; kept in the OS keychain"
+                        crate::i18n::tr("clouds.hint_dav_password")
                     };
-                    secret(ui, "Password", &mut self.password, hint);
-                    field(ui, "Root folder", &mut self.root, "/ (optional)");
+                    secret(
+                        ui,
+                        crate::i18n::tr("clouds.field_password"),
+                        &mut self.password,
+                        hint,
+                    );
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_root"),
+                        &mut self.root,
+                        crate::i18n::tr("clouds.hint_root_optional"),
+                    );
                 } else if self.kind == CloudKind::AzureBlob {
                     field(
                         ui,
-                        "Endpoint",
+                        crate::i18n::tr("clouds.field_endpoint"),
                         &mut self.endpoint,
-                        "https://account.blob.core.windows.net",
+                        crate::i18n::tr("clouds.hint_azure_endpoint"),
                     );
-                    field(ui, "Account name", &mut self.username, "");
-                    field(ui, "Container", &mut self.bucket, "");
-                    field(ui, "Key prefix", &mut self.root, "(optional)");
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_account_name"),
+                        &mut self.username,
+                        "",
+                    );
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_container"),
+                        &mut self.bucket,
+                        "",
+                    );
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_key_prefix"),
+                        &mut self.root,
+                        crate::i18n::tr("clouds.hint_optional"),
+                    );
                     let hint = if editing {
-                        "leave empty to keep the stored one"
+                        crate::i18n::tr("clouds.hint_keep_stored")
                     } else {
-                        "kept in the OS keychain"
+                        crate::i18n::tr("clouds.hint_keychain")
                     };
-                    secret(ui, "Account key", &mut self.secret_key, hint);
+                    secret(
+                        ui,
+                        crate::i18n::tr("clouds.field_account_key"),
+                        &mut self.secret_key,
+                        hint,
+                    );
                 } else {
                     field(
                         ui,
-                        "Endpoint",
+                        crate::i18n::tr("clouds.field_endpoint"),
                         &mut self.endpoint,
-                        "https://s3.us-west-002.backblazeb2.com",
+                        crate::i18n::tr("clouds.hint_s3_endpoint"),
                     );
-                    field(ui, "Region", &mut self.region, "us-west-002");
-                    field(ui, "Bucket", &mut self.bucket, "");
-                    field(ui, "Key prefix", &mut self.root, "(optional)");
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_region"),
+                        &mut self.region,
+                        crate::i18n::tr("clouds.hint_s3_region"),
+                    );
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_bucket"),
+                        &mut self.bucket,
+                        "",
+                    );
+                    field(
+                        ui,
+                        crate::i18n::tr("clouds.field_key_prefix"),
+                        &mut self.root,
+                        crate::i18n::tr("clouds.hint_optional"),
+                    );
                     let hint = if editing {
-                        "leave empty to keep the stored one"
+                        crate::i18n::tr("clouds.hint_keep_stored")
                     } else {
-                        "kept in the OS keychain"
+                        crate::i18n::tr("clouds.hint_keychain")
                     };
-                    secret(ui, "Access key id", &mut self.access_key, hint);
-                    secret(ui, "Secret key", &mut self.secret_key, hint);
+                    secret(
+                        ui,
+                        crate::i18n::tr("clouds.field_access_key"),
+                        &mut self.access_key,
+                        hint,
+                    );
+                    secret(
+                        ui,
+                        crate::i18n::tr("clouds.field_secret_key"),
+                        &mut self.secret_key,
+                        hint,
+                    );
                 }
             });
         if dav {
-            ui.checkbox(
-                &mut self.insecure,
-                "Allow http:// (files and password travel unencrypted)",
-            );
+            ui.checkbox(&mut self.insecure, crate::i18n::tr("clouds.allow_http"));
             if let Some(result) = &self.test_result {
                 let (color, text) = match result {
                     Ok(t) => (ui.visuals().text_color(), t),
@@ -1279,8 +1387,7 @@ impl Wizard {
             ui.add_space(4.0);
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "This http:// endpoint is not on this PC or your network: files travel \
-                 unencrypted. Use https:// if the service offers it.",
+                crate::i18n::tr("clouds.insecure_endpoint"),
             );
         }
         if let Some(e) = &self.error {
@@ -1290,21 +1397,24 @@ impl Wizard {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if oauth && !editing {
-                if ui.button("Sign in…").clicked() {
+                if ui.button(crate::i18n::tr("clouds.sign_in")).clicked() {
                     submit = Some(true);
                 }
             } else {
-                if ui.button("Save").clicked() {
+                if ui.button(crate::i18n::tr("dialogs.save")).clicked() {
                     submit = Some(false);
                 }
-                if oauth && ui.button("Sign in again…").clicked() {
+                if oauth && ui.button(crate::i18n::tr("clouds.sign_in_again")).clicked() {
                     submit = Some(true);
                 }
             }
             if dav {
                 let testing = self.test.is_some();
                 if ui
-                    .add_enabled(!testing, egui::Button::new("Test connection"))
+                    .add_enabled(
+                        !testing,
+                        egui::Button::new(crate::i18n::tr("clouds.test_connection")),
+                    )
                     .clicked()
                 {
                     self.test_connection(existing, store, ctx);
@@ -1313,10 +1423,10 @@ impl Wizard {
                     crate::anim::spinner(ui);
                 }
             }
-            if !editing && ui.button("Back").clicked() {
+            if !editing && ui.button(crate::i18n::tr("toolbar.back")).clicked() {
                 self.step = Step::Kind;
             }
-            if ui.button("Cancel").clicked() {
+            if ui.button(crate::i18n::tr("dialogs.cancel")).clicked() {
                 *outcome = Outcome::Cancelled;
             }
         });
@@ -1415,18 +1525,24 @@ impl AppState {
         }
         let label = &account.label;
         match status {
-            ConnStatus::Connected => self.toasts.info(format!("Connected to {label}")),
+            ConnStatus::Connected => self
+                .toasts
+                .info(crate::i18n::tr("clouds.connected_to").replace("{label}", label)),
             ConnStatus::Failed if uses_oauth(account.kind) && needs_sign_in(&detail) => {
                 self.toasts.with_action(
-                    format!("{label}: the sign-in expired or was revoked"),
-                    "Sign in",
+                    crate::i18n::tr("clouds.sign_in_expired").replace("{label}", label),
+                    crate::i18n::tr("clouds.sign_in_button"),
                     Action::Cloud {
                         id: id.to_owned(),
                         cmd: CloudCmd::SignIn,
                     },
                 )
             }
-            ConnStatus::Failed => self.toasts.error(format!("{label}: {detail}")),
+            ConnStatus::Failed => self.toasts.error(
+                crate::i18n::tr("clouds.failed_detail")
+                    .replace("{label}", label)
+                    .replace("{detail}", &detail),
+            ),
             _ => {}
         }
     }
@@ -1473,9 +1589,7 @@ impl AppState {
             return;
         }
         let Some(account) = self.clouds.account(&id).cloned() else {
-            return self
-                .toasts
-                .error("That cloud account is no longer configured");
+            return self.toasts.error(crate::i18n::tr("clouds.not_configured"));
         };
         match cmd {
             CloudCmd::Reconnect => {
@@ -1492,15 +1606,18 @@ impl AppState {
                     account,
                     self.clouds.secrets.clone(),
                     revoke,
+                    SignOutMsgs {
+                        removed: crate::i18n::tr("clouds.removed_keys").into(),
+                        removed_out: crate::i18n::tr("clouds.removed_signed_out").into(),
+                        removed_failed: crate::i18n::tr("clouds.removed_revoke_failed").into(),
+                    },
                     self.tx.clone(),
                     self.ctx.clone(),
                 );
             }
             CloudCmd::SignIn => {
                 if self.clouds.wizard.is_some() {
-                    return self
-                        .toasts
-                        .info("Finish or close the open cloud account dialog first");
+                    return self.toasts.info(crate::i18n::tr("clouds.dialog_open"));
                 }
                 let mut w = Wizard::edit(&account);
                 w.submit(
@@ -1543,7 +1660,7 @@ impl AppState {
             .cloned();
         match target {
             Some(e) if can_link(&self.ctx, &e) => self.clouds.want_link(e.path, false),
-            _ => self.toasts.info("Copy link works on cloud files"),
+            _ => self.toasts.info(crate::i18n::tr("clouds.link_cloud_only")),
         }
     }
 
@@ -1556,13 +1673,14 @@ impl AppState {
             }
             // One question at a time: a second would replace the first one's dialog.
             Ok(ShareLink::Confirm { .. }) if self.clouds.link_ask.is_some() => {
-                self.toasts.info(format!(
-                    "Copy link: answer the open question first, then ask again for {}",
-                    path.name()
-                ));
+                self.toasts.info(
+                    crate::i18n::tr("clouds.link_answer_first").replace("{name}", path.name()),
+                );
             }
             Ok(ShareLink::Confirm { question }) => self.clouds.link_ask = Some((path, question)),
-            Err(e) => self.toasts.error(format!("Copy link: {e:#}")),
+            Err(e) => self
+                .toasts
+                .error(crate::i18n::tr("clouds.link_error").replace("{error}", &format!("{e:#}"))),
         }
     }
 
@@ -1612,7 +1730,8 @@ impl AppState {
                 let account = *account;
                 self.clouds.wizard = None;
                 let id = account.id.clone();
-                let text = format!("Saved {}", account.label);
+                let text =
+                    crate::i18n::tr("clouds.saved_account").replace("{label}", &account.label);
                 match self.settings.clouds.iter_mut().find(|a| a.id == id) {
                     Some(slot) => *slot = account,
                     None => self.settings.clouds.push(account),
@@ -1992,6 +2111,8 @@ mod tests {
                 account: a,
                 secrets: Arc::new(store),
                 events,
+                connecting: "connecting".into(),
+                connected: "connected".into(),
                 inner: Mutex::default(),
                 last: Mutex::default(),
             }
@@ -2586,5 +2707,208 @@ mod tests {
             .list
             .iter()
             .any(|t| t.text == "Connected to drive label"));
+    }
+
+    /// The Cloud settings page's labels and buttons in Spanish (the UI thread sets the
+    /// language each frame; this test thread sets it here and restores English).
+    #[test]
+    fn cloud_page_strings_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(
+            crate::i18n::tr("clouds.thumbnails"),
+            "Miniaturas para archivos remotos y de la nube"
+        );
+        assert_eq!(
+            crate::i18n::tr("clouds.thumbnails_tip"),
+            "La vista de cuadrícula descarga entonces cada imagen y vídeo que muestra"
+        );
+        assert_eq!(
+            crate::i18n::tr("clouds.no_accounts"),
+            "Aún no hay cuentas de nube."
+        );
+        assert_eq!(crate::i18n::tr("clouds.refresh"), "Actualizar");
+        assert_eq!(
+            crate::i18n::tr("clouds.refresh_tip"),
+            "Pide ahora al servicio su almacenamiento"
+        );
+        assert_eq!(crate::i18n::tr("clouds.edit"), "Editar…");
+        assert_eq!(crate::i18n::tr("clouds.remove"), "Eliminar…");
+        assert_eq!(crate::i18n::tr("clouds.add_account"), "Añadir cuenta…");
+        crate::i18n::set("en");
+    }
+
+    /// The Add / Edit account dialog's validation and worker messages in Spanish.
+    #[test]
+    fn cloud_editor_errors_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(tr("clouds.enter_label"), "Introduce una etiqueta");
+        assert_eq!(
+            tr("clouds.bad_root"),
+            "La carpeta raíz debe ser una ruta simple como Fotos/2026"
+        );
+        assert_eq!(
+            tr("clouds.bad_id").replace("{id}", "Drive"),
+            "El id \"Drive\" en config.toml debe ser minúsculas, dígitos, - o _; elimina esta \
+             cuenta y vuelve a añadirla"
+        );
+        assert_eq!(
+            tr("clouds.bad_endpoint_scheme"),
+            "El punto final debe empezar por https://"
+        );
+        assert_eq!(
+            tr("clouds.enter_region"),
+            "Introduce la región (p. ej. us-west-002 para Backblaze B2)"
+        );
+        assert_eq!(tr("clouds.enter_bucket"), "Introduce el nombre del bucket");
+        assert_eq!(
+            tr("clouds.enter_keys"),
+            "Introduce la ID de clave de acceso y la clave secreta"
+        );
+        assert_eq!(
+            tr("clouds.enter_account_key"),
+            "Introduce la clave de cuenta"
+        );
+        assert_eq!(
+            tr("clouds.enter_username"),
+            "Introduce el nombre de usuario"
+        );
+        assert_eq!(tr("clouds.enter_password"), "Introduce la contraseña");
+        assert_eq!(
+            tr("clouds.enter_password_hint"),
+            "Introduce la contraseña (mejor una contraseña de aplicación)"
+        );
+        assert_eq!(
+            tr("clouds.enter_client_id"),
+            "Introduce el client id de tu aplicación (Keel no incluye ninguno)"
+        );
+        assert_eq!(
+            tr("clouds.worker_failed"),
+            "No se pudo iniciar un hilo de trabajo"
+        );
+        assert_eq!(
+            tr("clouds.connected").replace("{n}", "3"),
+            "Conectado: 3 elementos en la carpeta raíz"
+        );
+        assert_eq!(
+            tr("clouds.sign_in_worker_stopped"),
+            "el hilo de inicio de sesión se detuvo"
+        );
+        crate::i18n::set("en");
+    }
+
+    /// The account toasts, the status/quota text and the delete/remove/link confirmations.
+    #[test]
+    fn cloud_toasts_in_spanish() {
+        crate::i18n::set("es");
+        let tr = crate::i18n::tr;
+        assert_eq!(tr("clouds.status_connecting"), "conectando");
+        assert_eq!(tr("clouds.status_connected"), "conectado");
+        assert_eq!(
+            tr("clouds.connected_to").replace("{label}", "Drive"),
+            "Conectado a Drive"
+        );
+        assert_eq!(
+            tr("clouds.sign_in_expired").replace("{label}", "Drive"),
+            "Drive: el inicio de sesión expiró o se revocó"
+        );
+        assert_eq!(tr("clouds.sign_in_button"), "Iniciar sesión");
+        assert_eq!(
+            tr("clouds.failed_detail")
+                .replace("{label}", "Drive")
+                .replace("{detail}", "sin red"),
+            "Drive: sin red"
+        );
+        assert_eq!(
+            tr("clouds.quota_of")
+                .replace("{used}", "12,3 GB")
+                .replace("{total}", "15 GB"),
+            "12,3 GB de 15 GB en uso"
+        );
+        assert_eq!(
+            tr("clouds.quota_no_limit").replace("{used}", "1,5 MB"),
+            "1,5 MB en uso (sin límite)"
+        );
+        assert_eq!(
+            tr("clouds.quota_checking"),
+            "Comprobando el almacenamiento…"
+        );
+        assert_eq!(tr("clouds.quota_unknown"), "Cuota desconocida");
+        assert_eq!(
+            tr("clouds.link_cloud_only"),
+            "Copiar enlace funciona en archivos de la nube"
+        );
+        assert_eq!(
+            tr("clouds.link_answer_first").replace("{name}", "foto.jpg"),
+            "Copiar enlace: responde primero la pregunta abierta y vuelve a pedirlo para foto.jpg"
+        );
+        assert_eq!(
+            tr("clouds.link_error").replace("{error}", "sin red"),
+            "Copiar enlace: sin red"
+        );
+        assert_eq!(
+            tr("clouds.not_configured"),
+            "Esa cuenta de nube ya no está configurada"
+        );
+        assert_eq!(
+            tr("clouds.dialog_open"),
+            "Termina o cierra primero el diálogo de cuenta de nube abierto"
+        );
+        assert_eq!(
+            tr("clouds.saved_account").replace("{label}", "Drive"),
+            "Guardado Drive"
+        );
+        assert_eq!(
+            tr("clouds.removed_keys").replace("{label}", "Drive"),
+            "Eliminado Drive; sus claves se han borrado de este equipo"
+        );
+        assert_eq!(
+            tr("clouds.removed_signed_out").replace("{label}", "Drive"),
+            "Eliminado Drive; se ha cerrado la sesión y sus claves se han borrado de este equipo"
+        );
+        assert_eq!(
+            tr("clouds.removed_revoke_failed")
+                .replace("{label}", "Drive")
+                .replace("{error}", "timeout"),
+            "Eliminado Drive y borradas sus claves de este equipo, pero el servicio no confirmó \
+             el cierre de sesión: timeout"
+        );
+        assert_eq!(
+            tr("clouds.delete_trash").replace("{items}", "2 elementos"),
+            "¿Mover 2 elementos a la papelera de Drive?"
+        );
+        assert_eq!(
+            tr("clouds.delete_dropbox").replace("{items}", "1 elemento"),
+            "¿Eliminar 1 elemento en Dropbox? (recuperable durante 30 días)"
+        );
+        assert_eq!(
+            tr("clouds.delete_permanent").replace("{items}", "3 elementos"),
+            "¿Eliminar 3 elementos del bucket permanentemente?"
+        );
+        assert_eq!(tr("clouds.delete_button_trash"), "Mover a la papelera");
+        assert_eq!(tr("clouds.delete_button_delete"), "Eliminar");
+        assert_eq!(
+            tr("clouds.remove_keys").replace("{label}", "B2"),
+            "¿Eliminar B2? Keel borra sus claves de este equipo (revócalas en la consola del \
+             proveedor); los archivos en el almacenamiento se quedan."
+        );
+        assert_eq!(
+            tr("clouds.remove_password").replace("{label}", "NAS"),
+            "¿Eliminar NAS? Keel borra su contraseña de este equipo (cámbiala en el servidor si \
+             quieres invalidarla); los archivos en el servidor se quedan."
+        );
+        assert_eq!(
+            tr("clouds.remove_oauth").replace("{label}", "Drive"),
+            "¿Eliminar Drive?\n\nCerrar sesión y eliminar: cierra la sesión de esta aplicación \
+             en Drive en todas partes donde usa este client id y borra sus claves de este \
+             equipo.\n\nEliminar solo de este equipo: borra sus claves aquí; los otros \
+             dispositivos se quedan con la sesión iniciada.\n\nLos archivos en la nube se \
+             quedan."
+        );
+        assert_eq!(tr("clouds.remove_confirm"), "Eliminar");
+        assert_eq!(tr("clouds.sign_out_and_remove"), "Cerrar sesión y eliminar");
+        assert_eq!(tr("clouds.remove_pc_only"), "Eliminar solo de este equipo");
+        assert_eq!(tr("clouds.create_link"), "Crear enlace");
+        crate::i18n::set("en");
     }
 }

@@ -1,6 +1,7 @@
 //! Phase 14: the sidebar's per-profile layout (`[sidebar]` in the profile's `config.toml`):
 //! the user-arranged Favorites and which sections are hidden. Drawing is in `sidebar.rs`.
 
+use crate::i18n::tr;
 use keel_vfs::VPath;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -31,13 +32,13 @@ impl Place {
 
     pub fn label(self) -> &'static str {
         match self {
-            Place::Recents => "Recents",
-            Place::Applications if cfg!(windows) => "Programs",
-            Place::Applications => "Applications",
-            Place::Desktop => "Desktop",
-            Place::Documents => "Documents",
-            Place::Downloads => "Downloads",
-            Place::Home => "Home",
+            Place::Recents => tr("sidebar.recents"),
+            Place::Applications if cfg!(windows) => tr("sidebar.programs"),
+            Place::Applications => tr("sidebar.applications"),
+            Place::Desktop => tr("sidebar.desktop"),
+            Place::Documents => tr("sidebar.documents"),
+            Place::Downloads => tr("sidebar.downloads"),
+            Place::Home => tr("sidebar.home"),
         }
     }
 
@@ -326,6 +327,18 @@ mod tests {
         want.extend(["Desktop", "Documents", "Downloads", "Home"]);
         assert_eq!(labels(&s), want);
         assert!(s.hidden.is_empty());
+    }
+
+    #[test]
+    fn place_labels_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(Place::Recents.label(), "Recientes");
+        assert_eq!(Place::Applications.label(), "Aplicaciones");
+        assert_eq!(Place::Desktop.label(), "Escritorio");
+        assert_eq!(Place::Documents.label(), "Documentos");
+        assert_eq!(Place::Downloads.label(), "Descargas");
+        assert_eq!(Place::Home.label(), "Inicio");
+        crate::i18n::set("en");
     }
 
     #[test]

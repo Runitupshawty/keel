@@ -28,13 +28,20 @@ impl Searcher for Locate {
         if !query.match_case {
             command.arg("-i");
         }
-        if query.regex {
-            command.arg("--regex");
-        }
         // `in:<folder>` or a pane's folder keeps the hits under it (locate has no such
         // filter of its own).
         let (within, text) = crate::scope(query);
-        command.arg("--").arg(&text);
+        // An empty backend text (an operator-only search) is the whole page: an empty
+        // pattern matches nothing, so match every name with the `.*` regex.
+        let (pattern, regex) = if text.is_empty() {
+            (".*", true)
+        } else {
+            (text.as_str(), query.regex)
+        };
+        if regex {
+            command.arg("--regex");
+        }
+        command.arg("--").arg(pattern);
         command_hits(command, query, within.as_deref())
     }
 

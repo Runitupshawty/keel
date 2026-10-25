@@ -141,3 +141,49 @@ impl Toasts {
         action
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toasts_dedupe_cap_replace_and_drop_action() {
+        let mut t = Toasts::default();
+
+        // push dedupe: a repeat text keeps one.
+        t.push("a".into(), Level::Info, Duration::from_secs(3));
+        t.push("a".into(), Level::Info, Duration::from_secs(3));
+        assert_eq!(t.list.len(), 1);
+
+        // cap of 5: six distinct drops the oldest.
+        t.list.clear();
+        for c in 0..6 {
+            t.push(c.to_string(), Level::Info, Duration::from_secs(3));
+        }
+        assert_eq!(t.list.len(), 5);
+        assert_eq!(t.list[0].text, "1");
+        assert!(t.list.iter().all(|x| x.text != "0"));
+
+        // replace: drop the toast starting with the prefix, add the new one.
+        t.list.clear();
+        t.push("Loading 10%".into(), Level::Info, Duration::from_secs(3));
+        t.replace("Loading", "Loading 40%".into());
+        assert_eq!(t.list.len(), 1);
+        assert_eq!(t.list[0].text, "Loading 40%");
+
+        // drop_action: closes the toasts whose button runs the action.
+        t.list.clear();
+        t.with_action("Failed", "Retry", Action::Refresh);
+        t.offer("Just info", "Ok", Action::Refresh);
+        assert_eq!(t.list.len(), 2);
+        t.drop_action(&Action::Refresh);
+        assert!(t.list.is_empty());
+
+        // ask: offers a button and sets dismiss on the same toast.
+        t.list.clear();
+        t.ask("Sure?", "Do it", Action::Refresh, "Not now");
+        assert_eq!(t.list.len(), 1);
+        assert_eq!(t.list[0].dismiss.as_deref(), Some("Not now"));
+        assert!(t.list[0].action.is_some());
+    }
+}

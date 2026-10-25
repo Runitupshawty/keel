@@ -12,19 +12,26 @@ use std::time::Duration;
 const NOTE_CHARS: usize = 60;
 
 /// The status-bar indicator: text and tooltip. Indexing is not "not running".
-pub fn indicator(
-    name: Option<&str>,
-    state: SearchState,
-    reason: Option<&str>,
-) -> (String, &'static str) {
+pub fn indicator(name: Option<&str>, state: SearchState, reason: Option<&str>) -> (String, String) {
     match (name, state, reason) {
-        (None, ..) => ("Search: …".into(), "Loading the search backend"),
-        (Some(name), SearchState::Indexing { done }, _) => (
-            format!("{name}: indexing ({done} so far)"),
-            "Building the file index; search works when it is done",
+        (None, ..) => (
+            crate::i18n::tr("index_ui.search_loading").to_owned(),
+            crate::i18n::tr("index_ui.search_loading_tip").to_owned(),
         ),
-        (Some(name), _, None) => (format!("{name}: ok"), "Search is available"),
-        (Some(name), _, Some(_)) => (format!("{name}: not running"), "Click to check again"),
+        (Some(name), SearchState::Indexing { done }, _) => (
+            crate::i18n::tr("index_ui.indexing")
+                .replace("{name}", name)
+                .replace("{done}", &done.to_string()),
+            crate::i18n::tr("index_ui.indexing_tip").to_owned(),
+        ),
+        (Some(name), _, None) => (
+            crate::i18n::tr("index_ui.ok").replace("{name}", name),
+            crate::i18n::tr("index_ui.ok_tip").to_owned(),
+        ),
+        (Some(name), _, Some(_)) => (
+            crate::i18n::tr("index_ui.not_running").replace("{name}", name),
+            crate::i18n::tr("index_ui.not_running_tip").to_owned(),
+        ),
     }
 }
 
@@ -79,18 +86,18 @@ static INDEXING: AtomicBool = AtomicBool::new(false);
 pub fn full_index_button(ui: &mut egui::Ui, searcher: Option<&str>, tx: &Sender<Msg>) {
     let busy = INDEXING.load(Ordering::Acquire);
     let why_not = match searcher {
-        _ if !cfg!(windows) => Some("Only on Windows (NTFS)"),
-        Some("Everything") => Some("Everything is running and already covers every drive"),
-        _ if busy => Some("Indexing…"),
+        _ if !cfg!(windows) => Some(crate::i18n::tr("index_ui.windows_only")),
+        Some("Everything") => Some(crate::i18n::tr("index_ui.everything_running")),
+        _ if busy => Some(crate::i18n::tr("index_ui.indexing_busy")),
         _ => None,
     };
     let r = ui.add_enabled(
         why_not.is_none(),
-        egui::Button::new("Index all drives (administrator)"),
+        egui::Button::new(crate::i18n::tr("index_ui.full_index_label")),
     );
     let r = match why_not {
         Some(why) => r.on_disabled_hover_text(why),
-        None => r.on_hover_text("Reads every NTFS drive once, after a Windows admin prompt"),
+        None => r.on_hover_text(crate::i18n::tr("index_ui.full_index_tip")),
     };
     if r.clicked() {
         start_full_index(tx.clone(), ui.ctx().clone());
@@ -139,12 +146,12 @@ static SERVICE_BUSY: AtomicBool = AtomicBool::new(false);
 pub fn service_label(state: keel_search::ServiceState) -> &'static str {
     use keel_search::ServiceState as S;
     match state {
-        S::NotInstalled => "Not installed",
-        S::Stopped => "Installed (starts with Keel)",
-        S::Starting => "Starting…",
-        S::Running => "Running",
-        S::Stopping => "Stopping…",
-        S::Unknown => "Unknown",
+        S::NotInstalled => crate::i18n::tr("index_ui.service_not_installed"),
+        S::Stopped => crate::i18n::tr("index_ui.service_stopped"),
+        S::Starting => crate::i18n::tr("index_ui.service_starting"),
+        S::Running => crate::i18n::tr("index_ui.service_running"),
+        S::Stopping => crate::i18n::tr("index_ui.service_stopping"),
+        S::Unknown => crate::i18n::tr("index_ui.service_unknown"),
     }
 }
 
@@ -173,21 +180,19 @@ pub fn service_row(ui: &mut egui::Ui, tx: &Sender<Msg>) {
     let state = cached_service_state();
     let busy = SERVICE_BUSY.load(Ordering::Acquire);
     ui.horizontal(|ui| {
-        ui.label(service_label(state)).on_hover_text(
-            "A Windows service that reads the drives' file tables for you, so the full \
-             index needs no administrator prompt after it is installed",
-        );
+        ui.label(service_label(state))
+            .on_hover_text(crate::i18n::tr("index_ui.service_tip"));
         let (text, install, tip) = if state == S::NotInstalled {
             (
-                "Install…",
+                crate::i18n::tr("index_ui.install_label"),
                 true,
-                "Install the Keel index service for your account (administrator prompt)",
+                crate::i18n::tr("index_ui.install_tip"),
             )
         } else {
             (
-                "Uninstall…",
+                crate::i18n::tr("index_ui.uninstall_label"),
                 false,
-                "Stop and remove the Keel index service (administrator prompt)",
+                crate::i18n::tr("index_ui.uninstall_tip"),
             )
         };
         let r = ui.add_enabled(!busy && state != S::Unknown, egui::Button::new(text));
@@ -363,5 +368,57 @@ mod tests {
         // Cuts on characters, not bytes.
         let wide = "é".repeat(70);
         assert_eq!(note(&wide).0.chars().count(), NOTE_CHARS + 1);
+    }
+
+    #[test]
+    fn index_ui_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(indicator(None, SearchState::Ready, None).0, "Búsqueda: …");
+        assert_eq!(
+            indicator(None, SearchState::Ready, None).1,
+            "Cargando el motor de búsqueda"
+        );
+        assert_eq!(
+            indicator(Some("Keel index"), SearchState::Indexing { done: 42 }, None).0,
+            "Keel index: indexando (42 hasta ahora)"
+        );
+        assert_eq!(
+            indicator(Some("Keel index"), SearchState::Indexing { done: 42 }, None).1,
+            "Creando el índice de archivos; la búsqueda funcionará al terminar"
+        );
+        assert_eq!(
+            indicator(Some("Keel index"), SearchState::Ready, None).0,
+            "Keel index: ok"
+        );
+        assert_eq!(
+            indicator(Some("Keel index"), SearchState::Ready, None).1,
+            "La búsqueda está disponible"
+        );
+        assert_eq!(
+            indicator(Some("Everything"), SearchState::Ready, Some("no")).0,
+            "Everything: no en ejecución"
+        );
+        assert_eq!(
+            indicator(Some("Everything"), SearchState::Ready, Some("no")).1,
+            "Haz clic para comprobar de nuevo"
+        );
+        assert_eq!(
+            crate::i18n::tr("index_ui.windows_only"),
+            "Solo en Windows (NTFS)"
+        );
+        assert_eq!(
+            crate::i18n::tr("index_ui.everything_running"),
+            "Everything está en ejecución y ya cubre todas las unidades"
+        );
+        assert_eq!(crate::i18n::tr("index_ui.indexing_busy"), "Indexando…");
+        assert_eq!(
+            crate::i18n::tr("index_ui.full_index_label"),
+            "Indexar todas las unidades (administrador)"
+        );
+        assert_eq!(
+            crate::i18n::tr("index_ui.full_index_tip"),
+            "Lee cada unidad NTFS una vez, tras un aviso de administrador de Windows"
+        );
+        crate::i18n::set("en");
     }
 }

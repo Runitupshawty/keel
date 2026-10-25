@@ -62,8 +62,8 @@ impl Style {
 
     pub fn label(self) -> &'static str {
         match self {
-            Style::Finder => "Finder-style",
-            Style::Classic => "Classic",
+            Style::Finder => crate::i18n::tr("settings.style_finder"),
+            Style::Classic => crate::i18n::tr("settings.style_classic"),
         }
     }
 
@@ -94,10 +94,10 @@ pub enum Accent {
 impl Accent {
     pub fn label(self) -> &'static str {
         match self {
-            Accent::Auto => "Automatic",
-            Accent::System => "System",
-            Accent::Theme => "Theme",
-            Accent::Custom(_) => "Custom",
+            Accent::Auto => crate::i18n::tr("settings.accent_auto"),
+            Accent::System => crate::i18n::tr("settings.accent_system"),
+            Accent::Theme => crate::i18n::tr("settings.accent_theme"),
+            Accent::Custom(_) => crate::i18n::tr("settings.accent_custom"),
         }
     }
 }

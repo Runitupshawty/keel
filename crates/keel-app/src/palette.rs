@@ -378,6 +378,45 @@ mod tests {
         }
     }
 
+    /// The session entries are translated (en/es key parity is checked in i18n::tests).
+    #[test]
+    fn palette_session_entries_in_spanish() {
+        let mut p = Palette {
+            sessions: vec!["photos".into()],
+            ..Palette::default()
+        };
+        let top = |p: &mut Palette, text: &str, label: &str| {
+            p.text = text.into();
+            p.filter();
+            assert_eq!(p.items[p.shown[0]].label, label, "{text}");
+            p.items[p.shown[0]].action.clone()
+        };
+        p.show(false, &Bindings::default());
+        assert_eq!(
+            top(&mut p, "save session", "Save session as…"),
+            Action::Session(SessionCmd::SaveAs)
+        );
+        assert_eq!(
+            top(&mut p, "open session", "Open session: photos"),
+            Action::Session(SessionCmd::Open("photos".into()))
+        );
+        crate::i18n::set("es");
+        p.show(false, &Bindings::default());
+        assert_eq!(
+            top(&mut p, "guardar sesión", "Guardar la sesión como…"),
+            Action::Session(SessionCmd::SaveAs)
+        );
+        assert_eq!(
+            top(&mut p, "abrir sesión", "Abrir la sesión: photos"),
+            Action::Session(SessionCmd::Open("photos".into()))
+        );
+        assert_eq!(
+            top(&mut p, "eliminar sesión", "Eliminar la sesión: photos"),
+            Action::Session(SessionCmd::Delete("photos".into()))
+        );
+        crate::i18n::set("en");
+    }
+
     #[test]
     fn selection_adds_context_actions() {
         let mut p = Palette::default();

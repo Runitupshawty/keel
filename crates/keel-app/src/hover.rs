@@ -26,8 +26,9 @@ pub struct Hover {
     at: Option<(VPath, Instant)>,
     /// A key, a scroll or a click hid it; until the pointer rests on another file.
     dismissed: bool,
-    /// The last preview asked for (asked once).
-    asked: Option<PreviewKey>,
+    /// The last preview asked for, with the panel generation it was asked against
+    /// (asked once per generation).
+    asked: Option<(PreviewKey, u64)>,
     tex: Option<(PreviewKey, TextureHandle)>,
     /// Shown this frame (tests).
     pub shown: Option<VPath>,
@@ -41,6 +42,8 @@ impl Hover {
         self.shown = None;
         let Some(e) = entry.filter(|e| on && e.kind != Kind::Dir && !e.encrypted) else {
             self.at = None;
+            // Clear the asked-once guard too, so the next landing re-requests.
+            self.asked = None;
             return;
         };
         if self.at.as_ref().map(|(p, _)| p) != Some(&e.path) {
@@ -73,8 +76,10 @@ impl Hover {
         let px = (max.x * ctx.pixels_per_point()).round() as u32;
         let key = PreviewKey::of(&e, 0, crate::preview_panel::width_bucket(&e, px));
         let Some(preview) = panel.cached(&key) else {
-            if self.asked.as_ref() != Some(&key) && panel.request(&key, &e, px) {
-                self.asked = Some(key);
+            let gen = panel.generation();
+            let asked_same_gen = matches!(&self.asked, Some((k, g)) if k == &key && *g == gen);
+            if !asked_same_gen && panel.request(&key, &e, px) {
+                self.asked = Some((key, gen));
             }
             return;
         };
@@ -185,6 +190,81 @@ mod tests {
         assert!(
             rx.try_recv().is_ok(),
             "relanding on a file that left the cache re-requests its preview"
+        );
+    }
+
+    /// `PreviewPanel::reset` wipes the shared cache; the pointer passing over a
+    /// folder (leaving all files) must clear the asked-once guard as well, so
+    /// landing back on the file re-requests its preview.
+    #[test]
+    fn relanding_after_reset_rerequests_the_preview() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(tx);
+        let ctx = egui::Context::default();
+        let a = test_entry(&dir, "a.md", Kind::File, 10);
+        let folder = test_entry(&dir, "sub", Kind::Dir, 0);
+        let mut hover = Hover::default();
+
+        // Land on `a`: not cached, so it is requested once.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(rx.try_recv().is_ok(), "first landing requests the preview");
+        while rx.try_recv().is_ok() {} // drain
+
+        // The worker answers (cached), then the panel is reset (crash recovery /
+        // profile switch) and the cache is wiped.
+        let px = (ctx.screen_rect().size().x * MAX_SHARE * ctx.pixels_per_point()).round() as u32;
+        let key = PreviewKey::of(&a, 0, crate::preview_panel::width_bucket(&a, px));
+        panel.insert(&ctx, key, Preview::Markdown("# hi\n".into()));
+        panel.reset();
+
+        // The pointer passes over a folder row: no preview here, but the
+        // asked-once guard for `a` must not survive.
+        stash(&ctx, &folder);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+
+        // Landing back on `a` must re-request the now-missing preview.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(
+            rx.try_recv().is_ok(),
+            "relanding after a reset re-requests the preview"
+        );
+    }
+
+    /// `PreviewPanel::reset` wipes the shared cache while the pointer is still resting on
+    /// the same file; the generation bump must make the hover re-request the now-missing
+    /// preview without the pointer ever leaving the row.
+    #[test]
+    fn reset_while_resting_rerequests() {
+        let dir = VPath::local(std::env::temp_dir());
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut panel = PreviewPanel::new(tx);
+        let ctx = egui::Context::default();
+        let a = test_entry(&dir, "a.md", Kind::File, 10);
+        let mut hover = Hover::default();
+
+        // Land on `a` and rest: not cached, so it is requested once.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(rx.try_recv().is_ok(), "first landing requests the preview");
+        while rx.try_recv().is_ok() {} // drain
+
+        // The worker answers (cached), then the panel is reset while the pointer is
+        // still resting on `a` (crash recovery / profile switch) and the cache is wiped.
+        let px = (ctx.screen_rect().size().x * MAX_SHARE * ctx.pixels_per_point()).round() as u32;
+        let key = PreviewKey::of(&a, 0, crate::preview_panel::width_bucket(&a, px));
+        panel.insert(&ctx, key, Preview::Markdown("# hi\n".into()));
+        panel.reset();
+
+        // The pointer never leaves `a`; the next resting frame must re-request the
+        // now-missing preview because the panel generation changed.
+        stash(&ctx, &a);
+        hover.show(&ctx, &panel, true, Duration::ZERO);
+        assert!(
+            rx.try_recv().is_ok(),
+            "resetting the panel while resting on the same file re-requests its preview"
         );
     }
 }

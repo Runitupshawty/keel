@@ -370,9 +370,9 @@ pub fn panel(ctx: &egui::Context, s: &mut AppState) -> Option<Action> {
         let (_, dropped) = ui.dnd_drop_zone::<DragPayload, _>(frame, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.strong("Drop zone");
+                ui.strong(crate::i18n::tr("dropzone.title"));
                 if zone.items.is_empty() {
-                    ui.weak("Drag files here or press Ctrl+Shift+S to stash the selection");
+                    ui.weak(crate::i18n::tr("dropzone.hint"));
                 }
                 for path in zone.items.iter().take(MAX_CHIPS) {
                     if let Some(a) = chip(ui, path, zone.missing.contains(path)) {
@@ -380,22 +380,27 @@ pub fn panel(ctx: &egui::Context, s: &mut AppState) -> Option<Action> {
                     }
                 }
                 if zone.items.len() > MAX_CHIPS {
-                    ui.weak(format!("+{} more", zone.items.len() - MAX_CHIPS));
+                    let extra = zone.items.len() - MAX_CHIPS;
+                    ui.weak(crate::i18n::tr("dropzone.more").replace("{n}", &extra.to_string()));
                 }
                 ui.separator();
                 let any = !zone.items.is_empty();
                 let buttons = [
                     (
-                        "Paste here",
-                        "Copy into the active folder",
+                        crate::i18n::tr("dropzone.paste"),
+                        crate::i18n::tr("dropzone.paste_tip"),
                         Action::StashPaste { mv: false },
                     ),
                     (
-                        "Move here",
-                        "Move into the active folder",
+                        crate::i18n::tr("dropzone.move_here"),
+                        crate::i18n::tr("dropzone.move_here_tip"),
                         Action::StashPaste { mv: true },
                     ),
-                    ("Clear", "Empty the drop zone", Action::ClearStash),
+                    (
+                        crate::i18n::tr("dropzone.clear"),
+                        crate::i18n::tr("dropzone.clear_tip"),
+                        Action::ClearStash,
+                    ),
                 ];
                 for (text, tip, a) in buttons {
                     if ui
@@ -408,7 +413,7 @@ pub fn panel(ctx: &egui::Context, s: &mut AppState) -> Option<Action> {
                 }
                 if ui
                     .add(egui::Button::new("⏷").frame(false))
-                    .on_hover_text("Hide (Ctrl+Shift+Z)")
+                    .on_hover_text(crate::i18n::tr("dropzone.hide_tip"))
                     .clicked()
                 {
                     action = Some(Action::ToggleDropZone);
@@ -437,14 +442,14 @@ fn chip(ui: &mut egui::Ui, path: &VPath, missing: bool) -> Option<Action> {
             };
             let folder = path.parent().map(|d| d.display()).unwrap_or_default();
             let tip = if missing {
-                format!("{folder}\n(no longer exists: skipped on paste)")
+                crate::i18n::tr("dropzone.chip_gone").replace("{folder}", &folder)
             } else {
                 folder
             };
             ui.label(name).on_hover_text(tip);
             if ui
                 .add(egui::Button::new("×").frame(false).small())
-                .on_hover_text("Remove from the drop zone")
+                .on_hover_text(crate::i18n::tr("dropzone.chip_remove_tip"))
                 .clicked()
             {
                 action = Some(Action::Unstash(path.clone()));
@@ -675,8 +680,10 @@ mod tests {
         assert_eq!(z.add(paths.clone()), (20_000, false));
         assert_eq!(z.add(paths), (0, false), "all known");
         let took = at.elapsed();
-        // The Vec scan this replaced took 1.6 s in release; debug builds are ~10x slower.
-        let limit = Duration::from_millis(if cfg!(debug_assertions) { 500 } else { 50 });
+        // The Vec scan this replaced took 1.6 s in release; debug builds are ~10x
+        // slower. 2 s absorbs wall-clock noise from parallel tests on a contended
+        // runner while staying far below that O(n^2) regression (~16 s debug).
+        let limit = Duration::from_millis(if cfg!(debug_assertions) { 2000 } else { 50 });
         assert!(took < limit, "{took:?}");
         let more: Vec<VPath> = (0..MAX_STASH).map(|i| p(&format!("g{i}"))).collect();
         assert_eq!(z.add(more), (MAX_STASH - 20_000, true));

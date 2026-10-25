@@ -234,18 +234,47 @@ pub fn apply(
     }
 }
 
-/// Every filter name for the combo: the built-ins, then the profile's.
+/// A built-in filter's combo name in the current language (custom names go through
+/// unchanged; the stored names stay English).
+fn display(name: &str) -> &str {
+    match name {
+        "Everything" => crate::i18n::tr("search_filters.everything"),
+        "Audio" => crate::i18n::tr("search_filters.audio"),
+        "Compressed" => crate::i18n::tr("search_filters.compressed"),
+        "Document" => crate::i18n::tr("search_filters.document"),
+        "Executable" => crate::i18n::tr("search_filters.executable"),
+        "Folder" => crate::i18n::tr("search_filters.folder"),
+        "Picture" => crate::i18n::tr("search_filters.picture"),
+        "Video" => crate::i18n::tr("search_filters.video"),
+        other => other,
+    }
+}
+
+/// Every filter's combo name: the built-ins translated, then the profile's.
 pub fn names(custom: &[CustomFilter]) -> Vec<String> {
-    (BUILTIN.iter().map(|b| (*b).to_owned()))
+    (BUILTIN.iter().map(|b| display(b).to_owned()))
         .chain(custom.iter().map(|c| c.name.clone()))
         .collect()
 }
 
 /// The combo's text for a tab's filter ("" is Everything).
 pub fn shown(filter: &str) -> &str {
-    match filter {
-        "" => BUILTIN[0],
-        f => f,
+    display(if filter.is_empty() {
+        BUILTIN[0]
+    } else {
+        filter
+    })
+}
+
+/// The stored filter behind a combo name: a built-in's translation maps back to its
+/// English name ("" for Everything); anything else is stored as-is.
+/// shortcut: a custom filter named like a built-in's translation (e.g. "Todo") loses to
+/// the built-in here; pass (stored, display) pairs into the combo if that ever matters.
+pub fn value(name: &str) -> String {
+    match BUILTIN.iter().copied().find(|b| display(b) == name) {
+        Some("Everything") => String::new(),
+        Some(b) => b.to_owned(),
+        None => name.to_owned(),
     }
 }
 
@@ -371,5 +400,34 @@ mod tests {
             ..mine
         };
         assert!(check(&f, &[]).is_err());
+    }
+
+    /// The built-ins' combo names and selection show in Spanish; the stored names stay
+    /// English (en/es key parity is checked in i18n::tests).
+    #[test]
+    fn builtin_filter_names_shown_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(
+            names(&[]),
+            [
+                "Todo",
+                "Audio",
+                "Comprimidos",
+                "Documentos",
+                "Ejecutables",
+                "Carpetas",
+                "Imágenes",
+                "Vídeos"
+            ]
+        );
+        assert_eq!(shown(""), "Todo");
+        assert_eq!(shown("Video"), "Vídeos");
+        // The stored value behind the display names stays English ("" for Everything).
+        assert_eq!(value("Todo"), "");
+        assert_eq!(value("Vídeos"), "Video");
+        assert_eq!(value("Diseños"), "Diseños");
+        crate::i18n::set("en");
+        assert_eq!(names(&[]).first().unwrap(), "Everything");
+        assert_eq!(shown("Video"), "Video");
     }
 }

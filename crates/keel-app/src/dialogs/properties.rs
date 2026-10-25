@@ -76,13 +76,13 @@ pub enum Section {
 impl Section {
     pub fn title(self) -> &'static str {
         match self {
-            Section::General => "General",
-            Section::MoreInfo => "More Info",
-            Section::NameExt => "Name & Extension",
-            Section::Comments => "Comments",
-            Section::OpenWith => "Open with",
-            Section::Preview => "Preview",
-            Section::Sharing => "Sharing & Permissions",
+            Section::General => crate::i18n::tr("properties.general"),
+            Section::MoreInfo => crate::i18n::tr("properties.more_info"),
+            Section::NameExt => crate::i18n::tr("properties.name_ext"),
+            Section::Comments => crate::i18n::tr("properties.comments"),
+            Section::OpenWith => crate::i18n::tr("properties.open_with"),
+            Section::Preview => crate::i18n::tr("properties.preview"),
+            Section::Sharing => crate::i18n::tr("properties.sharing"),
         }
     }
 
@@ -122,38 +122,75 @@ pub fn sections(p: &Props, n: usize) -> Vec<Section> {
 
 /// General's rows (`n` items): what it is, how big, where and when.
 pub fn general_rows(p: &Props, n: usize) -> Vec<(&'static str, String)> {
-    let mut rows = vec![("Kind", p.kind.clone())];
-    let more = if p.partial { "at least " } else { "" };
+    let mut rows = vec![(crate::i18n::tr("properties.kind"), kind_value(&p.kind))];
+    let more = if p.partial {
+        crate::i18n::tr("properties.at_least")
+    } else {
+        ""
+    };
     match p.drive {
         Some(space) => {
-            rows.push(("Capacity", size_text_of(space.total)));
-            rows.push(("Available", size_text_of(space.free)));
-            rows.push(("Used", size_text_of(space.total.saturating_sub(space.free))));
+            rows.push((
+                crate::i18n::tr("properties.capacity"),
+                size_text_of(space.total),
+            ));
+            rows.push((
+                crate::i18n::tr("properties.available"),
+                size_text_of(space.free),
+            ));
+            rows.push((
+                crate::i18n::tr("properties.used"),
+                size_text_of(space.total.saturating_sub(space.free)),
+            ));
         }
         None => rows.push((
-            "Size",
-            format!("{more}{} ({} bytes)", size_text_of(p.bytes), p.bytes),
+            crate::i18n::tr("properties.size"),
+            format!(
+                "{more}{}",
+                crate::i18n::tr("properties.size_bytes")
+                    .replace("{size}", &size_text_of(p.bytes))
+                    .replace("{bytes}", &p.bytes.to_string())
+            ),
         )),
     }
     if p.drive.is_none() && (p.folders > 0 || p.kind == "Folder" || n > 1) {
         rows.push((
-            "Contains",
+            crate::i18n::tr("properties.contains"),
             format!("{more}{}", contains(p.files, p.folders)),
         ));
     }
-    rows.push(("Where", p.location.clone()));
+    rows.push((crate::i18n::tr("properties.where"), p.location.clone()));
     if n == 1 {
-        rows.push(("Created", date(p.created)));
-        rows.push(("Modified", date(p.modified)));
-        let attrs: Vec<&str> = [(p.hidden, "hidden"), (p.link, "link")]
-            .into_iter()
-            .filter_map(|(on, name)| on.then_some(name))
-            .collect();
+        rows.push((crate::i18n::tr("properties.created"), date(p.created)));
+        rows.push((crate::i18n::tr("properties.modified"), date(p.modified)));
+        let attrs: Vec<String> = [
+            (p.hidden, crate::i18n::tr("properties.attr_hidden")),
+            (p.link, crate::i18n::tr("properties.attr_link")),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name.to_owned()))
+        .collect();
         if !attrs.is_empty() {
-            rows.push(("Attributes", attrs.join(", ")));
+            rows.push((crate::i18n::tr("properties.attributes"), attrs.join(", ")));
         }
     }
     rows
+}
+
+/// The Kind row's value in the UI language; `kind` is the English name the worker set.
+fn kind_value(kind: &str) -> String {
+    match kind.strip_suffix(" file") {
+        Some(ext) => crate::i18n::tr("properties.kind_ext_file").replace("{ext}", ext),
+        _ => match kind {
+            "File" => crate::i18n::tr("properties.kind_file"),
+            "Folder" => crate::i18n::tr("properties.kind_folder"),
+            "Drive" => crate::i18n::tr("properties.kind_drive"),
+            "Link" => crate::i18n::tr("properties.kind_link"),
+            "Several items" => crate::i18n::tr("properties.kind_several"),
+            other => other,
+        }
+        .to_owned(),
+    }
 }
 
 /// A local path that is the root of its file system (a drive, a volume, a share).
@@ -340,13 +377,28 @@ fn date(t: Option<SystemTime>) -> String {
     .unwrap_or_else(|| "—".into())
 }
 
-/// "2 files, 1 folder": the Contains row.
+/// "2 files, 1 folder": the Contains row, in the UI language.
 fn contains(files: u64, folders: u64) -> String {
-    let n = |n: u64, one: &str| match n {
-        1 => format!("1 {one}"),
-        n => format!("{n} {one}s"),
+    let n = |n: u64, one: &str, many: &str| {
+        if n == 1 {
+            one.to_owned()
+        } else {
+            many.replace("{n}", &n.to_string())
+        }
     };
-    format!("{}, {}", n(files, "file"), n(folders, "folder"))
+    format!(
+        "{}, {}",
+        n(
+            files,
+            crate::i18n::tr("properties.file_one"),
+            crate::i18n::tr("properties.files"),
+        ),
+        n(
+            folders,
+            crate::i18n::tr("properties.folder_one"),
+            crate::i18n::tr("properties.folders"),
+        )
+    )
 }
 
 /// `name` split for Name & Extension: the extension (with its dot) when there is one.
@@ -399,14 +451,12 @@ impl InfoWindow {
     }
 
     pub fn title(&self) -> String {
-        let name = match &self.info {
-            Some(Ok(p)) => p.name.clone(),
-            _ => match self.paths.as_slice() {
-                [one] => one.name().to_owned(),
-                many => format!("{} items", many.len()),
-            },
+        let name = match (&self.info, self.paths.len()) {
+            (Some(Ok(p)), 1) => p.name.clone(),
+            (_, 1) => self.paths[0].name().to_owned(),
+            (_, n) => crate::i18n::items(n),
         };
-        format!("{name} Info")
+        crate::i18n::tr("properties.window_title").replace("{name}", &name)
     }
 
     /// The full name the Name field stands for.
@@ -546,7 +596,10 @@ impl AppState {
             ..Default::default()
         };
         if let Err(e) = keel_vfs::fsattr::set_attributes(&path, &set) {
-            return self.toasts.error(format!("Locked: {e:#}"));
+            let error = format!("{e:#}");
+            return self
+                .toasts
+                .error(crate::i18n::tr("properties.locked_error").replace("{error}", &error));
         }
         for w in &mut self.info.windows {
             if w.paths
@@ -596,13 +649,13 @@ pub fn windows(ctx: &egui::Context, s: &mut AppState, out: &mut Vec<Action>) {
 
 fn body(ui: &mut egui::Ui, s: &mut AppState, w: &mut InfoWindow, out: &mut Vec<Action>) {
     if w.follow {
-        ui.weak("Follows the selection");
+        ui.weak(crate::i18n::tr("properties.follows_selection"));
     }
     let p = match &w.info {
         None => {
             ui.horizontal(|ui| {
                 crate::anim::spinner(ui);
-                ui.label("Reading…");
+                ui.label(crate::i18n::tr("properties.reading"));
             });
             return;
         }
@@ -646,15 +699,30 @@ fn header(ui: &mut egui::Ui, s: &mut AppState, p: &Props, n: usize) {
             }
         }
         ui.vertical(|ui| {
-            ui.add(egui::Label::new(RichText::new(&p.name).strong()).truncate());
+            let items = crate::i18n::items(n);
+            let name = if n == 1 {
+                p.name.as_str()
+            } else {
+                items.as_str()
+            };
+            ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
             let size = match p.drive {
-                Some(d) => format!("{} available", size_text_of(d.free)),
-                None if p.partial => format!("at least {}", size_text_of(p.bytes)),
+                Some(d) => crate::i18n::tr("properties.available_size")
+                    .replace("{size}", &size_text_of(d.free)),
+                None if p.partial => format!(
+                    "{}{}",
+                    crate::i18n::tr("properties.at_least"),
+                    size_text_of(p.bytes)
+                ),
                 None => size_text_of(p.bytes),
             };
             ui.weak(size);
             if n == 1 {
-                ui.weak(format!("Modified: {}", date(p.modified)));
+                ui.weak(format!(
+                    "{}: {}",
+                    crate::i18n::tr("properties.modified"),
+                    date(p.modified)
+                ));
             }
         });
     });
@@ -709,10 +777,10 @@ fn general(ui: &mut egui::Ui, s: &AppState, w: &InfoWindow, p: &Props, out: &mut
             }
         }
         ui.horizontal_wrapped(|ui| {
-            ui.weak("Tags");
+            ui.weak(crate::i18n::tr("properties.tags"));
             crate::tag_dots::show(ui, &dots);
             ui.label(if names.is_empty() {
-                "none".to_owned()
+                crate::i18n::tr("properties.none").to_owned()
             } else {
                 names.join(", ")
             });
@@ -736,7 +804,11 @@ fn general(ui: &mut egui::Ui, s: &AppState, w: &InfoWindow, p: &Props, out: &mut
             paths: Some(w.paths.clone()),
         }));
     }
-    if l.is_open() && ui.small_button("Tags…").clicked() {
+    if l.is_open()
+        && ui
+            .small_button(crate::i18n::tr("properties.tags_button"))
+            .clicked()
+    {
         out.push(Action::Library(LibCmd::TagPickerFor(w.paths.clone())));
     }
     // Locked: read-only for one local item.
@@ -744,7 +816,7 @@ fn general(ui: &mut egui::Ui, s: &AppState, w: &InfoWindow, p: &Props, out: &mut
     if let ([_], Some(local)) = (w.paths.as_slice(), local) {
         if p.drive.is_none() {
             let mut locked = p.read_only;
-            let r = ui.checkbox(&mut locked, "Locked (read-only)");
+            let r = ui.checkbox(&mut locked, crate::i18n::tr("properties.locked"));
             if r.changed() {
                 out.push(Action::SetLocked(local, locked));
             }
@@ -760,11 +832,14 @@ fn more_info(ui: &mut egui::Ui, p: &Props) {
         .collect();
     if let Some(e) = &p.entry {
         if !e.ext.is_empty() && e.kind != Kind::Dir {
-            rows.push(("Extension", format!(".{}", e.ext)));
+            rows.push((
+                crate::i18n::tr("properties.extension"),
+                format!(".{}", e.ext),
+            ));
         }
     }
     if rows.is_empty() {
-        ui.weak("No more information");
+        ui.weak(crate::i18n::tr("properties.no_more_info"));
     } else {
         egui::Grid::new(("more", p.name.as_str()))
             .num_columns(2)
@@ -791,13 +866,16 @@ fn name_ext(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Acti
     let r = ui.add(
         egui::TextEdit::singleline(&mut w.name)
             .desired_width(f32::INFINITY)
-            .hint_text("Name"),
+            .hint_text(crate::i18n::tr("properties.name")),
     );
-    let r = r.named("Name");
+    let r = r.named(crate::i18n::tr("properties.name"));
     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if !folder && !ext.is_empty() {
         let mut hide = w.hide_ext;
-        if ui.checkbox(&mut hide, "Hide extension").changed() {
+        if ui
+            .checkbox(&mut hide, crate::i18n::tr("properties.hide_extension"))
+            .changed()
+        {
             // The field keeps what was typed, with or without the extension.
             let typed = w.full_name(ext);
             w.hide_ext = hide;
@@ -809,7 +887,10 @@ fn name_ext(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Acti
     }
     let to = w.full_name(ext);
     let changed = !to.is_empty() && to != p.name;
-    let rename = ui.add_enabled(changed, egui::Button::new("Rename"));
+    let rename = ui.add_enabled(
+        changed,
+        egui::Button::new(crate::i18n::tr("properties.rename")),
+    );
     if changed && (rename.clicked() || enter) {
         out.push(Action::RenameTo {
             from: path.clone(),
@@ -829,11 +910,14 @@ fn comments(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Acti
                 egui::TextEdit::multiline(&mut w.comment)
                     .desired_rows(3)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Add a comment"),
+                    .hint_text(crate::i18n::tr("properties.add_comment")),
             );
-            let r = r.named("Comments");
+            let r = r.named(crate::i18n::tr("properties.comments"));
             let changed = w.comment != w.saved_comment;
-            let save = ui.add_enabled(changed, egui::Button::new("Save comment"));
+            let save = ui.add_enabled(
+                changed,
+                egui::Button::new(crate::i18n::tr("properties.save_comment")),
+            );
             if changed && (save.clicked() || r.lost_focus()) {
                 if let Some(path) = w.paths.first() {
                     out.push(Action::Library(LibCmd::SetComment {
@@ -845,11 +929,20 @@ fn comments(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Acti
             }
         }
         Some(Err(why)) => {
+            // The worker's canonical strings (English) are shown translated.
+            let why = if why.as_str() == COMMENTS_OFF {
+                crate::i18n::tr("properties.comments_off").to_owned()
+            } else if why.as_str() == COMMENTS_OUTSIDE {
+                crate::i18n::tr("properties.comments_outside").to_owned()
+            } else {
+                why.clone()
+            };
             let mut empty = String::new();
             let off = egui::TextEdit::multiline(&mut empty)
                 .desired_rows(2)
                 .desired_width(f32::INFINITY);
-            ui.add_enabled(false, off).named("Comments");
+            ui.add_enabled(false, off)
+                .named(crate::i18n::tr("properties.comments"));
             ui.add(egui::Label::new(RichText::new(why).small().weak()).wrap());
         }
         None => {}
@@ -863,7 +956,7 @@ fn open_with(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Act
     if p.apps.is_empty() {
         // Windows: Explorer's own chooser below.
         if !cfg!(windows) {
-            ui.weak("No applications found for this file");
+            ui.weak(crate::i18n::tr("properties.no_apps"));
         }
     } else {
         w.app = w.app.min(p.apps.len() - 1);
@@ -879,7 +972,7 @@ fn open_with(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Act
     ui.horizontal_wrapped(|ui| {
         let app = p.apps.get(w.app).map(|(_, app)| app.clone());
         if let Some(app) = app {
-            if ui.button("Open").clicked() {
+            if ui.button(crate::i18n::tr("properties.open")).clicked() {
                 out.push(Action::OpenWithApp {
                     paths: vec![local.clone()],
                     app: app.clone(),
@@ -888,9 +981,10 @@ fn open_with(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Act
             }
             let ext = p.entry.as_ref().map(|e| e.ext.as_str()).unwrap_or_default();
             if !ext.is_empty() {
-                let all = ui.button(format!("Use for all .{ext} files"));
+                let all =
+                    ui.button(crate::i18n::tr("properties.use_for_all").replace("{ext}", ext));
                 if all
-                    .tip("Keel opens these files with this application")
+                    .tip(crate::i18n::tr("properties.use_for_all_tip"))
                     .clicked()
                 {
                     out.push(Action::OpenWithApp {
@@ -902,10 +996,13 @@ fn open_with(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Act
             }
         }
         #[cfg(windows)]
-        if ui.button("Choose app…").clicked() {
+        if ui
+            .button(crate::i18n::tr("properties.choose_app"))
+            .clicked()
+        {
             out.push(Action::OpenWithSystem(local.clone()));
         }
-        if ui.button("Other…").clicked() {
+        if ui.button(crate::i18n::tr("properties.other")).clicked() {
             out.push(Action::OpenWithBrowse {
                 paths: vec![local.clone()],
                 remember: false,
@@ -916,7 +1013,7 @@ fn open_with(ui: &mut egui::Ui, w: &mut InfoWindow, p: &Props, out: &mut Vec<Act
 
 fn preview(ui: &mut egui::Ui, s: &mut AppState, p: &Props) {
     let Some(e) = &p.entry else {
-        ui.weak("No preview");
+        ui.weak(crate::i18n::tr("properties.no_preview"));
         return;
     };
     let side = ui.available_width().clamp(64.0, 240.0);
@@ -939,20 +1036,20 @@ fn sharing(ui: &mut egui::Ui, p: &Props, out: &mut Vec<Action>) {
     let s = match sharing {
         Ok(s) => s,
         Err(e) => {
-            ui.weak(format!("Not readable: {e}"));
+            ui.weak(crate::i18n::tr("properties.not_readable").replace("{error}", e.as_str()));
             return;
         }
     };
     if let Some(owner) = &s.owner {
         ui.horizontal(|ui| {
-            ui.weak("Owner");
+            ui.weak(crate::i18n::tr("properties.owner"));
             ui.label(owner);
         });
     }
     if let Some(mode) = s.mode {
         let dir = p.entry.as_ref().is_some_and(|e| e.kind == Kind::Dir);
         ui.horizontal(|ui| {
-            ui.weak("Mode");
+            ui.weak(crate::i18n::tr("properties.mode"));
             ui.monospace(format!(
                 "{} ({mode:o})",
                 keel_vfs::sharing::mode_text(mode, dir)
@@ -964,17 +1061,18 @@ fn sharing(ui: &mut egui::Ui, p: &Props, out: &mut Vec<Action>) {
         .striped(true)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
-            ui.strong("Name");
-            ui.strong("Privilege");
+            ui.strong(crate::i18n::tr("properties.name"));
+            ui.strong(crate::i18n::tr("properties.privilege"));
             ui.end_row();
             for a in &s.entries {
                 ui.label(a.who.as_str());
-                let mut text = match a.deny {
-                    true => format!("Deny: {}", a.access),
-                    false => a.access.clone(),
+                let mut text = if a.deny {
+                    crate::i18n::tr("properties.deny").replace("{access}", a.access.as_str())
+                } else {
+                    a.access.clone()
                 };
                 if a.inherited {
-                    text.push_str(" (inherited)");
+                    text.push_str(crate::i18n::tr("properties.inherited"));
                 }
                 ui.label(text);
                 ui.end_row();
@@ -982,7 +1080,10 @@ fn sharing(ui: &mut egui::Ui, p: &Props, out: &mut Vec<Action>) {
         });
     #[cfg(windows)]
     if let Some(local) = p.entry.as_ref().and_then(|e| e.path.to_local_path()) {
-        if ui.button("Windows Security…").clicked() {
+        if ui
+            .button(crate::i18n::tr("properties.windows_security"))
+            .clicked()
+        {
             out.push(Action::ShellProperties(local));
         }
     }
@@ -999,6 +1100,177 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Section headers and field labels in Spanish (the values, buttons and errors in
+    /// `properties_values_in_spanish`).
+    #[test]
+    fn properties_labels_in_spanish() {
+        crate::i18n::set("es");
+        assert_eq!(Section::General.title(), "General");
+        assert_eq!(Section::MoreInfo.title(), "Más información");
+        assert_eq!(Section::NameExt.title(), "Nombre y extensión");
+        assert_eq!(Section::Comments.title(), "Comentarios");
+        assert_eq!(Section::OpenWith.title(), "Abrir con");
+        assert_eq!(Section::Preview.title(), "Vista previa");
+        assert_eq!(Section::Sharing.title(), "Compartir y permisos");
+        let has = |rows: &[(&str, String)], k: &str| rows.iter().any(|(l, _)| *l == k);
+        let file = general_rows(
+            &Props {
+                hidden: true,
+                ..Props::default()
+            },
+            1,
+        );
+        for k in [
+            "Tipo",
+            "Tamaño",
+            "Ubicación",
+            "Creado",
+            "Modificado",
+            "Atributos",
+        ] {
+            assert!(has(&file, k), "file row {k}");
+        }
+        let drive = general_rows(
+            &Props {
+                drive: Some(Space {
+                    total: 100,
+                    free: 40,
+                }),
+                ..Props::default()
+            },
+            1,
+        );
+        for k in ["Capacidad", "Disponible", "Usado"] {
+            assert!(has(&drive, k), "drive row {k}");
+        }
+        let folder = general_rows(
+            &Props {
+                kind: "Folder".into(),
+                folders: 2,
+                ..Props::default()
+            },
+            1,
+        );
+        assert!(has(&folder, "Contiene"), "folder row Contiene");
+        assert_eq!(crate::i18n::tr("properties.extension"), "Extensión");
+        assert_eq!(
+            crate::i18n::tr("properties.no_more_info"),
+            "Sin más información"
+        );
+        assert_eq!(crate::i18n::tr("properties.name"), "Nombre");
+        assert_eq!(
+            crate::i18n::tr("properties.hide_extension"),
+            "Ocultar extensión"
+        );
+        assert_eq!(
+            crate::i18n::tr("properties.add_comment"),
+            "Añadir un comentario"
+        );
+        assert_eq!(crate::i18n::tr("properties.owner"), "Propietario");
+        assert_eq!(crate::i18n::tr("properties.mode"), "Modo");
+        assert_eq!(crate::i18n::tr("properties.privilege"), "Permiso");
+        assert_eq!(crate::i18n::tr("properties.tags"), "Etiquetas");
+        assert_eq!(
+            crate::i18n::tr("properties.locked"),
+            "Bloqueado (solo lectura)"
+        );
+        assert_eq!(crate::i18n::tr("properties.no_preview"), "Sin vista previa");
+        assert_eq!(
+            crate::i18n::tr("properties.no_apps"),
+            "No se encontraron aplicaciones para este archivo"
+        );
+        crate::i18n::set("en");
+    }
+
+    /// The window's values, attribute names, buttons and error strings in Spanish.
+    #[test]
+    fn properties_values_in_spanish() {
+        crate::i18n::set("es");
+        // The Kind values (the worker's English names, shown translated).
+        assert_eq!(kind_value("File"), "Archivo");
+        assert_eq!(kind_value("Folder"), "Carpeta");
+        assert_eq!(kind_value("Drive"), "Unidad");
+        assert_eq!(kind_value("Link"), "Enlace");
+        assert_eq!(kind_value("PDF file"), "archivo PDF");
+        assert_eq!(kind_value("Several items"), "Varios elementos");
+        // The General rows' values.
+        let row =
+            |rows: &[(&str, String)], k: &str| rows.iter().find(|r| r.0 == k).map(|r| r.1.clone());
+        let rows = general_rows(
+            &Props {
+                kind: "TXT file".into(),
+                hidden: true,
+                link: true,
+                partial: true,
+                bytes: 5,
+                ..Props::default()
+            },
+            1,
+        );
+        assert_eq!(row(&rows, "Tipo").as_deref(), Some("archivo TXT"));
+        assert_eq!(
+            row(&rows, "Tamaño").as_deref(),
+            Some("al menos 5 B (5 bytes)")
+        );
+        assert_eq!(row(&rows, "Atributos").as_deref(), Some("oculto, enlace"));
+        // The Contains row's values.
+        assert_eq!(contains(2, 1), "2 archivos, 1 carpeta");
+        assert_eq!(contains(1, 3), "1 archivo, 3 carpetas");
+        // The window title (several items and one).
+        let one = VPath::local(std::env::temp_dir().join("x.txt"));
+        let w = InfoWindow::new(1, vec![one.clone(), one.clone()], false);
+        assert_eq!(w.title(), "Info: 2 elementos");
+        let w = InfoWindow::new(2, vec![one], false);
+        assert_eq!(w.title(), "Info: x.txt");
+        // Buttons, tooltips, values and error strings.
+        let t = |k: &str| crate::i18n::tr(k).to_owned();
+        assert_eq!(t("properties.rename"), "Renombrar");
+        assert_eq!(t("properties.save_comment"), "Guardar comentario");
+        assert_eq!(t("properties.open"), "Abrir");
+        assert_eq!(
+            t("properties.use_for_all").replace("{ext}", "txt"),
+            "Usar para todos los archivos .txt"
+        );
+        assert_eq!(
+            t("properties.use_for_all_tip"),
+            "Keel abre estos archivos con esta aplicación"
+        );
+        assert_eq!(t("properties.choose_app"), "Elegir aplicación…");
+        assert_eq!(t("properties.other"), "Otro…");
+        assert_eq!(t("properties.windows_security"), "Seguridad de Windows…");
+        assert_eq!(t("properties.tags_button"), "Etiquetas…");
+        assert_eq!(t("properties.follows_selection"), "Sigue la selección");
+        assert_eq!(t("properties.reading"), "Leyendo…");
+        assert_eq!(t("properties.none"), "ninguna");
+        assert_eq!(t("properties.at_least"), "al menos ");
+        assert_eq!(
+            t("properties.available_size").replace("{size}", "1 GB"),
+            "1 GB disponibles"
+        );
+        assert_eq!(
+            t("properties.not_readable").replace("{error}", "sin permiso"),
+            "No se puede leer: sin permiso"
+        );
+        assert_eq!(
+            t("properties.deny").replace("{access}", "Lectura"),
+            "Denegar: Lectura"
+        );
+        assert_eq!(t("properties.inherited"), " (heredado)");
+        assert_eq!(
+            t("properties.locked_error").replace("{error}", "sin permiso"),
+            "Bloqueado: sin permiso"
+        );
+        assert_eq!(
+            t("properties.comments_off"),
+            "Activa la biblioteca (Ajustes → Biblioteca) para guardar comentarios"
+        );
+        assert_eq!(
+            t("properties.comments_outside"),
+            "Añade la unidad de la carpeta a la biblioteca para guardar comentarios"
+        );
+        crate::i18n::set("en");
     }
 
     #[test]

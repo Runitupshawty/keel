@@ -182,6 +182,7 @@ mod tests {
         let en = &langs()[0].strings;
         let tables: BTreeSet<&str> = en.keys().filter_map(|k| k.split('.').next()).collect();
         let re = regex::Regex::new(r#""([a-z_]+)\.([a-z_.]+)""#).unwrap();
+        let commands = crate::keymap::commands();
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut used = 0;
         for f in std::fs::read_dir(src).unwrap() {
@@ -195,7 +196,26 @@ mod tests {
             }
             for c in re.captures_iter(&text) {
                 let key = c[0].trim_matches('"');
-                if tables.contains(&c[1]) && &c[1] != "language" {
+                // A command id (like "tab.new") is not a translation key, even when its
+                // prefix is also an en.toml table.
+                // RPC method names in devices.rs match the key pattern but are not translations.
+                // Library RPC method names and SQLite filenames do the same (library.rs).
+                let rpc = [
+                    "devices.list",
+                    "devices.forget",
+                    "devices.pair_code",
+                    "devices.pair_with",
+                    "devices.settings_set",
+                    "library.db",
+                    "library.lock",
+                    "library.set_comment",
+                ];
+                if tables.contains(&c[1])
+                    && &c[1] != "language"
+                    && !commands.iter().any(|cmd| cmd.id == key)
+                    && !crate::keymap::PLATFORM_ONLY_COMMANDS.contains(&key)
+                    && !rpc.contains(&key)
+                {
                     used += 1;
                     assert!(
                         langs()[0].strings.contains_key(key),

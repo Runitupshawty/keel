@@ -1506,6 +1506,64 @@ impl LibraryBackend {
             })
             .collect())
     }
+
+    /// A freeze search (K14): the historical hits of one freeze, through `search_frozen`
+    /// (in-process, parsing with the library's UTC offset) or the daemon's
+    /// `freezes.search` (which parses the same way, with `frozen_query`).
+    pub fn search_frozen(
+        &self,
+        source: &SourceId,
+        freeze: i64,
+        query: &str,
+        folder: &str,
+        max: usize,
+    ) -> Result<Vec<keel_search::Hit>> {
+        match self {
+            LibraryBackend::InProcess(lib) => {
+                let lq = keel_core::LibraryQuery::parse(query, lib.utc_offset())?;
+                let (query, filters) = keel_core::frozen_query(&lq);
+                let hits = lib.search_frozen(source, freeze, &query, folder, &filters, max)?;
+                Ok(hits
+                    .into_iter()
+                    .map(|h| keel_search::Hit {
+                        path: h.path,
+                        is_dir: h.is_dir,
+                        size: h.size,
+                        modified: crate::library::entry_of_time(h.modified),
+                        snippet: h.snippet.map(|s| keel_search::Snippet {
+                            text: s.text,
+                            marks: s.marks,
+                        }),
+                    })
+                    .collect())
+            }
+            LibraryBackend::Daemon(r) => {
+                let api_hits: Vec<api::Hit> = r.call(
+                    "freezes.search",
+                    json!({
+                        "id": source.0,
+                        "freeze": freeze,
+                        "query": query,
+                        "folder": folder,
+                        "max": max.max(1),
+                    }),
+                )?;
+                Ok(api_hits
+                    .into_iter()
+                    .map(|h| keel_search::Hit {
+                        path: vpath_of(&h.path),
+                        is_dir: h.is_dir,
+                        size: h.size,
+                        modified: crate::library::entry_of_time(h.modified),
+                        snippet: h.snippet.map(|s| keel_search::Snippet {
+                            text: s.text,
+                            marks: s.marks.into_iter().map(|[a, b]| (a, b)).collect(),
+                        }),
+                    })
+                    .collect())
+            }
+        }
+    }
 }
 
 /// A change to a collection (`LibraryBackend::edit_collection`); paths are real or

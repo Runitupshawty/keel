@@ -1142,3 +1142,223 @@ fn bughunt_photo_kind_excludes_video_extensions() {
         ["alpha.jpg", "bravo.jpg", "charlie.jpg", "echo.jpg"]
     );
 }
+
+#[test]
+fn within_rel_adds_a_path_filter() {
+    let q = LibraryQuery {
+        within: Some(VPath {
+            scheme: "file".into(),
+            authority: String::new(),
+            path: "/docs".into(),
+        }),
+        within_rel: Some("docs".into()),
+        ..Default::default()
+    };
+    assert!(q.has_filters());
+    let (sql, args) = q.filters().unwrap();
+    assert!(
+        sql.contains("AND (r.path = ? OR r.path LIKE ? ESCAPE '\\')"),
+        "missing within clause: {sql}"
+    );
+    // The within args are the last two: "docs" and "docs/%".
+    assert_eq!(args[args.len() - 2], Value::Text("docs".into()));
+    assert_eq!(args[args.len() - 1], Value::Text("docs/%".into()));
+}
+
+#[test]
+fn within_keeps_deep_hits_past_the_cap() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("root");
+    write(&root.join("top report.pdf"), "pdf");
+    write(&root.join("Reports/target report.pdf"), "pdf");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "s").unwrap();
+    let src = lib
+        .source(&lib.add_source(folder("A", &root)).unwrap())
+        .unwrap();
+    walk(&src, &lib.router()).unwrap();
+    // The better-ranked hit is outside the folder: a filter query ranks by recency alone.
+    let set_mtime = |rel: &str, t: i64| {
+        src.store
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE record SET mtime = ?2 WHERE id = ?1",
+                rusqlite::params![id_of(&src, rel).unwrap(), t * 1_000_000_000],
+            )
+            .unwrap();
+    };
+    set_mtime("top report.pdf", days_from_civil(2026, 10, 5) * 86_400);
+    set_mtime(
+        "Reports/target report.pdf",
+        days_from_civil(2024, 1, 1) * 86_400,
+    );
+
+    // Without the folder, the recent outside hit takes the one slot the cap leaves.
+    let mut q = LibraryQuery::parse("ext:pdf", 0).unwrap();
+    q.max = 1;
+    assert_eq!(
+        lib.search(&q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.name)
+            .collect::<Vec<_>>(),
+        ["top report.pdf"]
+    );
+    // With it, only the deep hit inside is a candidate, so it survives the same cap.
+    let mut q = LibraryQuery::parse("ext:pdf", 0).unwrap();
+    q.max = 1;
+    q.within = Some(VPath::local(root.join("Reports")));
+    assert_eq!(
+        lib.search(&q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.name)
+            .collect::<Vec<_>>(),
+        ["target report.pdf"]
+    );
+}
+
+#[test]
+fn library_searcher_passes_within() {
+    let f = fixture();
+    let searcher = LibrarySearcher(Arc::new(f.lib));
+    // No folder: the text also reaches the other source.
+    let hits = searcher
+        .query(&keel_search::Query {
+            text: "report".into(),
+            ..keel_search::Query::default()
+        })
+        .unwrap();
+    assert!(hits
+        .iter()
+        .any(|h| h.path == f.b.absolute("report draft.docx")));
+    // With one, only the hits inside remain (the folder itself inclusive).
+    let within = f.a.def.root.to_local_path().unwrap().join("Reports");
+    let mut paths: Vec<VPath> = searcher
+        .query(&keel_search::Query {
+            text: "report".into(),
+            within: Some(within),
+            ..keel_search::Query::default()
+        })
+        .unwrap()
+        .into_iter()
+        .map(|h| h.path)
+        .collect();
+    paths.sort_by(|a, b| a.path.cmp(&b.path));
+    assert_eq!(
+        paths,
+        [
+            f.a.absolute("Reports"),
+            f.a.absolute("Reports/Q3 report.pdf"),
+            f.a.absolute("Reports/old report.pdf")
+        ]
+    );
+}
+
+#[test]
+fn within_respects_boundaries_and_literal_wildcards() {
+    let files = tempfile::tempdir().unwrap();
+    let root = files.path().join("root");
+    // A plain folder beside a same-prefix sibling, and a %/_ folder beside a lookalike a
+    // raw (unescaped) LIKE would also admit.
+    write(&root.join("docs/report.pdf"), "pdf");
+    write(&root.join("docs-old/report.pdf"), "pdf");
+    write(&root.join("a%b_c/report.pdf"), "pdf");
+    write(&root.join("axbxc/report.pdf"), "pdf");
+    let data = tempfile::tempdir().unwrap();
+    let lib = Library::open(data.path(), "s").unwrap();
+    let src = lib
+        .source(&lib.add_source(folder("A", &root)).unwrap())
+        .unwrap();
+    walk(&src, &lib.router()).unwrap();
+
+    let paths = |q: LibraryQuery| {
+        let mut out: Vec<VPath> = lib
+            .search(&q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.path)
+            .collect();
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    };
+
+    // No boundary: all four match the text.
+    let all = paths(LibraryQuery::parse("report", 0).unwrap());
+    assert_eq!(all.len(), 4);
+
+    // `docs` keeps only its own file: the `docs-old` sibling stays out.
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(root.join("docs")));
+    assert_eq!(paths(q), vec![src.absolute("docs/report.pdf")]);
+
+    // `a%b_c` keeps its file, not the `axbxc` lookalike an unescaped %/_ LIKE would admit.
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(root.join("a%b_c")));
+    assert_eq!(paths(q), vec![src.absolute("a%b_c/report.pdf")]);
+
+    // Selecting the source root, or an ancestor of it, includes every descendant.
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(root.clone()));
+    assert_eq!(paths(q).len(), 4);
+    let mut q = LibraryQuery::parse("report", 0).unwrap();
+    q.within = Some(VPath::local(files.path()));
+    assert_eq!(paths(q).len(), 4);
+}
+
+#[test]
+fn common_word_filter_respects_word_starts() {
+    use crate::index::tests::{fake, library_with};
+    use crate::SourceKind;
+    use keel_vfs::VPath;
+    // A word is checked in candidates' paths (not the index) once it matches more than
+    // RANK_CAP (50,000) records. Group A: 5,001 files with `client` at a word start and
+    // `rareword`; group B: 200 with `client` only inside `subclient` (plus `rareword`);
+    // group C: 45,000 with `client` and no `rareword`. So `client` is common (50,001
+    // matches), `rareword` rare (5,201), and their AND (5,001) takes the bm25 path that
+    // re-checks the common word in the paths of the `rareword` candidates. The short B
+    // names rank above the padded A names, so before the fix they land in the top hits.
+    let fill = (0..12)
+        .map(|k| format!("f{k}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let router = keel_vfs::Router::new();
+    router.register(Arc::new(fake(move |path: &str| {
+        if path != "/" {
+            return Ok(Vec::new());
+        }
+        let mut entries = Vec::with_capacity(50_201);
+        for i in 0..5_001u32 {
+            entries.push((format!("client rareword {fill} a{i:05}.pdf"), false, 100));
+        }
+        for i in 0..200u32 {
+            entries.push((format!("subclient rareword b{i:03}.pdf"), false, 100));
+        }
+        for i in 0..45_000u32 {
+            entries.push((format!("client fill c{i:04}.pdf"), false, 100));
+        }
+        Ok(entries)
+    })));
+    let (_data, lib, src) = library_with(SourceDef {
+        label: "commonword".into(),
+        root: VPath::parse("fake://commonword/").unwrap(),
+        kind: SourceKind::Share,
+        include_hidden: false,
+        ignore: Vec::new(),
+        poll_secs: None,
+        hash_shares: false,
+    });
+    walk(&src, &router).unwrap();
+    let hits = lib
+        .search(&LibraryQuery::parse("client rareword", 0).unwrap())
+        .unwrap();
+    assert!(
+        !hits.is_empty(),
+        "the word-start `client` files must be found"
+    );
+    assert!(
+        hits.iter().all(|h| !h.name.contains("subclient")),
+        "a common word must not match inside `subclient`"
+    );
+}

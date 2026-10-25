@@ -1106,3 +1106,54 @@ pub fn empty_area(ui: &mut egui::Ui, tab: &mut Tab, out: &mut Vec<Action>) {
     }
     r.context_menu(|ui| context_menu(ui, tab, None, out));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{fraction, size_text, size_text_of};
+    use keel_vfs::{Entry, Kind, VPath};
+
+    fn entry(kind: Kind, size: u64) -> Entry {
+        Entry {
+            path: VPath::local("/tmp/test"),
+            name: "x".into(),
+            kind,
+            size,
+            modified: None,
+            hidden: false,
+            is_link: false,
+            encrypted: false,
+            ext: String::new(),
+        }
+    }
+
+    #[test]
+    fn size_text_is_empty_for_folders() {
+        assert_eq!(size_text(&entry(Kind::Dir, 1234)), "");
+    }
+
+    #[test]
+    fn size_text_is_decimal_for_files() {
+        assert_eq!(size_text(&entry(Kind::File, 1_500)), "1.50 kB");
+    }
+
+    #[test]
+    fn size_text_of_1500_is_decimal() {
+        assert_eq!(size_text_of(1_500), "1.50 kB");
+    }
+
+    #[test]
+    fn fraction_zero_whole_is_zero() {
+        assert_eq!(fraction(7, 0), 0.0);
+    }
+
+    #[test]
+    fn fraction_clamps_at_one() {
+        assert_eq!(fraction(200, 100), 1.0);
+    }
+
+    #[test]
+    fn fraction_mid_and_zero_part() {
+        assert_eq!(fraction(50, 100), 0.5);
+        assert_eq!(fraction(0, 100), 0.0);
+    }
+}

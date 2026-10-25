@@ -298,10 +298,7 @@ impl SearchWorker {
                 if !wanted.lock().contains(&id) {
                     continue;
                 }
-                let mut result = searcher.query(&query).map(|mut hits| {
-                    hits.retain(|h| applied.keeps(h.path.name(), h.is_dir));
-                    omissions.apply(hits)
-                });
+                let mut result = run_search(&searcher, &query, &applied, &omissions, &wanted, id);
                 if let Ok(hits) = &mut result {
                     if wanted.lock().contains(&id) {
                         fill_missing_meta(hits);
@@ -331,6 +328,51 @@ impl SearchWorker {
         }
         let _ = self.jobs.send((searcher, query, applied, omissions, id));
     }
+}
+
+/// One search: the backend's first page through the tab's filter (the extensions and the
+/// omissions), then, when that filter leaves fewer than `query.max`
+/// hits and the backend still has more, bounded paging: the backend is asked for more
+/// (doubling, until it runs out) until the filter has kept `query.max` hits or the tab
+/// moved on; cancellation ends the scan. A filter the backend already applied (Everything's
+/// extension prefix) keeps the page full, so no extra query happens.
+fn run_search(
+    searcher: &Arc<dyn Searcher>,
+    query: &Query,
+    applied: &crate::search_filters::Applied,
+    omissions: &crate::omissions::Filter,
+    wanted: &Mutex<HashSet<u64>>,
+    id: u64,
+) -> anyhow::Result<Vec<keel_search::Hit>> {
+    let target = query.max as usize;
+    let mut cap = query.max;
+    loop {
+        let page = searcher.query(&Query {
+            max: cap,
+            ..query.clone()
+        })?;
+        let full = page.len() >= cap as usize;
+        let filtered = filter_page(page, applied, omissions);
+        if filtered.len() >= target {
+            let mut hits = filtered;
+            hits.truncate(target);
+            return Ok(hits);
+        }
+        if !full || !wanted.lock().contains(&id) {
+            return Ok(filtered);
+        }
+        cap = cap.saturating_mul(2);
+    }
+}
+
+/// The tab's filter over one backend page: the extensions, then the omissions.
+fn filter_page(
+    mut hits: Vec<keel_search::Hit>,
+    applied: &crate::search_filters::Applied,
+    omissions: &crate::omissions::Filter,
+) -> Vec<keel_search::Hit> {
+    hits.retain(|h| applied.keeps(h.path.name(), h.is_dir));
+    omissions.apply(hits)
 }
 
 /// Fills in the size and date of local hits that came without them (a date is always
@@ -580,5 +622,129 @@ mod tests {
         }
         assert_eq!(answered, [1, 3, 4]);
         assert_eq!(*slow.0.lock(), ["a", "x", "abc"]);
+    }
+
+    /// A backend that honours `query.max` as a stable prefix: the first `max` items of an
+    /// ordered list. Items from `matching_from` are `.pdf`, the rest `.txt`; an optional
+    /// per-query delay and a query counter make paging and cancellation observable.
+    struct Paged {
+        total: usize,
+        matching_from: usize,
+        delay: Duration,
+        queries: Arc<AtomicUsize>,
+    }
+    impl Searcher for Paged {
+        fn query(&self, q: &Query) -> anyhow::Result<Vec<keel_search::Hit>> {
+            self.queries.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            let end = (q.max as usize).min(self.total);
+            let mut hits = Vec::with_capacity(end);
+            for i in 0..end {
+                let ext = if i >= self.matching_from {
+                    "pdf"
+                } else {
+                    "txt"
+                };
+                let name = format!("/x/item{i:06}.{ext}");
+                hits.push(keel_search::Hit {
+                    path: keel_vfs::VPath::local(&name),
+                    is_dir: false,
+                    size: 1,
+                    modified: Some(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+                    snippet: None,
+                });
+            }
+            Ok(hits)
+        }
+        fn available(&self) -> bool {
+            true
+        }
+    }
+
+    /// K06: the whole first page misses the extension filter; the worker pages the backend until the
+    /// requested number of matches (beyond that page) is returned.
+    #[test]
+    fn search_worker_pages_past_a_nonmatching_first_page() {
+        let queries = Arc::new(AtomicUsize::new(0));
+        let searcher = Arc::new(Paged {
+            total: 1_000,
+            matching_from: 500,
+            delay: Duration::ZERO,
+            queries: queries.clone(),
+        });
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = SearchWorker::new(tx, egui::Context::default());
+        let applied = crate::search_filters::Applied {
+            keep: Some(vec!["pdf".into()]),
+            ..Default::default()
+        };
+        worker.search(searcher, q("x"), applied, Default::default(), 1, 0);
+        let hits = match rx.recv_timeout(Duration::from_secs(5)).expect("answer") {
+            Msg::Search { id, result } => {
+                assert_eq!(id, 1);
+                result.unwrap()
+            }
+            _ => panic!("unexpected message"),
+        };
+        let names: Vec<_> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+        let page = Query::default().max as usize;
+        assert_eq!(names.len(), page, "the requested number is still returned");
+        assert!(names.iter().all(|n| n.ends_with(".pdf")));
+        assert!(
+            queries.load(Ordering::SeqCst) >= 2,
+            "paged past the first page"
+        );
+    }
+
+    /// K06: a filter that matches nothing would page the backend to its end; a superseded
+    /// query ends the scan early instead.
+    #[test]
+    fn search_worker_cancellation_ends_the_paging_scan() {
+        let queries = Arc::new(AtomicUsize::new(0));
+        let paged = Arc::new(Paged {
+            total: 4_000,
+            matching_from: 4_000,
+            delay: Duration::from_millis(100),
+            queries: queries.clone(),
+        });
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let worker = SearchWorker::new(tx, egui::Context::default());
+        let applied = crate::search_filters::Applied {
+            keep: Some(vec!["pdf".into()]),
+            ..Default::default()
+        };
+        worker.search(paged, q("x"), applied.clone(), Default::default(), 1, 0);
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while queries.load(Ordering::SeqCst) < 1 {
+            assert!(
+                std::time::Instant::now() < until,
+                "the first page never started"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The tab moves on while the scan is running.
+        let other = Arc::new(Paged {
+            total: 0,
+            matching_from: 0,
+            delay: Duration::ZERO,
+            queries: Arc::new(AtomicUsize::new(0)),
+        });
+        worker.search(other, q("y"), applied, Default::default(), 2, 1);
+        let mut answered = 0;
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while answered < 2 && std::time::Instant::now() < until {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Search { .. }) => answered += 1,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(answered, 2, "both queries answered");
+        // Left live the scan pages 500, 1000, 2000, 4000, 8000; the superseded query must
+        // stop within a couple of pages.
+        assert!(
+            queries.load(Ordering::SeqCst) <= 3,
+            "cancellation ended the scan"
+        );
     }
 }

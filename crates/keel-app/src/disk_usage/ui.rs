@@ -87,7 +87,7 @@ pub fn window(
     if let Some(f) = &mut du.fallback {
         if let Some(done) = f.ui(ctx) {
             du.fallback = None;
-            du.note = done.map(|d| format!("{d}. Rescan to see the change."));
+            du.note = done.map(|d| crate::i18n::tr("disk_usage.rescan_note").replace("{d}", &d));
         }
     }
     if let Some(p) = &mut du.picker {
@@ -281,7 +281,7 @@ fn remember(setting: &mut f32, now: f32) {
 pub(super) fn roots_text(roots: &[Root], labels: &[(Root, String)]) -> String {
     let names: Vec<String> = (roots.iter())
         .map(|r| match r {
-            Root::AllLocalDrives => "all local drives".to_owned(),
+            Root::AllLocalDrives => crate::i18n::tr("disk_usage.roots_all_local").to_owned(),
             Root::Path(p) => p.display().to_string(),
             Root::Mtp { .. } => (labels.iter().find(|(root, _)| root == r))
                 .map_or_else(|| "a portable device".to_owned(), |(_, l)| l.clone()),
@@ -837,12 +837,17 @@ fn type_hover(t: &FileType) -> String {
             .collect();
         let more = if t.extensions.len() > 40 { " …" } else { "" };
         format!(
-            "{}\n{}{more}\nDouble-click to list only these files",
+            "{}\n{}{more}\n{}",
             t.description,
-            list.join(" ")
+            list.join(" "),
+            crate::i18n::tr("disk_usage.type_hover_double_click")
         )
     } else {
-        format!("{}\nDouble-click to list only these files", t.description)
+        format!(
+            "{}\n{}",
+            t.description,
+            crate::i18n::tr("disk_usage.type_hover_double_click")
+        )
     }
 }
 
@@ -886,7 +891,10 @@ fn main_area(
     if let Some(note) = &du.note {
         ui.horizontal(|ui| {
             ui.label(note);
-            dismiss = ui.small_button("×").named("Dismiss").clicked();
+            dismiss = ui
+                .small_button("×")
+                .named(crate::i18n::tr("disk_usage.dismiss"))
+                .clicked();
         });
     }
     if dismiss {
@@ -1100,8 +1108,12 @@ pub fn tree_list(
                             .add(egui::Button::new(text).frame(false))
                             .on_hover_text(tr("disk_usage.header_tip"));
                         let name = match model.sort {
-                            (k, true) if k == c => format!("{}, sorted ascending", c.label()),
-                            (k, false) if k == c => format!("{}, sorted descending", c.label()),
+                            (k, true) if k == c => {
+                                tr("disk_usage.sorted_ascending").replace("{label}", c.label())
+                            }
+                            (k, false) if k == c => {
+                                tr("disk_usage.sorted_descending").replace("{label}", c.label())
+                            }
                             _ => c.label().to_owned(),
                         };
                         let r = r.named(&name);
@@ -1361,34 +1373,37 @@ fn row_hover(model: &Model, id: NodeId) -> String {
     };
     text.push_str(&format!("\n{}", size_text(bytes)));
     if n.is_pseudo() {
-        text.push_str(&format!(
-            ", {:.1} % of the drive",
-            100.0 * model.fraction(id, true)
-        ));
+        let pct = format!("{:.1}", 100.0 * model.fraction(id, true));
+        text.push_str(&crate::i18n::tr("disk_usage.row_hover_drive").replace("{pct}", &pct));
         return text;
     }
     let parent = n.parent;
     if parent != keel_vfs::du::TOP && parent != keel_vfs::du::NONE {
-        text.push_str(&format!(
-            "\n{:.1} % of {} ({})",
-            100.0 * model.fraction(id, true),
-            model.tree.node(parent).name,
-            size_text(model.bytes(parent))
-        ));
+        let pct = format!("{:.1}", 100.0 * model.fraction(id, true));
+        let name = model.tree.node(parent).name.to_string();
+        let bytes = size_text(model.bytes(parent));
+        text.push_str(
+            &crate::i18n::tr("disk_usage.row_hover_parent")
+                .replace("{pct}", &pct)
+                .replace("{name}", &name)
+                .replace("{bytes}", &bytes),
+        );
     }
-    text.push_str(&format!(
-        "\n{:.1} % of everything scanned ({})",
-        100.0 * model.fraction(id, false),
-        size_text(model.bytes(keel_vfs::du::TOP))
-    ));
+    let pct = format!("{:.1}", 100.0 * model.fraction(id, false));
+    let bytes = size_text(model.bytes(keel_vfs::du::TOP));
+    text.push_str(
+        &crate::i18n::tr("disk_usage.row_hover_total")
+            .replace("{pct}", &pct)
+            .replace("{bytes}", &bytes),
+    );
     if n.has(keel_vfs::du::flag::HARDLINK_DUP) {
-        text.push_str("\nAnother name of a file counted elsewhere (hard link)");
+        text.push_str(crate::i18n::tr("disk_usage.row_hover_hardlink"));
     }
     if n.has(keel_vfs::du::flag::UNREADABLE) {
-        text.push_str("\nCould not be read");
+        text.push_str(crate::i18n::tr("disk_usage.row_hover_unreadable"));
     }
     if n.has(keel_vfs::du::flag::CLOUD) {
-        text.push_str("\nCloud placeholder: not downloaded");
+        text.push_str(crate::i18n::tr("disk_usage.row_hover_cloud"));
     }
     text
 }

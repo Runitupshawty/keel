@@ -62,7 +62,8 @@ fn state_with(lib: &Arc<Library>, tmp: &std::path::Path) -> AppState {
 }
 
 fn pump_until(s: &mut AppState, what: &str, done: impl Fn(&AppState) -> bool) {
-    let end = Instant::now() + Duration::from_secs(20);
+    // 60s: the full suite runs 800+ tests in parallel and a 20s pump starved once under load.
+    let end = Instant::now() + Duration::from_secs(60);
     while !done(s) {
         assert!(Instant::now() < end, "timed out: {what}");
         if let Ok(m) = s.rx.recv_timeout(Duration::from_millis(30)) {
@@ -92,7 +93,7 @@ fn summary(label: &str, status: SourceStatus) -> SourceSummary {
 fn library_search_keeps_to_a_pane_folder() {
     let (tmp, lib, _) = fixture("within", false);
     let search = |within: Option<PathBuf>| {
-        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()))
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), None)
             .query(&Query {
                 text: "ext:txt".into(),
                 within,
@@ -114,6 +115,207 @@ fn library_search_keeps_to_a_pane_folder() {
     assert_eq!(search(Some(tmp.join("DOCS").join("Sub"))), ["b.txt"]);
 }
 
+/// A plain library search keeps a deep hit when the pane's folder is set, even though the
+/// search page's cap is full of better-ranked hits outside the folder.
+#[test]
+fn lib_search_finds_hits_deep_in_a_folder() {
+    let (tmp, lib, id) = fixture("deep", false);
+    let src = tmp.join("docs");
+    std::fs::create_dir_all(src.join("deep").join("nested")).unwrap();
+    let deep = src.join("deep").join("nested").join("target.txt");
+    std::fs::write(&deep, "old").unwrap();
+    // Oldest of the four: the three shallow fixture hits rank above it (recency), so a
+    // page capped at three holds only the shallow ones.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&deep)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+        .unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+
+    let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), None)
+        .query(&Query {
+            text: "ext:txt".into(),
+            max: 3,
+            within: Some(src.join("deep")),
+            ..Query::default()
+        })
+        .unwrap();
+    let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+    names.sort();
+    assert_eq!(names, ["target.txt"]);
+}
+
+/// Operator queries run the library on the plain words and refine the hits.
+#[test]
+fn library_search_refines_operator_queries() {
+    let (_tmp, lib, _) = fixture("refine", false);
+    let search = |text: &str| {
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), None)
+            .query(&Query {
+                text: text.into(),
+                ..Query::default()
+            })
+            .unwrap();
+        let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+        names.sort();
+        names
+    };
+    // `!a` has no plain words: every hit comes back, refine drops a.txt (the folder stays).
+    assert_eq!(search("!a"), ["b.txt", "c.txt", "sub"]);
+    // `a | c`: refine keeps both or-branches (folder names match too, `sub` has neither).
+    assert_eq!(search("a | c"), ["a.txt", "c.txt"]);
+    // Plain word narrows in the library, the size operator refines it away or keeps it.
+    assert_eq!(search("a size:>=5"), Vec::<String>::new());
+    assert_eq!(search("c size:>=5"), ["c.txt"]);
+}
+
+/// K08: the match options reach both routes. One shared fixture (names that tell each
+/// option apart) is searched through the plain (Keel index) route and the library route:
+/// plain text keeps each backend's explicitly supported behavior (the library's FTS5
+/// folds case and diacritics and cannot be switched); and regex on the library route is
+/// an honest error, not a silent literal-pattern search.
+#[test]
+fn search_options_reach_both_routes() {
+    use keel_search::WalkIndexSearcher;
+    let tmp = temp("options");
+    let docs = tmp.join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    // The case pair lives in separate folders: a case-insensitive volume keeps only
+    // one of two same-folder names that differ in case.
+    std::fs::create_dir_all(docs.join("upper")).unwrap();
+    std::fs::create_dir_all(docs.join("lower")).unwrap();
+    std::fs::write(docs.join("upper/Report.txt"), "x").unwrap();
+    std::fs::write(docs.join("lower/report.txt"), "x").unwrap();
+    for name in [
+        "reports.txt",
+        "myreport.txt",
+        "cafe.txt",
+        "caf\u{e9}.txt",
+        "rep0rt.txt",
+    ] {
+        std::fs::write(docs.join(name), "x").unwrap();
+    }
+    let lib = Library::open(&tmp.join("data"), "test").unwrap();
+    lib.set_hash_after_walk(false);
+    let id = lib
+        .add_source(SourceDef {
+            label: "Docs".into(),
+            root: VPath::local(&docs),
+            kind: SourceKind::Folder,
+            include_hidden: false,
+            ignore: Vec::new(),
+            poll_secs: None,
+            hash_shares: false,
+        })
+        .unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+    let lib = Arc::new(lib);
+    let walk = WalkIndexSearcher::open(tmp.join("walk"), vec![docs.clone()]).unwrap();
+    assert!(walk.wait_ready(Duration::from_secs(30)), "the index builds");
+    let mut s = state_with(&lib, &tmp);
+    s.searcher = Some(Arc::new(walk));
+    s.run(0, Action::Search);
+
+    // Runs `text` on one route with `toggles`; the sorted hit names and the tab's
+    // error (when any).
+    let run = |s: &mut AppState,
+               library: bool,
+               t: crate::search_tab::Toggles,
+               text: &str|
+     -> (Vec<String>, Option<String>) {
+        let tab = s.tab_mut(0);
+        tab.library_search = library;
+        if let TabKind::Search {
+            query,
+            due,
+            toggles,
+            ..
+        } = &mut tab.kind
+        {
+            *query = text.into();
+            *toggles = t;
+            *due = Some(Instant::now());
+        }
+        s.tick();
+        pump_until(s, "searched", |s| !s.tab(0).loading);
+        let t = s.tab(0);
+        let mut names: Vec<String> = t
+            .entries()
+            .iter()
+            // Files only: the plain route also yields folders, which are not part of the
+            // option-consistency comparison.
+            .filter(|e| e.kind == keel_vfs::Kind::File)
+            .map(|e| e.path.name().to_owned())
+            .collect();
+        names.sort();
+        (names, t.error.clone())
+    };
+    let t = |case: bool, whole: bool, diac: bool, regex: bool| crate::search_tab::Toggles {
+        match_case: case,
+        whole_word: whole,
+        match_path: false,
+        match_diacritics: diac,
+        regex,
+        ..Default::default()
+    };
+    // Regex: as literal text nothing matches; the pattern matches on the plain route…
+    let (n, e) = run(&mut s, false, t(false, false, false, false), "rep.o*rt");
+    assert_eq!(n, Vec::<String>::new(), "the pattern is literal text");
+    assert_eq!(e, None);
+    // …the library route says so instead of searching the pattern as text (a failed
+    // search leaves the previous listing in place, so the box is empty here).
+    let (n, e) = run(&mut s, true, t(false, false, false, true), "rep.o*rt");
+    assert_eq!(n, Vec::<String>::new());
+    assert_eq!(
+        e.as_deref(),
+        Some("the library index does not support regex")
+    );
+    let (n, e) = run(&mut s, false, t(false, false, false, true), "rep.o*rt");
+    assert_eq!(
+        n,
+        vec![
+            "Report.txt".to_string(),
+            "myreport.txt".to_string(),
+            "rep0rt.txt".to_string(),
+            "report.txt".to_string(),
+            "reports.txt".to_string()
+        ],
+        "the plain route runs the pattern"
+    );
+    assert_eq!(e, None);
+    // Plain text keeps each backend's explicitly supported behavior: the index honors
+    // Match Case; the library's FTS5 folds case and diacritics and cannot be switched.
+    let (n, _) = run(&mut s, false, t(true, false, false, false), "report");
+    assert_eq!(
+        n,
+        vec![
+            "myreport.txt".to_string(),
+            "report.txt".to_string(),
+            "reports.txt".to_string()
+        ]
+    );
+    let (n2, _) = run(&mut s, true, t(true, false, false, false), "report");
+    assert_eq!(
+        n2,
+        vec![
+            "Report.txt".to_string(),
+            "report.txt".to_string(),
+            "reports.txt".to_string()
+        ],
+        "the library stays case-insensitive"
+    );
+    let (n3, _) = run(&mut s, false, t(false, false, false, false), "cafe");
+    assert_eq!(
+        n3,
+        vec!["cafe.txt".to_string(), "caf\u{e9}.txt".to_string()]
+    );
+    let (n4, _) = run(&mut s, true, t(false, false, false, false), "cafe");
+    assert_eq!(n4, n3, "the library folds diacritics by default too");
+}
 #[test]
 fn sidebar_rows_follow_source_status_and_stats() {
     let rows = source_rows(&[
@@ -261,6 +463,64 @@ fn a_freeze_is_made_browsed_read_only_and_deleted() {
     assert!(lib.freezes(&id).unwrap().is_empty());
 }
 
+/// K14: a search tab opened in a freeze view searches the freeze (historical hits), and
+/// leaving the freeze searches the live index. `freeze_scope` reads the source/freeze from
+/// a `library://<source>@<freeze>/` path; an open search covers the whole freeze, a
+/// search-in keeps its folder.
+#[test]
+fn searching_in_a_freeze_returns_historical_hits() {
+    let (tmp, lib, id) = fixture("freeze-search", false);
+    let docs = tmp.join("docs");
+    let freeze = lib.freeze(&id).unwrap();
+    // The live index changes after the freeze: `c.txt` is renamed away and `d.txt` appears.
+    std::fs::rename(docs.join("c.txt"), docs.join("c2.txt")).unwrap();
+    std::fs::write(docs.join("d.txt"), "d").unwrap();
+    let job = lib.index(&id).unwrap();
+    assert_eq!(lib.jobs().wait(job).unwrap().status, JobStatus::Done);
+
+    // `freeze_scope` keeps the source/freeze identity; an open search covers the whole
+    // freeze, a search-in keeps its folder (both from the freeze's VPath).
+    let root = vlib::path(&vlib::frozen(&id.0, freeze.id), "");
+    let scope = freeze_scope(&root, None).unwrap();
+    assert_eq!(&scope.source, &id);
+    assert_eq!(scope.freeze, freeze.id);
+    assert_eq!(scope.folder.as_str(), "");
+    let sub = vlib::path(&vlib::frozen(&id.0, freeze.id), "sub");
+    assert_eq!(
+        freeze_scope(&sub, None).unwrap().folder,
+        "",
+        "open search: whole freeze"
+    );
+    assert_eq!(
+        freeze_scope(&root, Some(&sub)).unwrap().folder,
+        "sub",
+        "search-in: its folder"
+    );
+    // A live (non-freeze) library path has no freeze scope.
+    let live = vlib::path(&id.0, "");
+    assert!(freeze_scope(&live, None).is_none());
+
+    let search = |scope: Option<FreezeScope>, text: &str| {
+        let hits = LibSearch(LibraryBackend::InProcess(lib.clone()), scope)
+            .query(&Query {
+                text: text.into(),
+                max: 100,
+                ..Query::default()
+            })
+            .unwrap();
+        let mut names: Vec<String> = hits.iter().map(|h| h.path.name().to_owned()).collect();
+        names.sort();
+        names
+    };
+    // In the freeze: the historical `c.txt` is found (renamed away live); `d.txt` is not
+    // in the freeze, so it is absent. The freeze holds the old index, never the live one.
+    assert_eq!(search(Some(scope.clone()), "c.txt"), ["c.txt"]);
+    assert!(search(Some(scope.clone()), "d.txt").is_empty());
+    // Leaving the freeze: the live index. `c.txt` is gone (renamed to `c2.txt`); `d.txt` shows.
+    assert!(search(None, "c.txt").is_empty());
+    assert_eq!(search(None, "d.txt"), ["d.txt"]);
+}
+
 #[test]
 fn tags_and_favorites_round_trip_through_the_ui_model() {
     let (tmp, lib, id) = fixture("tags", false);
@@ -301,7 +561,7 @@ fn tags_and_favorites_round_trip_through_the_ui_model() {
     // Ctrl+D toggles the favorite star; Favorites lists it.
     s.run(0, Action::Library(LibCmd::ToggleFavorite));
     settle(&mut s, "favorite", true, FAVORITES);
-    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()))
+    let favs = LibSearch(LibraryBackend::InProcess(lib.clone()), None)
         .query(&Query {
             text: FAVORITES_QUERY.into(),
             max: 10,
@@ -1282,4 +1542,84 @@ fn collection_tabs_and_their_drops() {
     );
     tab.library_search = false;
     assert_eq!(crate::pane::collection_drop(&drag, 0, &tab, None), None);
+}
+
+/// The source status text (rows and offline reasons), the offline-source
+/// warning, the tag refusal and the restore texts in Spanish.
+#[test]
+fn library_status_text_in_spanish() {
+    crate::i18n::set("es");
+    let seen = when(Some(1_700_000_000));
+    assert_eq!(
+        offline_text(Some(1_700_000_000), OfflineReason::Unreachable),
+        format!("sin conexión (último contacto: {seen})")
+    );
+    assert_eq!(
+        offline_text(Some(1_700_000_000), OfflineReason::RootMismatch),
+        format!(
+            "sin conexión (último contacto: {seen}): hay otra carpeta en su raíz; \
+             clic derecho → Adoptar la nueva raíz para indexarla"
+        )
+    );
+    assert_eq!(
+        offline_text(Some(1_700_000_000), OfflineReason::Empty),
+        format!(
+            "sin conexión (último contacto: {seen}): su raíz está vacía (¿desmontada?); \
+             clic derecho → Adoptar la nueva raíz para indexarla de todos modos"
+        )
+    );
+    let rows = source_rows(&[
+        summary("A", SourceStatus::Online { indexed_at: None }),
+        summary(
+            "B",
+            SourceStatus::Online {
+                indexed_at: Some(1_700_000_000),
+            },
+        ),
+        summary("C", SourceStatus::Indexing { done: 1, total: 0 }),
+        summary(
+            "D",
+            SourceStatus::Indexing {
+                done: 1_200,
+                total: 5_000,
+            },
+        ),
+    ]);
+    assert_eq!(rows[0].detail, "aún no indexado");
+    assert_eq!(rows[1].detail, format!("indexado {seen}"));
+    assert_eq!(rows[2].detail, "indexando 1");
+    assert_eq!(rows[3].detail, "indexando 1,200 / 5,000");
+    let w = Warning::OfflineSource {
+        source: SourceId("nas".into()),
+        label: "NAS".into(),
+    };
+    assert_eq!(
+        warning_text(&w, &[]),
+        "Origen sin conexión: NAS (vista previa desde su último índice; debe estar en línea para ejecutarlo)"
+    );
+    assert_eq!(
+        crate::i18n::tr("library.tag_refusal"),
+        "etiquetas y favoritos (asígnalos o quítalos de nuevo)"
+    );
+    assert_eq!(
+        crate::i18n::tr("library.restored")
+            .replace("{name}", "Docs")
+            .replace("{sources}", "1 source"),
+        "Biblioteca Docs restaurada (1 source): cámbiala en Ajustes → Biblioteca"
+    );
+    assert_eq!(
+        crate::i18n::tr("library.restore_offer")
+            .replace("{library}", "Docs")
+            .replace("{when}", &seen)
+            .replace("{version}", "0.1")
+            .replace("{sources}", "1 source")
+            .replace("{here}", "1"),
+        format!(
+            "La biblioteca Docs se respaldó el {seen} con Keel 0.1: 1 source, 1 \
+             encontrados en este equipo (se recorrió de nuevo; los demás siguen sin \
+             conexión hasta que su carpeta vuelva). Se restaura como una biblioteca nueva \
+             junto a la abierta; Ajustes → Biblioteca cambia a ella."
+        )
+    );
+    crate::i18n::set("en");
 }
