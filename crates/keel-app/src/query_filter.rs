@@ -251,6 +251,45 @@ mod tests {
     }
 
     #[test]
+    fn backend_terms_keeps_quoted_phrases_contiguous() {
+        // A quoted phrase stays one contiguous phrase in the backend text, never a
+        // mangled bag of words: the backend narrowing must keep every phrase hit.
+        assert_eq!(backend_terms("\"two word\""), "two word");
+        assert_eq!(
+            backend_terms("report \"two word\" ext:pdf"),
+            "report two word"
+        );
+
+        // The fixture distinguishes a phrase from separate words: the middle name has
+        // both words, not adjacent.
+        let hits = vec![
+            file_hit("/a/two word report.pdf", 1_000, 1_700_000_000),
+            file_hit("/b/two things word.pdf", 1_000, 1_700_000_000),
+            file_hit("/c/unrelated.pdf", 1_000, 1_700_000_000),
+        ];
+        let text = "\"two word\" ext:pdf";
+        let narrowed = refine(
+            hits.clone(),
+            &backend_terms(text),
+            &keel_query::Options::default(),
+        )
+        .unwrap();
+        let valid = refine(hits, text, &keel_query::Options::default()).unwrap();
+        assert_eq!(
+            valid.iter().map(|h| h.path.name()).collect::<Vec<_>>(),
+            ["two word report.pdf"],
+            "fixture must distinguish phrase from separate words"
+        );
+        let narrowed_names: Vec<&str> = narrowed.iter().map(|h| h.path.name()).collect();
+        for name in ["two word report.pdf", "two things word.pdf"] {
+            assert!(
+                narrowed_names.contains(&name),
+                "backend dropped {name}: {narrowed_names:?}"
+            );
+        }
+    }
+
+    #[test]
     fn library_only_terms_are_detected() {
         assert!(library_only("in:Documents"));
         assert!(library_only("tag:work"));
