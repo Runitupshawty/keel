@@ -158,6 +158,9 @@ fn parse_local_date(s: &str) -> Option<SystemTime> {
         let (c, z) = time.split_at(at);
         let sign = if z.starts_with('-') { -1 } else { 1 };
         let (zh, zm) = z[1..].split_once(':').unwrap_or((&z[1..], "0"));
+        if zh.len() != 2 {
+            return None;
+        }
         (
             c,
             Some(sign * (num(zh)? as i32 * 3600 + num(zm)? as i32 * 60)),
@@ -452,5 +455,17 @@ mod tests {
         let not_trash = dir.path().join("x").join("files");
         std::fs::create_dir_all(&not_trash).unwrap();
         assert_eq!(record_path(&not_trash.join("f")), None);
+    }
+    #[test]
+    fn bad_zones_and_dates_are_none() {
+        // A bare "+", a one-digit zone hour, and a nonexistent date (Feb 30) must
+        // all yield None rather than panic.
+        for s in [
+            "2024-01-01T10:00:00+",
+            "2024-01-01T10:00:00+5",
+            "2024-02-30 10:00:00",
+        ] {
+            assert!(parse_local_date(s).is_none(), "{s}");
+        }
     }
 }
