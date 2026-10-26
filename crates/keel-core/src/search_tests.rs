@@ -1362,3 +1362,25 @@ fn common_word_filter_respects_word_starts() {
         "a common word must not match inside `subclient`"
     );
 }
+
+#[test]
+fn common_words_match_at_word_starts_in_any_folder() {
+    let c = rusqlite::Connection::open_in_memory().unwrap();
+    let hit = |word: &str, path: &str| -> bool {
+        word_start_globs(word).iter().any(|g| {
+            c.query_row("SELECT ?1 GLOB ?2", rusqlite::params![path, g], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        })
+    };
+    assert!(hit("client", "client a.pdf"));
+    assert!(hit("client", "docs/client a.pdf"), "after a folder's `/`");
+    assert!(hit("client", "docs/2026/my-client.pdf"));
+    assert!(hit("client", "docs/client"));
+    assert!(!hit("client", "docs/subclient a.pdf"));
+    assert!(!hit("client", "subclient/a.pdf"));
+    assert!(hit("a*b", "x/a*b.txt"), "GLOB specials are literal");
+    assert!(!hit("a*b", "x/aXXb.txt"));
+    assert!(hit("[x]", "y/[x].txt") && !hit("[x]", "y/x.txt"));
+}

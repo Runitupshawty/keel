@@ -822,6 +822,20 @@ fn wordy(s: &str) -> bool {
 /// The records whose text matches the one parameter.
 const IN_CONTENT: &str = "SELECT rowid FROM record_content WHERE record_content MATCH ?";
 
+/// GLOB patterns matching `word` (lowercase) at a word start in a lowercased path: the path's
+/// start, or after a char that is not `a-z0-9` (so `docs/client` and `my-client` pass, and
+/// `subclient` does not). GLOB, not LIKE: LIKE has no character classes.
+pub(crate) fn word_start_globs(word: &str) -> [String; 2] {
+    let lit: String = word
+        .chars()
+        .map(|c| match c {
+            '*' | '?' | '[' => format!("[{c}]"),
+            c => c.to_string(),
+        })
+        .collect();
+    [format!("{lit}*"), format!("*[^a-z0-9]{lit}*")]
+}
+
 pub(crate) fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -882,12 +896,8 @@ fn run(
     // a previous char that is not alphanumeric), so `client` does not pass `subclient`.
     let mut filters = filters;
     for word in also {
-        filters.push_str(
-            " AND (lower(r.path) LIKE ? ESCAPE '\\' OR lower(r.path) LIKE ? ESCAPE '\\')",
-        );
-        let esc = like_escape(&word.to_lowercase());
-        args.push(Value::Text(format!("{esc}%")));
-        args.push(Value::Text(format!("%[^a-z0-9]{esc}%")));
+        filters.push_str(" AND (lower(r.path) GLOB ? OR lower(r.path) GLOB ?)");
+        args.extend(word_start_globs(&word.to_lowercase()).map(Value::Text));
     }
     args.push(Value::Integer(q.max as i64));
     let sql = format!(
